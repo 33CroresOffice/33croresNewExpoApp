@@ -2,19 +2,24 @@
   "expo": {
     "name": "33 Crores",
     "slug": "33-crores",
-    "version": "3.2.4",
+    "version": "3.2.5",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "thirtythreecrores",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.thirtythreecroresapp"
     },
     "android": {
       "package": "com.thirtythreecroresapp",
-      "versionCode": 47,
+      "versionCode": 49,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#FFFFFF"
