@@ -64,3 +64,12 @@ jobs:
           name: production-release-aab
           path: android/app/build/outputs/bundle/release/app-release.aab
           retention-days: 90
+
+      - name: Upload AAB to Play Console (closed testing / alpha)
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+          packageName: com.thirtythreecroresapp
+          releaseFiles: android/app/build/outputs/bundle/release/app-release.aab
+          track: alpha
+          status: completed
