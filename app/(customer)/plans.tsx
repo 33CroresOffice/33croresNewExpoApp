@@ -55,7 +55,7 @@ export default function PlansScreen() {
   };
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={styles.container}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Layers size={22} color={Colors.primary} strokeWidth={1.8} />

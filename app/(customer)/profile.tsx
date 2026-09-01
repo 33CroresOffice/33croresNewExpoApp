@@ -82,7 +82,7 @@ export default function ProfileScreen() {
   ];
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>My Profile</Text>
       </View>

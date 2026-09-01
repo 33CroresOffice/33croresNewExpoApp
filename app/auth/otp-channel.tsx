@@ -66,7 +66,7 @@ export default function OtpChannelScreen() {
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={[styles.scroll, { paddingTop: insets.top, paddingBottom: insets.bottom + Spacing[8] }]}
+      contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + Spacing[8] }]}
       showsVerticalScrollIndicator={false}
     >
       <View style={[styles.header, { top: insets.top + Spacing[3] }]}>

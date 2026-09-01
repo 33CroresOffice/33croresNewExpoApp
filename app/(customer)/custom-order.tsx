@@ -353,7 +353,7 @@ export default function CustomOrderScreen() {
     (gMeasureType === 'flower_count' ? !gFlowerCount : !gGarlandSize);
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <ArrowLeft size={22} color={Colors.textPrimary} />
@@ -762,7 +762,7 @@ export default function CustomOrderScreen() {
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: insets.bottom + Spacing[4] }]}>
+      <View style={[styles.footer, { paddingBottom: 10 }]}>
         <TouchableOpacity
           onPress={validateAndSubmit}
           activeOpacity={0.88}
@@ -816,7 +816,7 @@ export default function CustomOrderScreen() {
         onClose={() => setShowGSizePicker(false)}
       />
 
-      <Modal visible={successModal} transparent animationType="fade" onRequestClose={() => {}}>
+      <Modal visible={successModal} transparent animationType="fade" onRequestClose={() => { }}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
             <View style={styles.modalIconBg}>

@@ -177,7 +177,7 @@ export default function SubscriptionsScreen() {
   };
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>My Subscriptions</Text>
         <TouchableOpacity

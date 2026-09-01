@@ -44,7 +44,7 @@ export default function MobileScreen() {
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView
         style={styles.container}
-        contentContainerStyle={[styles.scroll, { paddingTop: insets.top, paddingBottom: insets.bottom + Spacing[8] }]}
+        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + Spacing[8] }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >

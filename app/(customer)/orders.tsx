@@ -102,7 +102,7 @@ export default function OrdersScreen() {
   ];
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>My Orders</Text>
       </View>
