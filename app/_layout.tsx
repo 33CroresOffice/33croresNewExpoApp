@@ -14,6 +14,7 @@ import { Stack, router, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
+import { DEFAULT_AUTH_ROUTE } from '@/constants/appRole';
 import { useFonts } from 'expo-font';
 import {
   DMSerifDisplay_400Regular,
@@ -191,7 +192,7 @@ export default function RootLayout() {
 
     const navigateForProfile = (profile: Awaited<ReturnType<typeof loadProfile>>) => {
       if (!profile) {
-        router.replace('/auth/welcome');
+        router.replace(DEFAULT_AUTH_ROUTE as any);
       } else if (profile.role === 'admin') {
         router.replace('/(admin)');
       } else if (profile.role === 'vendor') {
@@ -210,7 +211,7 @@ export default function RootLayout() {
         setSession(null);
         hasNavigatedRef.current = false;
         initDone = false;
-        router.replace('/auth/welcome');
+        router.replace(DEFAULT_AUTH_ROUTE as any);
         return;
       }
       // SIGNED_IN events are handled by the login screens themselves;
@@ -239,14 +240,14 @@ export default function RootLayout() {
           const portalPaths = ['/admin/login', '/vendor/login', '/rider/login', '/auth/'];
           const isOnPortal = portalPaths.some((p) => pathnameRef.current.startsWith(p));
           if (!isOnPortal) {
-            router.replace('/auth/welcome');
+            router.replace(DEFAULT_AUTH_ROUTE as any);
           }
         }
       } catch (error) {
         console.log('Init session error:', error);
         setLoading(false);
         initDone = true;
-        router.replace('/auth/welcome');
+        router.replace(DEFAULT_AUTH_ROUTE as any);
       }
     };
 

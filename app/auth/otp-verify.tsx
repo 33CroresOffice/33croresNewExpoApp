@@ -17,6 +17,7 @@ import OTPInput from '@/components/ui/OTPInput';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
+import { DEFAULT_AUTH_ROUTE } from '@/constants/appRole';
 
 const { width } = Dimensions.get('window');
 
@@ -101,7 +102,7 @@ export default function OtpVerifyScreen() {
       const profile = await loadProfile(authData.user.id);
 
       if (!profile) {
-        router.replace('/auth/welcome');
+        router.replace(DEFAULT_AUTH_ROUTE as any);
       } else if (profile.role === 'admin') {
         router.replace('/(admin)');
       } else if (profile.role === 'vendor') {

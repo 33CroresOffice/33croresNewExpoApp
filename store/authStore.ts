@@ -3,6 +3,7 @@ import { Session } from '@supabase/supabase-js';
 import { router } from 'expo-router';
 import { Profile, AdminRole } from '@/types/database';
 import { supabase } from '@/lib/supabase';
+import { DEFAULT_AUTH_ROUTE } from '@/constants/appRole';
 
 interface AuthState {
   session: Session | null;
@@ -124,7 +125,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       customRoleName: null,
       customRoleColor: null,
     });
-    router.replace('/auth/welcome');
+    router.replace(DEFAULT_AUTH_ROUTE as any);
   },
 
   reset: () => {

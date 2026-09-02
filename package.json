@@ -8,8 +8,13 @@
     "build:web": "expo export --platform web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "android": "expo run:android",
-    "ios": "expo run:ios"
+    "android": "expo run:android --variant userDebug",
+    "android:rider": "expo run:android --variant riderDebug --app-id com.thirtythreecroresapp.rider",
+    "ios": "expo run:ios",
+    "release:user:apk": "cd android && gradlew.bat assembleUserRelease --no-daemon",
+    "release:user:aab": "cd android && gradlew.bat bundleUserRelease --no-daemon",
+    "release:rider:apk": "cd android && gradlew.bat assembleRiderRelease --no-daemon",
+    "release:rider:aab": "cd android && gradlew.bat bundleRiderRelease --no-daemon"
   },
   "dependencies": {
     "@expo-google-fonts/dm-sans": "^0.4.2",
