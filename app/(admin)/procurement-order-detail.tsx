@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   TextInput, ActivityIndicator, Platform, Modal,
@@ -22,6 +23,14 @@ const STATUS_CONFIG: Record<string, { bg: string; text: string; border: string; 
 const STATUS_OPTIONS: ProcurementOrderStatus[] = ['draft', 'sent', 'accepted', 'fulfilled', 'cancelled'];
 
 export default function ProcurementOrderDetailScreen() {
+  return (
+    <ModuleGuard module="procurement">
+      <ProcurementOrderDetailScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function ProcurementOrderDetailScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -68,7 +77,7 @@ export default function ProcurementOrderDetailScreen() {
 
   const startEditPrice = (item: ProcurementOrderItem) => {
     setEditingItemId(item.id);
-    setEditPrice(item.price_per_unit != null ? String(item.price_per_unit) : '');
+    setEditPrice(item.total_price != null ? String(item.total_price) : '');
   };
 
   const cancelEdit = () => {
@@ -77,12 +86,13 @@ export default function ProcurementOrderDetailScreen() {
   };
 
   const savePrice = async (item: ProcurementOrderItem) => {
-    const price = parseFloat(editPrice);
-    if (isNaN(price) || price < 0) return;
+    const totalPrice = parseFloat(editPrice);
+    if (isNaN(totalPrice) || totalPrice < 0) return;
+    const unitPrice = item.quantity > 0 ? totalPrice / item.quantity : 0;
     setSaving(true);
     await supabase
       .from('procurement_order_items')
-      .update({ price_per_unit: price })
+      .update({ price_per_unit: unitPrice })
       .eq('id', item.id);
 
     const { data: freshItems } = await supabase
@@ -238,42 +248,55 @@ export default function ProcurementOrderDetailScreen() {
 
                   <View style={s.itemPriceCol}>
                     {isEditing ? (
-                      <View style={s.editRow}>
-                        <View style={s.priceInputWrap}>
-                          <Text style={s.rupeeSymbol}>₹</Text>
-                          <TextInput
-                            style={s.priceInput}
-                            value={editPrice}
-                            onChangeText={setEditPrice}
-                            keyboardType="decimal-pad"
-                            placeholder="0.00"
-                            placeholderTextColor={Colors.textDisabled}
-                            autoFocus
-                          />
+                      <View style={s.editCol}>
+                        <View style={s.editRow}>
+                          <View style={s.priceInputWrap}>
+                            <Text style={s.rupeeSymbol}>₹</Text>
+                            <TextInput
+                              style={s.priceInput}
+                              value={editPrice}
+                              onChangeText={setEditPrice}
+                              keyboardType="decimal-pad"
+                              placeholder="Total price"
+                              placeholderTextColor={Colors.textDisabled}
+                              autoFocus
+                            />
+                          </View>
+                          <TouchableOpacity
+                            style={s.iconBtn}
+                            onPress={() => savePrice(item)}
+                            disabled={saving}
+                          >
+                            {saving ? (
+                              <ActivityIndicator size="small" color={Colors.success} />
+                            ) : (
+                              <Check size={15} color={Colors.success} strokeWidth={2.5} />
+                            )}
+                          </TouchableOpacity>
+                          <TouchableOpacity style={s.iconBtn} onPress={cancelEdit}>
+                            <X size={15} color={Colors.error} strokeWidth={2.5} />
+                          </TouchableOpacity>
                         </View>
-                        <TouchableOpacity
-                          style={s.iconBtn}
-                          onPress={() => savePrice(item)}
-                          disabled={saving}
-                        >
-                          {saving ? (
-                            <ActivityIndicator size="small" color={Colors.success} />
-                          ) : (
-                            <Check size={15} color={Colors.success} strokeWidth={2.5} />
-                          )}
-                        </TouchableOpacity>
-                        <TouchableOpacity style={s.iconBtn} onPress={cancelEdit}>
-                          <X size={15} color={Colors.error} strokeWidth={2.5} />
-                        </TouchableOpacity>
+                        {(() => {
+                          const t = parseFloat(editPrice);
+                          if (!isNaN(t) && item.quantity > 0) {
+                            return (
+                              <Text style={s.unitHint}>
+                                ₹{(t / item.quantity).toFixed(2)} / {item.unit_type ?? (item.flower_type as any)?.unit_type ?? 'unit'}
+                              </Text>
+                            );
+                          }
+                          return null;
+                        })()}
                       </View>
                     ) : (
                       <View style={s.priceDisplayRow}>
                         <View style={s.priceTextCol}>
                           {item.price_per_unit != null ? (
                             <>
-                              <Text style={s.pricePerUnit}>₹{Number(item.price_per_unit).toLocaleString('en-IN')}/unit</Text>
-                              <Text style={s.priceTotal}>
-                                Total: ₹{Number(item.total_price ?? 0).toLocaleString('en-IN')}
+                              <Text style={s.priceTotal}>₹{Number(item.total_price ?? 0).toLocaleString('en-IN')}</Text>
+                              <Text style={s.pricePerUnit}>
+                                ₹{Number(item.price_per_unit).toFixed(2)} / {item.unit_type ?? (item.flower_type as any)?.unit_type ?? 'unit'}
                               </Text>
                             </>
                           ) : (
@@ -417,8 +440,8 @@ const s = StyleSheet.create({
   itemPriceCol: { alignItems: 'flex-end' },
   priceDisplayRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
   priceTextCol: { alignItems: 'flex-end' },
-  pricePerUnit: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
-  priceTotal: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.textTertiary, marginTop: 1 },
+  pricePerUnit: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.textTertiary, marginTop: 1 },
+  priceTotal: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
   noPriceText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textDisabled, fontStyle: 'italic' },
 
   editPriceBtn: {
@@ -428,6 +451,8 @@ const s = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.primary + '40',
   },
 
+  editCol: { alignItems: 'flex-end', gap: 4 },
+  unitHint: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.primary },
   editRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
   priceInputWrap: {
     flexDirection: 'row', alignItems: 'center', gap: 4,

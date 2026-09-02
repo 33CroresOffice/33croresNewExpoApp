@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Modal, TextInput, Platform, ActivityIndicator, RefreshControl,
@@ -23,7 +25,24 @@ const STATUS_CONFIG: Record<string, { bg: string; text: string; border: string; 
 const STATUS_OPTIONS: ProcurementOrderStatus[] = ['draft', 'sent', 'accepted', 'fulfilled', 'cancelled'];
 const TABS = ['all', ...STATUS_OPTIONS];
 
+const NEXT_STATUSES: Record<string, ProcurementOrderStatus[]> = {
+  draft: ['sent', 'cancelled'],
+  sent: ['accepted', 'cancelled'],
+  accepted: ['fulfilled', 'cancelled'],
+  fulfilled: [],
+  cancelled: [],
+};
+const getNextStatuses = (status: string): ProcurementOrderStatus[] => NEXT_STATUSES[status] ?? [];
+
 export default function ProcurementOrdersScreen() {
+  return (
+    <ModuleGuard module="procurement">
+      <ProcurementOrdersScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function ProcurementOrdersScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const [orders, setOrders] = useState<ProcurementOrder[]>([]);
@@ -74,7 +93,7 @@ export default function ProcurementOrdersScreen() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  usePageVisibility(load);
 
   const resetForm = () => {
     setRequirementDate(new Date());
@@ -291,7 +310,7 @@ export default function ProcurementOrdersScreen() {
                       <StatusIcon size={10} color={cfg.text} strokeWidth={2.5} />
                       <Text style={[s.statusText, { color: cfg.text }]}>{cfg.label}</Text>
                     </View>
-                    {order.status === 'accepted' && (order as any).pickup_rider && (
+                    {(order as any).pickup_rider && (
                       <View style={s.pickupRiderBadge}>
                         <User size={9} color="#0891b2" strokeWidth={2} />
                         <Text style={s.pickupRiderText} numberOfLines={1}>{(order as any).pickup_rider.full_name}</Text>
@@ -299,18 +318,18 @@ export default function ProcurementOrdersScreen() {
                     )}
                   </View>
                   <View style={[{ flex: 1.5 }, s.actionsCell]}>
-                    {order.status === 'accepted' && (
+                    {(
                       <TouchableOpacity
                         style={[s.actionBtn, s.assignRiderBtn]}
                         onPress={(e) => { e.stopPropagation?.(); openAssignRider(order); }}
                       >
                         <User size={10} color="#0891b2" strokeWidth={2.5} />
                         <Text style={[s.actionBtnText, { color: '#0891b2' }]}>
-                          {(order as any).pickup_rider ? 'Reassign Rider' : 'Assign Rider'}
+                          {(order as any).pickup_rider ? 'Reassign' : 'Assign Rider'}
                         </Text>
                       </TouchableOpacity>
                     )}
-                    {STATUS_OPTIONS.filter(st => st !== order.status && st !== 'draft').map(st => {
+                    {getNextStatuses(order.status).map(st => {
                       const sc = STATUS_CONFIG[st];
                       return (
                         <TouchableOpacity
@@ -354,7 +373,7 @@ export default function ProcurementOrdersScreen() {
                     <Text style={s.orderDateLabel}>Required by {format(parseISO(order.requirement_date), 'dd MMM yyyy')}</Text>
                   </View>
                 )}
-                {order.status === 'accepted' && (order as any).pickup_rider && (
+                {(order as any).pickup_rider && (
                   <View style={s.pickupRiderBadge}>
                     <User size={11} color="#0891b2" strokeWidth={2} />
                     <Text style={s.pickupRiderText}>{(order as any).pickup_rider.full_name}</Text>
@@ -362,18 +381,18 @@ export default function ProcurementOrdersScreen() {
                 )}
                 <View style={s.divider} />
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.mobileActions}>
-                  {order.status === 'accepted' && (
+                  {(
                     <TouchableOpacity
                       style={[s.mobileActionBtn, s.assignRiderBtn]}
                       onPress={() => openAssignRider(order)}
                     >
                       <User size={11} color="#0891b2" strokeWidth={2.5} />
                       <Text style={[s.mobileActionText, { color: '#0891b2' }]}>
-                        {(order as any).pickup_rider ? 'Reassign Rider' : 'Assign Rider'}
+                        {(order as any).pickup_rider ? 'Reassign' : 'Assign Rider'}
                       </Text>
                     </TouchableOpacity>
                   )}
-                  {STATUS_OPTIONS.filter(st => st !== order.status && st !== 'draft').map(st => {
+                  {getNextStatuses(order.status).map(st => {
                     const sc = STATUS_CONFIG[st];
                     return (
                       <TouchableOpacity
@@ -381,7 +400,7 @@ export default function ProcurementOrdersScreen() {
                         style={[s.mobileActionBtn, { backgroundColor: sc.bg, borderColor: sc.border }]}
                         onPress={() => updateStatus(order.id, st as ProcurementOrderStatus)}
                       >
-                        <Text style={[s.mobileActionText, { color: sc.text }]}>Move to {sc.label}</Text>
+                        <Text style={[s.mobileActionText, { color: sc.text }]}>{sc.label}</Text>
                       </TouchableOpacity>
                     );
                   })}

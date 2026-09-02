@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { User, Bell, ShoppingBag, MapPin, Circle as CircleHelp, Info, FileText, Shield, ChevronRight, Phone, LogOut } from 'lucide-react-native';
+import { User, Bell, MapPin, Circle as CircleHelp, Info, FileText, Shield, ChevronRight, Phone, LogOut, Truck } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { useAuthStore } from '@/store/authStore';
 
@@ -50,9 +50,9 @@ export default function ProfileScreen() {
       onPress: () => router.push('/(customer)/notifications'),
     },
     {
-      icon: <ShoppingBag size={20} color={Colors.textSecondary} />,
-      label: 'My Orders',
-      onPress: () => router.push('/(customer)/orders'),
+      icon: <Truck size={20} color={Colors.textSecondary} />,
+      label: 'Delivery History',
+      onPress: () => router.push('/(customer)/delivery-history'),
     },
     {
       icon: <MapPin size={20} color={Colors.textSecondary} />,
@@ -87,8 +87,10 @@ export default function ProfileScreen() {
         <Text style={styles.title}>My Profile</Text>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
-        {/* Avatar Card */}
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 40 }]}
+      >
         <View style={styles.avatarCard}>
           {profile?.avatar_url ? (
             <Image source={{ uri: profile.avatar_url }} style={styles.avatarImage} />
@@ -114,7 +116,6 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Menu List */}
         <View style={styles.menuCard}>
           {menuItems.map((item, index) => (
             <TouchableOpacity
@@ -156,7 +157,7 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     letterSpacing: -0.3,
   },
-  content: { padding: Spacing[5], gap: Spacing[4], paddingBottom: 40 },
+  content: { padding: Spacing[5], gap: Spacing[4] },
   avatarCard: {
     flexDirection: 'row',
     alignItems: 'center',

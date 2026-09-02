@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Platform, ActivityIndicator, RefreshControl,
@@ -54,6 +56,14 @@ const CATEGORY_COLORS: Record<string, string> = {
 };
 
 export default function FinanceScreen() {
+  return (
+    <ModuleGuard module="finance">
+      <FinanceScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function FinanceScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const [loading, setLoading] = useState(true);
@@ -133,7 +143,7 @@ export default function FinanceScreen() {
     }
   }, [period]);
 
-  useEffect(() => { load(); }, [load]);
+  usePageVisibility(load);
 
   const fmt = (n: number) => `₹${Math.abs(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
   const maxBar = Math.max(...monthlyBars.map(b => Math.max(b.revenue, b.expenses)), 1);

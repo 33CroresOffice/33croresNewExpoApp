@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Modal, TextInput, Platform, ActivityIndicator, RefreshControl,
@@ -18,6 +20,14 @@ const RECEIPT_STATUS: Record<string, { bg: string; text: string; icon: any }> = 
 };
 
 export default function WarehouseReceiptsScreen() {
+  return (
+    <ModuleGuard module="procurement">
+      <WarehouseReceiptsScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function WarehouseReceiptsScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const [receipts, setReceipts] = useState<WarehouseReceipt[]>([]);
@@ -63,7 +73,7 @@ export default function WarehouseReceiptsScreen() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  usePageVisibility(load);
 
   const selectOrder = (orderId: string) => {
     const order = openOrders.find(o => o.id === orderId);

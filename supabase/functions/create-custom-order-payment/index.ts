@@ -1,6 +1,18 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+async function getSecret(supabaseClient: ReturnType<typeof createClient>, key: string): Promise<string | undefined> {
+  try {
+    const { data } = await supabaseClient
+      .from('secret_keys')
+      .select('value')
+      .eq('key', key)
+      .maybeSingle();
+    if (data?.value) return data.value;
+  } catch { /* table not available */ }
+  return Deno.env.get(key);
+}
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
@@ -74,8 +86,8 @@ Deno.serve(async (req: Request) => {
       return respond({ success: false, error: "Prices have not been set by admin yet" }, 200);
     }
 
-    const razorpayKeyId = Deno.env.get("RAZORPAY_KEY_ID");
-    const razorpayKeySecret = Deno.env.get("RAZORPAY_KEY_SECRET");
+    const razorpayKeyId = await getSecret(serviceSupabase, "RAZORPAY_KEY_ID");
+    const razorpayKeySecret = await getSecret(serviceSupabase, "RAZORPAY_KEY_SECRET");
     const isTestMode = !razorpayKeyId || !razorpayKeySecret;
 
     if (isTestMode) {

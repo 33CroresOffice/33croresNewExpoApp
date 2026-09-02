@@ -1,0 +1,53 @@
+[functions.admin-create-subscription]
+verify_jwt = true
+
+[functions.check-pending-subscribers]
+verify_jwt = false
+
+[functions.check-subscription-renewals]
+verify_jwt = false
+
+[functions.create-admin-user]
+verify_jwt = true
+
+[functions.create-custom-order-payment]
+verify_jwt = true
+
+[functions.create-customer-user]
+verify_jwt = true
+
+[functions.create-razorpay-order]
+verify_jwt = true
+
+[functions.create-rider-user]
+verify_jwt = true
+
+[functions.create-vendor-user]
+verify_jwt = true
+
+[functions.generate-daily-requirements]
+verify_jwt = false
+
+[functions.generate-orders]
+verify_jwt = false
+
+[functions.send-bulk-notification]
+verify_jwt = true
+
+[functions.send-notification]
+verify_jwt = true
+
+[functions.send-otp]
+verify_jwt = false
+
+[functions.update-profile]
+verify_jwt = true
+
+[functions.verify-custom-order-payment]
+verify_jwt = true
+
+[functions.verify-otp]
+verify_jwt = false
+
+[functions.verify-razorpay-payment]
+verify_jwt = true

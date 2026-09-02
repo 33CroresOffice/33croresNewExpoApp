@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Platform, ActivityIndicator, RefreshControl,
@@ -38,6 +40,14 @@ const TASK_TYPE_CONFIG: Record<string, { label: string; color: string }> = {
 };
 
 export default function CrmScreen() {
+  return (
+    <ModuleGuard module="crm">
+      <CrmScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function CrmScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const [loading, setLoading] = useState(true);
@@ -102,7 +112,7 @@ export default function CrmScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  usePageVisibility(load);
 
   const formatDueDate = (d: string | null) => {
     if (!d) return null;

@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View,
   Text,
@@ -9,30 +11,104 @@ import {
   TextInput,
   Platform,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Search, ChevronRight, Users } from 'lucide-react-native';
+import { Search, ChevronRight, Users, X, ChevronLeft } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import EmptyState from '@/components/ui/EmptyState';
 import { format } from 'date-fns';
 
+type CustomerFilter = 'all' | 'new_today' | 'active' | 'inactive' | 'subscribed';
+
+const FILTER_LABELS: Record<CustomerFilter, string> = {
+  all: 'All Users',
+  new_today: 'New Today',
+  active: 'Active Users',
+  inactive: 'Inactive Users',
+  subscribed: 'Subscribed Users',
+};
+
 export default function AdminCustomersScreen() {
+  return (
+    <ModuleGuard module="crm">
+      <AdminCustomersScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function AdminCustomersScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
+  const params = useLocalSearchParams<{ customerFilter?: string }>();
+  const [activeFilter, setActiveFilter] = useState<CustomerFilter>((params.customerFilter as CustomerFilter) ?? 'all');
   const [customers, setCustomers] = useState<any[]>([]);
+  const [activeCustomerIds, setActiveCustomerIds] = useState<Set<string>>(new Set());
+  const [subscribedCustomerIds, setSubscribedCustomerIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 15;
 
   const load = async () => {
     try {
-      const { data } = await supabase
+      const [activeSubsRes, allSubsRes, customOrdersRes] = await Promise.all([
+        supabase.from('subscriptions').select('user_id').eq('status', 'active'),
+        supabase.from('subscriptions').select('user_id'),
+        supabase.from('custom_orders').select('user_id'),
+      ]);
+
+      const subscribedIds = new Set<string>();
+      allSubsRes.data?.forEach((r: any) => r.user_id && subscribedIds.add(r.user_id));
+      customOrdersRes.data?.forEach((r: any) => r.user_id && subscribedIds.add(r.user_id));
+      setSubscribedCustomerIds(subscribedIds);
+      if (activeSubsRes.data) {
+        setActiveCustomerIds(new Set(activeSubsRes.data.map((r: any) => r.user_id)));
+      }
+
+      const allUserIds = new Set<string>([...subscribedIds]);
+
+      let profilesRes;
+      if (allUserIds.size > 0) {
+        const ids = Array.from(allUserIds);
+        const chunks: string[][] = [];
+        for (let i = 0; i < ids.length; i += 200) chunks.push(ids.slice(i, i + 200));
+        const results = await Promise.all(
+          chunks.map(chunk =>
+            supabase
+              .from('profiles')
+              .select('*, subscriptions(count)')
+              .in('id', chunk)
+              .order('created_at', { ascending: false })
+          )
+        );
+        profilesRes = {
+          data: results.flatMap(r => r.data ?? []),
+        };
+      } else {
+        profilesRes = await supabase
+          .from('profiles')
+          .select('*, subscriptions(count)')
+          .eq('role', 'customer')
+          .order('created_at', { ascending: false });
+      }
+
+      const customerRoleRes = await supabase
         .from('profiles')
         .select('*, subscriptions(count)')
         .eq('role', 'customer')
         .order('created_at', { ascending: false });
-      if (data) setCustomers(data);
+
+      const merged = new Map<string, any>();
+      (customerRoleRes.data ?? []).forEach((p: any) => merged.set(p.id, p));
+      (profilesRes.data ?? []).forEach((p: any) => {
+        if (!merged.has(p.id)) merged.set(p.id, p);
+      });
+      const sorted = Array.from(merged.values()).sort((a, b) =>
+        (b.created_at ?? '').localeCompare(a.created_at ?? '')
+      );
+      setCustomers(sorted);
     } catch (e) {
       console.error('load error', e);
     } finally {
@@ -41,22 +117,74 @@ export default function AdminCustomersScreen() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  usePageVisibility(load);
+
+  // Sync filter when navigating with params
+  useEffect(() => {
+    if (params.customerFilter) {
+      setActiveFilter(params.customerFilter as CustomerFilter);
+    }
+  }, [params.customerFilter]);
+
+  const today = new Date().toISOString().split('T')[0];
+
+  const applyFilter = (c: any): boolean => {
+    switch (activeFilter) {
+      case 'new_today':
+        return c.created_at?.startsWith(today) ?? false;
+      case 'active':
+        return activeCustomerIds.has(c.id);
+      case 'inactive':
+        return !activeCustomerIds.has(c.id);
+      case 'subscribed':
+        return subscribedCustomerIds.has(c.id);
+      default:
+        return true;
+    }
+  };
 
   const filtered = customers.filter((c) => {
+    if (!applyFilter(c)) return false;
     if (!search) return true;
     const name = c.full_name?.toLowerCase() ?? '';
     return name.includes(search.toLowerCase()) || c.mobile.includes(search);
   });
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const paginated = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  useEffect(() => { setPage(1); }, [activeFilter, search]);
 
   if (isWeb) {
     return (
       <ScrollView style={webStyles.scroll} contentContainerStyle={webStyles.content} showsVerticalScrollIndicator={false}>
         <View style={webStyles.pageHeader}>
           <View>
-            <Text style={webStyles.pageTitle}>Customers</Text>
-            <Text style={webStyles.pageSubtitle}>{customers.length} registered customers</Text>
+            <Text style={webStyles.pageTitle}>Users</Text>
+            <Text style={webStyles.pageSubtitle}>{customers.length} registered users</Text>
           </View>
+        </View>
+
+        <View style={webStyles.filterRow}>
+          {(Object.keys(FILTER_LABELS) as CustomerFilter[]).map((f) => (
+            <TouchableOpacity
+              key={f}
+              style={[webStyles.filterChip, activeFilter === f && webStyles.filterChipActive]}
+              onPress={() => setActiveFilter(f)}
+              activeOpacity={0.8}
+            >
+              <Text style={[webStyles.filterChipText, activeFilter === f && webStyles.filterChipTextActive]}>
+                {FILTER_LABELS[f]}
+              </Text>
+            </TouchableOpacity>
+          ))}
+          {activeFilter !== 'all' && (
+            <TouchableOpacity style={webStyles.clearFilterBtn} onPress={() => setActiveFilter('all')} activeOpacity={0.8}>
+              <X size={13} color="#64748B" strokeWidth={2} />
+              <Text style={webStyles.clearFilterText}>Clear</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <View style={webStyles.tableCard}>
@@ -85,11 +213,11 @@ export default function AdminCustomersScreen() {
           {!loading && filtered.length === 0 ? (
             <View style={webStyles.emptyState}>
               <Text style={webStyles.emptyText}>
-                {search ? 'No customers match your search.' : 'No customers have signed up yet.'}
+                {search ? 'No users match your search.' : 'No users have signed up yet.'}
               </Text>
             </View>
           ) : (
-            filtered.map((customer, i) => (
+            paginated.map((customer, i) => (
               <TouchableOpacity
                 key={customer.id}
                 style={[webStyles.tableRow, i % 2 === 1 && webStyles.tableRowAlt]}
@@ -120,6 +248,33 @@ export default function AdminCustomersScreen() {
             ))
           )}
         </View>
+
+        {filtered.length > PAGE_SIZE && (
+          <View style={webStyles.paginationBar}>
+            <Text style={webStyles.paginationInfo}>
+              Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filtered.length)} of {filtered.length}
+            </Text>
+            <View style={webStyles.paginationControls}>
+              <TouchableOpacity
+                style={[webStyles.pageBtn, currentPage === 1 && webStyles.pageBtnDisabled]}
+                onPress={() => currentPage > 1 && setPage(currentPage - 1)}
+                disabled={currentPage === 1}
+                activeOpacity={0.7}
+              >
+                <ChevronLeft size={15} color={currentPage === 1 ? Colors.textDisabled : Colors.textSecondary} strokeWidth={2} />
+              </TouchableOpacity>
+              <Text style={webStyles.pageIndicator}>Page {currentPage} of {totalPages}</Text>
+              <TouchableOpacity
+                style={[webStyles.pageBtn, currentPage === totalPages && webStyles.pageBtnDisabled]}
+                onPress={() => currentPage < totalPages && setPage(currentPage + 1)}
+                disabled={currentPage === totalPages}
+                activeOpacity={0.7}
+              >
+                <ChevronRight size={15} color={currentPage === totalPages ? Colors.textDisabled : Colors.textSecondary} strokeWidth={2} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
       </ScrollView>
     );
   }
@@ -127,9 +282,24 @@ export default function AdminCustomersScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Customers</Text>
-        <Text style={styles.count}>{customers.length} total</Text>
+        <Text style={styles.title}>Users</Text>
+        <Text style={styles.count}>{filtered.length} shown</Text>
       </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.mFilterScroll} contentContainerStyle={styles.mFilterRow}>
+        {(Object.keys(FILTER_LABELS) as CustomerFilter[]).map((f) => (
+          <TouchableOpacity
+            key={f}
+            style={[styles.mFilterChip, activeFilter === f && styles.mFilterChipActive]}
+            onPress={() => setActiveFilter(f)}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.mFilterChipText, activeFilter === f && styles.mFilterChipTextActive]}>
+              {FILTER_LABELS[f]}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
 
       <View style={styles.searchBar}>
         <Search size={16} color={Colors.textTertiary} />
@@ -150,12 +320,12 @@ export default function AdminCustomersScreen() {
         {!loading && filtered.length === 0 ? (
           <EmptyState
             icon={<Users size={48} color={Colors.neutral[400]} />}
-            title="No customers found"
-            description={search ? 'Try a different search term' : 'No customers have signed up yet'}
+            title="No users found"
+            description={search ? 'Try a different search term' : 'No users have signed up yet'}
           />
         ) : (
           <View style={styles.list}>
-            {filtered.map((customer) => (
+            {paginated.map((customer) => (
               <TouchableOpacity
                 key={customer.id}
                 style={styles.customerCard}
@@ -177,6 +347,27 @@ export default function AdminCustomersScreen() {
                 <ChevronRight size={16} color={Colors.neutral[400]} />
               </TouchableOpacity>
             ))}
+          </View>
+        )}
+        {filtered.length > PAGE_SIZE && (
+          <View style={styles.paginationBar}>
+            <TouchableOpacity
+              style={[styles.pageBtn, currentPage === 1 && styles.pageBtnDisabled]}
+              onPress={() => currentPage > 1 && setPage(currentPage - 1)}
+              disabled={currentPage === 1}
+              activeOpacity={0.7}
+            >
+              <ChevronLeft size={16} color={currentPage === 1 ? Colors.textDisabled : Colors.textSecondary} strokeWidth={2} />
+            </TouchableOpacity>
+            <Text style={styles.pageIndicator}>{currentPage} / {totalPages}</Text>
+            <TouchableOpacity
+              style={[styles.pageBtn, currentPage === totalPages && styles.pageBtnDisabled]}
+              onPress={() => currentPage < totalPages && setPage(currentPage + 1)}
+              disabled={currentPage === totalPages}
+              activeOpacity={0.7}
+            >
+              <ChevronRight size={16} color={currentPage === totalPages ? Colors.textDisabled : Colors.textSecondary} strokeWidth={2} />
+            </TouchableOpacity>
           </View>
         )}
       </ScrollView>
@@ -227,6 +418,15 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     height: 36,
   },
+  mFilterScroll: { maxHeight: 48, flexGrow: 0 },
+  mFilterRow: { paddingHorizontal: Spacing[5], paddingVertical: Spacing[2], gap: Spacing[2] },
+  mFilterChip: {
+    paddingHorizontal: 14, paddingVertical: 6, borderRadius: Radius.full,
+    backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.border,
+  },
+  mFilterChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  mFilterChipText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.textSecondary },
+  mFilterChipTextActive: { color: Colors.white },
   content: { padding: Spacing[5], gap: Spacing[3] },
   list: { gap: Spacing[3] },
   customerCard: {
@@ -269,11 +469,25 @@ const styles = StyleSheet.create({
     fontSize: Typography.size.xs,
     color: Colors.textTertiary,
   },
+  paginationBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing[4], paddingVertical: Spacing[4] },
+  pageBtn: { width: 40, height: 40, borderRadius: Radius.md, backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.border, alignItems: 'center', justifyContent: 'center' },
+  pageBtnDisabled: { opacity: 0.4 },
+  pageIndicator: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
 });
 
 const webStyles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: '#F7F7F4' },
   content: { padding: 32, paddingBottom: 64, gap: 24 },
+  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
+  filterChip: {
+    paddingHorizontal: 16, paddingVertical: 7, borderRadius: 999,
+    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0',
+  },
+  filterChipActive: { backgroundColor: '#2D5A27', borderColor: '#2D5A27' },
+  filterChipText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: '#64748B' },
+  filterChipTextActive: { color: '#FFFFFF' },
+  clearFilterBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#E2E8F0' },
+  clearFilterText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: '#64748B' },
   pageHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -389,4 +603,10 @@ const webStyles = StyleSheet.create({
     fontSize: Typography.size.sm,
     color: Colors.textTertiary,
   },
+  paginationBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, backgroundColor: Colors.neutral[50], borderTopWidth: 1, borderTopColor: Colors.border },
+  paginationInfo: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  paginationControls: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  pageBtn: { width: 36, height: 36, borderRadius: Radius.md, backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.border, alignItems: 'center', justifyContent: 'center' },
+  pageBtnDisabled: { opacity: 0.4 },
+  pageIndicator: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
 });

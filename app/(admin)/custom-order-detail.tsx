@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View,
   Text,
@@ -127,6 +128,14 @@ const PAYMENT_STATUS_CONFIG: Record<string, { label: string; color: string; bg: 
 };
 
 export default function AdminCustomOrderDetailScreen() {
+  return (
+    <ModuleGuard module="orders">
+      <AdminCustomOrderDetailScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function AdminCustomOrderDetailScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const { id } = useLocalSearchParams<{ id: string }>();

@@ -1,3 +1,4 @@
+import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import React, { useEffect, useState } from 'react';
 import {
   Modal,
@@ -9,18 +10,10 @@ import {
   Platform,
   ActivityIndicator,
 } from 'react-native';
-import { Stack, router } from 'expo-router';
+import { Stack, router, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import {
-  SafeAreaProvider,
-  SafeAreaView,
-  initialWindowMetrics,
-} from 'react-native-safe-area-context';
-
-import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
-
 import { useFonts } from 'expo-font';
 import {
   DMSerifDisplay_400Regular,
@@ -32,7 +25,6 @@ import {
   DMSans_600SemiBold,
   DMSans_700Bold,
 } from '@expo-google-fonts/dm-sans';
-
 import * as SplashScreen from 'expo-splash-screen';
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
@@ -51,8 +43,10 @@ const IOS_APP_ID = '6443912970';
 const getLocalAppVersion = () => {
   const nativeVersion = Application.nativeApplicationVersion;
   const expoVersion = Constants.expoConfig?.version;
-  const versionCheckVersion = VersionCheck.getCurrentVersion();
-
+  let versionCheckVersion = '';
+  if (Platform.OS !== 'web') {
+    try { versionCheckVersion = VersionCheck.getCurrentVersion(); } catch {}
+  }
   return nativeVersion || expoVersion || versionCheckVersion || '';
 };
 
@@ -61,21 +55,12 @@ const getIosAppStoreVersion = async () => {
     const response = await fetch(
       `https://itunes.apple.com/lookup?id=${IOS_APP_ID}&country=in`
     );
-
     const text = await response.text();
-
-    if (!text || text.trim().startsWith('<')) {
-      console.log('Invalid App Store response:', text?.slice(0, 150));
-      return '';
-    }
-
+    if (!text || text.trim().startsWith('<')) return '';
     const json = JSON.parse(text);
-
     if (json?.resultCount > 0 && json?.results?.[0]?.version) {
       return json.results[0].version;
     }
-
-    console.log('App Store version not found:', json);
     return '';
   } catch (error) {
     console.log('iOS App Store version check error:', error);
@@ -89,7 +74,6 @@ const getAndroidPlayStoreVersion = async () => {
       provider: 'playStore',
       packageName: ANDROID_PACKAGE_NAME,
     });
-
     return latestVersion || '';
   } catch (error) {
     console.log('Android Play Store version check error:', error);
@@ -97,22 +81,16 @@ const getAndroidPlayStoreVersion = async () => {
   }
 };
 
-const cleanVersion = (version?: string) => {
-  return String(version || '')
-    .trim()
-    .replace(/[^\d.]/g, '');
+const normalizeVersion = (version?: string) => {
+  return String(version || '').trim().replace(/[^\d.]/g, '');
 };
 
-const versionToParts = (version?: string) => {
-  const cleaned = cleanVersion(version);
-
-  if (!cleaned) {
-    return [];
-  }
-
-  return cleaned.split('.').map(part => {
-    const value = Number(part);
-    return Number.isNaN(value) ? 0 : value;
+const convertVersionToParts = (version?: string) => {
+  const cleanVersion = normalizeVersion(version);
+  if (!cleanVersion) return [];
+  return cleanVersion.split('.').map(item => {
+    const number = Number(item);
+    return Number.isNaN(number) ? 0 : number;
   });
 };
 
@@ -120,35 +98,27 @@ const isStoreVersionGreaterThanCurrent = (
   currentVersion?: string,
   storeVersion?: string
 ) => {
-  const currentParts = versionToParts(currentVersion);
-  const storeParts = versionToParts(storeVersion);
-
-  if (!currentParts.length || !storeParts.length) {
-    return false;
-  }
-
+  const currentParts = convertVersionToParts(currentVersion);
+  const storeParts = convertVersionToParts(storeVersion);
+  if (!currentParts.length || !storeParts.length) return false;
   const maxLength = Math.max(currentParts.length, storeParts.length);
-
   for (let i = 0; i < maxLength; i += 1) {
     const currentValue = currentParts[i] || 0;
     const storeValue = storeParts[i] || 0;
-
-    if (storeValue > currentValue) {
-      return true;
-    }
-
-    if (storeValue < currentValue) {
-      return false;
-    }
+    if (storeValue > currentValue) return true;
+    if (storeValue < currentValue) return false;
   }
-
   return false;
 };
 
 export default function RootLayout() {
   useFrameworkReady();
 
-  const { setSession, loadProfile, setLoading } = useAuthStore();
+  const { setSession, loadProfile, setLoading, isLoading } = useAuthStore();
+  const pathname = usePathname();
+  const pathnameRef = React.useRef(pathname);
+  pathnameRef.current = pathname;
+  const hasNavigatedRef = React.useRef(false);
 
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [currentVersion, setCurrentVersion] = useState('');
@@ -171,37 +141,27 @@ export default function RootLayout() {
   }, [fontsLoaded, fontError]);
 
   const checkAppUpdate = async () => {
+    if (Platform.OS === 'web') return;
     try {
       setCheckingUpdate(true);
-
       const appCurrentVersion = getLocalAppVersion();
       let latestStoreVersion = '';
-
       if (Platform.OS === 'ios') {
         latestStoreVersion = await getIosAppStoreVersion();
-      }
-
-      if (Platform.OS === 'android') {
+      } else if (Platform.OS === 'android') {
         latestStoreVersion = await getAndroidPlayStoreVersion();
       }
-
-      console.log('Current App Version:', appCurrentVersion || 'not found');
-      console.log(
-        Platform.OS === 'ios' ? 'App Store Version:' : 'Play Store Version:',
-        latestStoreVersion || 'not found'
-      );
-
       setCurrentVersion(appCurrentVersion || '');
       setStoreVersion(latestStoreVersion || '');
-
       const shouldShowUpdateModal = isStoreVersionGreaterThanCurrent(
         appCurrentVersion,
         latestStoreVersion
       );
-
-      console.log('Should Show Update Modal:', shouldShowUpdateModal);
-
-      setShowUpdateModal(shouldShowUpdateModal);
+      if (shouldShowUpdateModal) {
+        setShowUpdateModal(true);
+      } else {
+        setShowUpdateModal(false);
+      }
     } catch (error) {
       console.log('Version check error:', error);
       setShowUpdateModal(false);
@@ -213,12 +173,8 @@ export default function RootLayout() {
   const openStore = async () => {
     try {
       const storeUrl = Platform.OS === 'ios' ? APP_STORE_URL : PLAY_STORE_URL;
-
-      const supported = await Linking.canOpenURL(storeUrl);
-
-      if (supported) {
-        await Linking.openURL(storeUrl);
-      } else {
+      const canOpen = await Linking.canOpenURL(storeUrl);
+      if (canOpen) {
         await Linking.openURL(storeUrl);
       }
     } catch (error) {
@@ -231,10 +187,37 @@ export default function RootLayout() {
 
     checkAppUpdate();
 
+    let initDone = false;
+
+    const navigateForProfile = (profile: Awaited<ReturnType<typeof loadProfile>>) => {
+      if (!profile) {
+        router.replace('/auth/welcome');
+      } else if (profile.role === 'admin') {
+        router.replace('/(admin)');
+      } else if (profile.role === 'vendor') {
+        router.replace('/(vendor)');
+      } else if (!profile.full_name) {
+        router.replace('/auth/profile-setup');
+      } else {
+        router.replace('/(customer)');
+      }
+    };
+
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') {
+        setSession(null);
+        hasNavigatedRef.current = false;
+        initDone = false;
+        router.replace('/auth/welcome');
+        return;
+      }
+      // SIGNED_IN events are handled by the login screens themselves;
+      // the listener only keeps the session in sync.
+      if (event === 'SIGNED_IN' && session) {
+        setSession(session);
+      }
     });
 
     const initSession = async () => {
@@ -245,29 +228,25 @@ export default function RootLayout() {
 
         if (session) {
           setSession(session);
-
+          initDone = true;
           const profile = await loadProfile(session.user.id);
           setLoading(false);
-
-          if (!profile?.full_name) {
-            router.replace('/auth/profile-setup');
-          } else if (profile.role === 'admin') {
-            router.replace('/(admin)');
-          } else if (profile.role === 'vendor') {
-            router.replace('/(vendor)');
-          } else if (profile.role === 'rider') {
-            router.replace('/(rider)');
-          } else {
-            router.replace('/(customer)');
-          }
+          hasNavigatedRef.current = true;
+          navigateForProfile(profile);
         } else {
           setLoading(false);
-          router.replace('/auth/mobile');
+          initDone = true;
+          const portalPaths = ['/admin/login', '/vendor/login', '/rider/login', '/auth/'];
+          const isOnPortal = portalPaths.some((p) => pathnameRef.current.startsWith(p));
+          if (!isOnPortal) {
+            router.replace('/auth/welcome');
+          }
         }
       } catch (error) {
         console.log('Init session error:', error);
         setLoading(false);
-        router.replace('/auth/mobile');
+        initDone = true;
+        router.replace('/auth/welcome');
       }
     };
 
@@ -280,116 +259,93 @@ export default function RootLayout() {
     return null;
   }
 
+  if (isLoading) {
+    return (
+      <View style={styles.splashContainer}>
+        <ActivityIndicator size="large" color="#2D5A27" />
+      </View>
+    );
+  }
+
   const storeName = Platform.OS === 'ios' ? 'App Store' : 'Play Store';
 
   return (
-    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-      <View style={styles.root}>
-        <StatusBar
-          style="dark"
-          backgroundColor="#FFFFFF"
-          translucent={false}
-        />
+    <>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="auth" />
+        <Stack.Screen name="admin" />
+        <Stack.Screen name="vendor" />
+        <Stack.Screen name="rider" />
+        <Stack.Screen name="(customer)" />
+        <Stack.Screen name="(admin)" />
+        <Stack.Screen name="(vendor)" />
+        <Stack.Screen name="(rider)" />
+        <Stack.Screen name="+not-found" />
+      </Stack>
 
-        <SafeAreaView
-          style={styles.safeArea}
-          edges={['top', 'bottom', 'left', 'right']}
-        >
-          <Stack screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="auth" />
-            <Stack.Screen name="admin" />
-            <Stack.Screen name="vendor" />
-            <Stack.Screen name="rider" />
-            <Stack.Screen name="(customer)" />
-            <Stack.Screen name="(admin)" />
-            <Stack.Screen name="(vendor)" />
-            <Stack.Screen name="(rider)" />
-            <Stack.Screen name="+not-found" />
-          </Stack>
-        </SafeAreaView>
+      <StatusBar style="dark" />
 
-        <Modal
-          visible={showUpdateModal}
-          transparent
-          animationType="fade"
-          statusBarTranslucent={false}
-          onRequestClose={() => { }}
-        >
-          <SafeAreaView
-            style={styles.modalSafeArea}
-            edges={['top', 'bottom', 'left', 'right']}
-          >
-            <View style={styles.modalOverlay}>
-              <View style={styles.updateCard}>
-                <View style={styles.iconCircle}>
-                  <Text style={styles.iconText}>⬆</Text>
-                </View>
-
-                <Text style={styles.title}>Update Available</Text>
-
-                <Text style={styles.message}>
-                  A new version of 33 Crores is available on {storeName}.
-                  Please update the app to continue using the latest features
-                  and improvements.
+      <Modal
+        visible={showUpdateModal}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => {}}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.updateCard}>
+            <View style={styles.iconCircle}>
+              <Text style={styles.iconText}>⬆</Text>
+            </View>
+            <Text style={styles.title}>Update Available</Text>
+            <Text style={styles.message}>
+              A new version of 33 Crores is available on {storeName}. Please
+              update the app to continue using the latest features and
+              improvements.
+            </Text>
+            <View style={styles.versionBox}>
+              <View style={styles.versionItem}>
+                <Text style={styles.versionLabel}>Current Version</Text>
+                <Text style={styles.versionValue}>
+                  {currentVersion || '-'}
                 </Text>
-
-                <View style={styles.versionBox}>
-                  <View style={styles.versionItem}>
-                    <Text style={styles.versionLabel}>Current Version</Text>
-                    <Text style={styles.versionValue}>
-                      {currentVersion || '-'}
-                    </Text>
-                  </View>
-
-                  <View style={styles.divider} />
-
-                  <View style={styles.versionItem}>
-                    <Text style={styles.versionLabel}>Latest Version</Text>
-                    <Text style={styles.versionValue}>
-                      {storeVersion || '-'}
-                    </Text>
-                  </View>
-                </View>
-
-                {checkingUpdate ? (
-                  <View style={styles.loadingButton}>
-                    <ActivityIndicator size="small" color="#FFFFFF" />
-                    <Text style={styles.loadingText}>Checking...</Text>
-                  </View>
-                ) : (
-                  <TouchableOpacity
-                    activeOpacity={0.85}
-                    style={styles.updateButton}
-                    onPress={openStore}
-                  >
-                    <Text style={styles.updateButtonText}>Update Now</Text>
-                  </TouchableOpacity>
-                )}
+              </View>
+              <View style={styles.divider} />
+              <View style={styles.versionItem}>
+                <Text style={styles.versionLabel}>Latest Version</Text>
+                <Text style={styles.versionValue}>
+                  {storeVersion || '-'}
+                </Text>
               </View>
             </View>
-          </SafeAreaView>
-        </Modal>
-      </View>
-    </SafeAreaProvider>
+            {checkingUpdate ? (
+              <View style={styles.loadingButton}>
+                <ActivityIndicator size="small" color="#FFFFFF" />
+                <Text style={styles.loadingText}>Checking...</Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                style={styles.updateButton}
+                onPress={openStore}
+              >
+                <Text style={styles.updateButtonText}>Update Now</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
+  splashContainer: {
     flex: 1,
     backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-  },
-
-  modalSafeArea: {
-    flex: 1,
-    backgroundColor: 'rgba(17, 24, 39, 0.72)',
-  },
-
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(17, 24, 39, 0.72)',
@@ -397,7 +353,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 22,
   },
-
   updateCard: {
     width: '100%',
     backgroundColor: '#FFFFFF',
@@ -412,7 +367,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 10 },
     elevation: 12,
   },
-
   iconCircle: {
     width: 72,
     height: 72,
@@ -424,13 +378,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#FFD5C2',
   },
-
   iconText: {
     fontSize: 34,
     color: '#FF6B35',
     fontWeight: '900',
   },
-
   title: {
     fontSize: 24,
     fontFamily: 'DMSans-Bold',
@@ -438,7 +390,6 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     textAlign: 'center',
   },
-
   message: {
     fontSize: 14,
     fontFamily: 'DMSans-Regular',
@@ -447,7 +398,6 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     marginBottom: 20,
   },
-
   versionBox: {
     width: '100%',
     backgroundColor: '#F8FAFC',
@@ -460,31 +410,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 22,
   },
-
   versionItem: {
     flex: 1,
     alignItems: 'center',
   },
-
   versionLabel: {
     fontSize: 12,
     fontFamily: 'DMSans-Medium',
     color: '#6B7280',
     marginBottom: 5,
   },
-
   versionValue: {
     fontSize: 16,
     fontFamily: 'DMSans-Bold',
     color: '#111827',
   },
-
   divider: {
     width: 1,
     height: 38,
     backgroundColor: '#E5E7EB',
   },
-
   updateButton: {
     width: '100%',
     height: 54,
@@ -498,13 +443,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 5,
   },
-
   updateButtonText: {
     fontSize: 16,
     fontFamily: 'DMSans-Bold',
     color: '#FFFFFF',
   },
-
   loadingButton: {
     width: '100%',
     height: 54,
@@ -515,7 +458,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
-
   loadingText: {
     fontSize: 15,
     fontFamily: 'DMSans-Bold',

@@ -1,5 +1,5 @@
 import { Tabs } from 'expo-router';
-import { LayoutDashboard, PackageCheck, CalendarDays, CircleUser as UserCircle } from 'lucide-react-native';
+import { LayoutDashboard, PackageCheck, CalendarDays, CircleUser as UserCircle, ShoppingBag } from 'lucide-react-native';
 import { Colors, Typography } from '@/constants/theme';
 
 const ACCENT = '#3AAFE4';
@@ -38,9 +38,18 @@ export default function RiderLayout() {
       <Tabs.Screen
         name="assignments"
         options={{
-          title: 'Deliveries',
+          title: 'Assignments',
           tabBarIcon: ({ color, size }) => (
             <PackageCheck size={size} color={color} strokeWidth={1.8} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="pickups"
+        options={{
+          title: 'Pickups',
+          tabBarIcon: ({ color, size }) => (
+            <ShoppingBag size={size} color={color} strokeWidth={1.8} />
           ),
         }}
       />

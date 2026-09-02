@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import { useLocalSearchParams } from 'expo-router';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Modal, TextInput, Switch, Platform, ActivityIndicator,
@@ -53,8 +56,17 @@ function monthLabel(months: number[] | null): string {
 }
 
 export default function FlowerTypesScreen() {
+  return (
+    <ModuleGuard module="catalog">
+      <FlowerTypesScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function FlowerTypesScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
+  const { action } = useLocalSearchParams<{ action?: string }>();
   const [items, setItems] = useState<FlowerType[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -66,6 +78,13 @@ export default function FlowerTypesScreen() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [filterActive, setFilterActive] = useState<'all' | 'active' | 'inactive'>('all');
+
+  // Auto-open add modal when navigated with ?action=add
+  useEffect(() => {
+    if (action === 'add' && !loading) {
+      openCreate();
+    }
+  }, [action, loading]);
 
   const load = async () => {
     try {
@@ -83,7 +102,7 @@ export default function FlowerTypesScreen() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  usePageVisibility(load);
 
   const openCreate = () => {
     setEditing(null);

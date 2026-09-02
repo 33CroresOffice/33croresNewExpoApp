@@ -28,13 +28,14 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 interface Props {
   label: string;
+  required?: boolean;
   value: Date | null;
   onChange: (date: Date) => void;
   minDate?: Date;
   maxDate?: Date;
 }
 
-export default function DatePickerField({ label, value, onChange, minDate, maxDate }: Props) {
+export default function DatePickerField({ label, required, value, onChange, minDate, maxDate }: Props) {
   const [open, setOpen] = useState(false);
   const [pickerView, setPickerView] = useState<View>('day');
   const [viewMonth, setViewMonth] = useState(() => {
@@ -102,7 +103,7 @@ export default function DatePickerField({ label, value, onChange, minDate, maxDa
 
   return (
     <View style={styles.wrapper}>
-      <Text style={styles.label}>{label}</Text>
+      <Text style={styles.label}>{label}{required ? <Text style={styles.req}> *</Text> : null}</Text>
       <TouchableOpacity
         style={[styles.fieldBtn, open && styles.fieldBtnOpen]}
         onPress={() => { setOpen((o) => !o); setPickerView('day'); }}
@@ -252,7 +253,8 @@ export default function DatePickerField({ label, value, onChange, minDate, maxDa
                       ]}
                       onPress={() => {
                         if (disabled || outside) return;
-                        onChange(d);
+                        // Normalize to local midnight to prevent any timezone shift
+                        onChange(new Date(d.getFullYear(), d.getMonth(), d.getDate()));
                         setOpen(false);
                       }}
                       activeOpacity={disabled || outside ? 1 : 0.7}
@@ -286,6 +288,7 @@ const styles = StyleSheet.create({
     fontSize: Typography.size.sm,
     color: Colors.textSecondary,
   },
+  req: { color: Colors.error },
   fieldBtn: {
     flexDirection: 'row',
     alignItems: 'center',

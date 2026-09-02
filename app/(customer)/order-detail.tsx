@@ -8,7 +8,7 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, MapPin, Calendar, FileText, Leaf } from 'lucide-react-native';
+import { ArrowLeft, MapPin, Calendar, FileText, Leaf, User, Phone, Bike, CircleCheck as CheckCircle } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { Order } from '@/types/database';
@@ -18,7 +18,7 @@ import { format } from 'date-fns';
 
 export default function OrderDetailScreen() {
   const insets = useSafeAreaInsets();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, selectedDate } = useLocalSearchParams<{ id: string; selectedDate?: string }>();
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -31,6 +31,26 @@ export default function OrderDetailScreen() {
       .then(({ data }) => {
         if (data) setOrder(data as Order);
         setLoading(false);
+      });
+  }, [id]);
+
+  const [assignment, setAssignment] = useState<{
+    status: string;
+    rider: { full_name: string; mobile: string } | null;
+    delivered_at: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    supabase
+      .from('rider_order_assignments')
+      .select('status, delivered_at, rider:riders!rider_order_assignments_rider_id_fkey(full_name, mobile)')
+      .eq('order_id', id)
+      .in('status', ['assigned', 'accepted', 'picked_up', 'delivered'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .then(({ data }) => {
+        if (data && data.length > 0) setAssignment(data[0] as any);
       });
   }, [id]);
 
@@ -65,7 +85,7 @@ export default function OrderDetailScreen() {
           <View style={styles.statusTop}>
             <View style={styles.statusInfo}>
               <Text style={styles.orderId}>Order #{order.id.slice(0, 8).toUpperCase()}</Text>
-              <Text style={styles.orderDate}>{format(new Date(order.scheduled_date), 'EEEE, dd MMMM yyyy')}</Text>
+              <Text style={styles.orderDate}>{format(new Date(selectedDate ?? order.scheduled_date), 'EEEE, dd MMMM yyyy')}</Text>
             </View>
             <StatusChip status={order.status} />
           </View>
@@ -138,6 +158,40 @@ export default function OrderDetailScreen() {
             </>
           )}
         </View>
+
+        {assignment?.rider && (
+          <View style={styles.infoCard}>
+            <View style={styles.riderCardHeader}>
+              <View style={styles.riderIconWrap}>
+                <Bike size={18} color={Colors.primary} />
+              </View>
+              <Text style={styles.riderCardTitle}>Delivery Rider</Text>
+            </View>
+            <View style={styles.riderInfoRow}>
+              <View style={styles.riderAvatar}>
+                <Text style={styles.riderAvatarText}>{assignment.rider.full_name[0]?.toUpperCase()}</Text>
+              </View>
+              <View style={styles.riderDetails}>
+                <View style={styles.riderDetailLine}>
+                  <User size={12} color={Colors.textTertiary} />
+                  <Text style={styles.riderDetailText}>{assignment.rider.full_name}</Text>
+                </View>
+                <View style={styles.riderDetailLine}>
+                  <Phone size={12} color={Colors.textTertiary} />
+                  <Text style={styles.riderDetailText}>{assignment.rider.mobile}</Text>
+                </View>
+                {assignment.delivered_at && (
+                  <View style={styles.riderDetailLine}>
+                    <CheckCircle size={12} color={Colors.success} />
+                    <Text style={[styles.riderDetailText, { color: Colors.success }]}>
+                      Delivered {format(new Date(assignment.delivered_at), 'dd MMM, hh:mm a')}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          </View>
+        )}
       </ScrollView>
     </View>
   );
@@ -251,5 +305,56 @@ const styles = StyleSheet.create({
     height: 40,
     backgroundColor: Colors.divider,
     marginHorizontal: Spacing[2],
+  },
+  riderCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+    marginBottom: Spacing[3],
+  },
+  riderIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  riderCardTitle: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.base,
+    color: Colors.textPrimary,
+  },
+  riderInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[3],
+  },
+  riderAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  riderAvatarText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.lg,
+    color: Colors.white,
+  },
+  riderDetails: {
+    flex: 1,
+    gap: 6,
+  },
+  riderDetailLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  riderDetailText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
   },
 });

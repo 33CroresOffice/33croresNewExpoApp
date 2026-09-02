@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,14 +10,13 @@ import {
   Modal,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
   ArrowRight,
   Plus,
   Trash2,
-  Pencil,
   MapPin,
   Calendar,
   Clock,
@@ -34,8 +33,9 @@ import {
   isPastCutoffIST,
   toLocalDateStr,
 } from '@/utils/istCutoff';
+import { useFocusEffect } from '@react-navigation/native';
 
-const FLOWER_OPTIONS = [
+const FLOWER_OPTIONS_FALLBACK = [
   'Rose', 'Marigold', 'Jasmine', 'Lotus', 'Sunflower', 'Lily',
   'Carnation', 'Orchid', 'Chrysanthemum', 'Tuberose', 'Gerbera', 'Other',
 ];
@@ -166,8 +166,10 @@ const pmStyles = StyleSheet.create({
 export default function CustomOrderScreen() {
   const insets = useSafeAreaInsets();
   const { profile } = useAuthStore();
+  const { newAddressId } = useLocalSearchParams<{ newAddressId?: string }>();
 
   const [orderType, setOrderType] = useState<CustomOrderType>('flower');
+  const [flowerOptions, setFlowerOptions] = useState<string[]>(FLOWER_OPTIONS_FALLBACK);
 
   // --- Flower draft state ---
   const [savedFlowers, setSavedFlowers] = useState<SavedFlower[]>([]);
@@ -218,19 +220,48 @@ export default function CustomOrderScreen() {
   };
 
   useEffect(() => {
-    if (!profile) return;
     supabase
-      .from('addresses')
-      .select('*')
-      .eq('user_id', profile.id)
+      .from('flower_types')
+      .select('display_name')
+      .eq('is_active', true)
+      .order('sort_order')
+      .order('display_name')
       .then(({ data }) => {
-        if (data) {
-          setAddresses(data);
-          const def = data.find((a) => a.is_default);
-          setSelectedAddress(def?.id || data[0]?.id || '');
+        if (data && data.length > 0) {
+          setFlowerOptions(data.map((f) => f.display_name));
         }
       });
+  }, []);
+
+  const loadAddresses = useCallback(async (autoSelectId?: string) => {
+    if (!profile) return;
+    const { data } = await supabase
+      .from('addresses')
+      .select('*')
+      .eq('user_id', profile.id);
+    if (data) {
+      setAddresses(data);
+      if (autoSelectId && data.find((a) => a.id === autoSelectId)) {
+        setSelectedAddress(autoSelectId);
+      } else {
+        setSelectedAddress((prev) => {
+          if (prev && data.find((a) => a.id === prev)) return prev;
+          const def = data.find((a) => a.is_default);
+          return def?.id || data[0]?.id || '';
+        });
+      }
+    }
   }, [profile]);
+
+  useEffect(() => {
+    loadAddresses(newAddressId || undefined);
+  }, [profile, newAddressId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadAddresses();
+    }, [loadAddresses])
+  );
 
   // --- Flower handlers ---
   const handleSaveFlower = () => {
@@ -580,9 +611,6 @@ export default function CustomOrderScreen() {
                 <Text style={[styles.tableCell, styles.colQty]}>{item.quantity}</Text>
                 <Text style={[styles.tableCell, styles.colUnit]}>{item.unit}</Text>
                 <View style={styles.colActions}>
-                  <TouchableOpacity style={styles.actionBtn}>
-                    <Pencil size={14} color="#5B8DEF" strokeWidth={1.8} />
-                  </TouchableOpacity>
                   <TouchableOpacity style={styles.actionBtn} onPress={() => removeFlower(item._key)}>
                     <Trash2 size={14} color={Colors.error} strokeWidth={1.8} />
                   </TouchableOpacity>
@@ -786,7 +814,7 @@ export default function CustomOrderScreen() {
       <PickerModal
         visible={showFlowerPicker}
         title="Select Flower"
-        options={FLOWER_OPTIONS}
+        options={flowerOptions}
         selected={draftFlower}
         onSelect={setDraftFlower}
         onClose={() => setShowFlowerPicker(false)}
@@ -802,7 +830,7 @@ export default function CustomOrderScreen() {
       <PickerModal
         visible={showGFlowerPicker}
         title="Select Flower"
-        options={FLOWER_OPTIONS}
+        options={flowerOptions}
         selected={gDraftFlower}
         onSelect={setGDraftFlower}
         onClose={() => setShowGFlowerPicker(false)}

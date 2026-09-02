@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Modal, TextInput, Platform, ActivityIndicator, RefreshControl,
@@ -62,6 +64,14 @@ const EMPTY_FORM = {
 };
 
 export default function LedgerScreen() {
+  return (
+    <ModuleGuard module="finance">
+      <LedgerScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function LedgerScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const { profile } = useAuthStore();
@@ -95,7 +105,7 @@ export default function LedgerScreen() {
     }
   }, [period]);
 
-  useEffect(() => { load(); }, [load]);
+  usePageVisibility(load);
 
   const save = async () => {
     const amt = parseFloat(form.amount);

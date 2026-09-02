@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Modal, TextInput, Platform, ActivityIndicator, RefreshControl,
@@ -41,6 +43,14 @@ const EMPTY_SEG = { name: '', description: '', color: '#2D5A27' };
 const EMPTY_TAG = { name: '', color: '#2D5A27', description: '' };
 
 export default function CrmSegmentsScreen() {
+  return (
+    <ModuleGuard module="crm">
+      <CrmSegmentsScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function CrmSegmentsScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const { profile } = useAuthStore();
@@ -84,7 +94,7 @@ export default function CrmSegmentsScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  usePageVisibility(load);
 
   const loadSegmentMembers = async (segId: string) => {
     if (segMembers[segId]) { setExpandedSeg(segId); return; }

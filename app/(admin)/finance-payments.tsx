@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   TextInput, Platform, ActivityIndicator, RefreshControl,
@@ -38,6 +40,14 @@ const STATUS_CONFIG: Record<PaymentStatus, { label: string; bg: string; text: st
 };
 
 export default function FinancePaymentsScreen() {
+  return (
+    <ModuleGuard module="finance">
+      <FinancePaymentsScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function FinancePaymentsScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const [payments, setPayments] = useState<PaymentRow[]>([]);
@@ -62,7 +72,7 @@ export default function FinancePaymentsScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  usePageVisibility(load);
 
   const filtered = payments.filter(p => {
     if (tab !== 'all' && p.status !== tab) return false;

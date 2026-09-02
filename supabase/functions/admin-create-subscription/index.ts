@@ -53,7 +53,8 @@ Deno.serve(async (req: Request) => {
       user_id,         // for existing user
       new_full_name,   // for new user
       new_mobile,      // for new user
-      // Address
+      // Address — either use saved address_id or create new
+      address_id,      // saved address id (existing user)
       address_label,
       address_street,
       address_city,
@@ -136,39 +137,65 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // ── 2. Create address ──
-    const { data: addrData, error: addrError } = await supabaseAdmin
-      .from("addresses")
-      .insert({
-        user_id: targetUserId,
-        label: address_label,
-        street: address_street,
-        city: address_city,
-        state: address_state,
-        pincode: address_pincode,
-        landmark: address_landmark || null,
-        is_default: true,
-      })
-      .select("id")
-      .single();
+    // ── 2. Resolve or create address ──
+    let resolvedAddressId: string;
 
-    if (addrError) {
-      return new Response(JSON.stringify({ error: "Address error: " + addrError.message }), {
-        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (address_id) {
+      // Use existing saved address — verify it belongs to the user
+      const { data: existingAddr, error: addrLookupErr } = await supabaseAdmin
+        .from("addresses")
+        .select("id")
+        .eq("id", address_id)
+        .eq("user_id", targetUserId)
+        .maybeSingle();
+
+      if (addrLookupErr || !existingAddr) {
+        return new Response(JSON.stringify({ error: "Invalid address: not found or doesn't belong to user." }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      resolvedAddressId = existingAddr.id;
+    } else {
+      // Create new address
+      const { data: addrData, error: addrError } = await supabaseAdmin
+        .from("addresses")
+        .insert({
+          user_id: targetUserId,
+          label: address_label,
+          street: address_street,
+          city: address_city,
+          state: address_state,
+          pincode: address_pincode,
+          landmark: address_landmark || null,
+          is_default: true,
+        })
+        .select("id")
+        .single();
+
+      if (addrError) {
+        return new Response(JSON.stringify({ error: "Address error: " + addrError.message }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      resolvedAddressId = addrData.id;
     }
 
     // ── 3. Create subscription ──
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const todayIST = new Date(Date.now() + IST_OFFSET_MS).toISOString().split("T")[0];
+    const subscriptionStatus = start_date > todayIST ? "pending" : "active";
+
     const { data: subData, error: subError } = await supabaseAdmin
       .from("subscriptions")
       .insert({
         user_id: targetUserId,
         plan_id,
-        status: "active",
+        status: subscriptionStatus,
         start_date,
         end_date: end_date || null,
+        new_end_date: end_date || null,
         next_delivery_date: start_date,
-        delivery_address_id: addrData.id,
+        delivery_address_id: resolvedAddressId,
         renewal_status: "none",
       })
       .select("id")

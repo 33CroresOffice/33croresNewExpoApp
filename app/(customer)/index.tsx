@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,14 +13,16 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowRight, Flower2, Truck, Heart, Star, Sparkles, ChevronRight, User, Calendar, CirclePause as PauseCircle, CircleCheck as CheckCircle2, Paintbrush, RotateCcw, TriangleAlert as AlertTriangle, Timer } from 'lucide-react-native';
+import { ArrowRight, Flower2, Truck, Heart, Star, Sparkles, ChevronRight, User, Calendar, CirclePause as PauseCircle, CircleCheck as CheckCircle2, Paintbrush, RotateCcw, TriangleAlert as AlertTriangle, Timer, Bell, Sun } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { SubscriptionPlan } from '@/types/database';
 import { SkeletonCard } from '@/components/ui/SkeletonLoader';
 import { format, addDays, differenceInDays, parseISO } from 'date-fns';
+import { PanjiEntry } from '@/types/database';
 import { getEffectiveStatus } from '@/utils/subscriptionStatus';
 
 type PauseRecord = {
@@ -35,6 +37,7 @@ type ActiveSub = {
   status: string;
   start_date: string;
   end_date: string | null;
+  new_end_date: string | null;
   next_delivery_date: string | null;
   pause_until: string | null;
   pause_start_date: string | null;
@@ -43,10 +46,11 @@ type ActiveSub = {
 };
 
 function getRenewalState(sub: ActiveSub): 'expired' | 'grace' | 'warning' | null {
-  if (!sub.end_date) return null;
+  const effectiveEndDate = sub.new_end_date ?? sub.end_date;
+  if (!effectiveEndDate) return null;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const end = parseISO(sub.end_date);
+  const end = parseISO(effectiveEndDate);
   const daysLeft = differenceInDays(end, today);
 
   if (sub.status === 'expired') return 'expired';
@@ -114,29 +118,61 @@ const C = {
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const { profile } = useAuthStore();
+  const { profile, session } = useAuthStore();
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [activeSubs, setActiveSubs] = useState<ActiveSub[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [todayPanji, setTodayPanji] = useState<PanjiEntry | null>(null);
+
+  const loadUnreadCount = useCallback(async () => {
+    if (!session?.user?.id) return;
+    const { count } = await supabase
+      .from('in_app_notifications')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', session.user.id)
+      .eq('is_read', false);
+    setUnreadCount(count ?? 0);
+  }, [session?.user?.id]);
+
+  useEffect(() => { loadUnreadCount(); }, [loadUnreadCount]);
+
+  // Realtime unread count updates
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    const channel = supabase
+      .channel('unread_count')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'in_app_notifications',
+        filter: `user_id=eq.${session.user.id}`,
+      }, () => { loadUnreadCount(); })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [session?.user?.id, loadUnreadCount]);
 
   const loadData = async () => {
-    const [plansRes, subsRes] = await Promise.all([
-      supabase.from('subscription_plans').select('*').eq('is_active', true).order('sort_order'),
+    const todayStr = format(new Date(), 'yyyy-MM-dd');
+    const [plansRes, subsRes, panjiRes] = await Promise.all([
+      supabase.from('subscription_plans').select('*').eq('is_active', true).eq('show_in_customer_plans', true).order('sort_order'),
       supabase
         .from('subscriptions')
-        .select('id, plan_id, status, start_date, end_date, pause_start_date, next_delivery_date, pause_until, plan:subscription_plans(name, frequency, price, image_url), pause_history:subscription_pause_history(pause_start_date, pause_until, resumed_at)')
+        .select('id, plan_id, status, start_date, end_date, new_end_date, pause_start_date, next_delivery_date, pause_until, plan:subscription_plans(name, frequency, price, image_url), pause_history:subscription_pause_history(pause_start_date, pause_until, resumed_at)')
         .in('status', ['active', 'paused', 'expired'])
         .order('created_at', { ascending: false })
         .limit(5),
+      supabase.from('panji_entries').select('*').eq('date', todayStr).eq('is_published', true).maybeSingle(),
     ]);
     if (plansRes.data) setPlans(plansRes.data);
     if (subsRes.data) setActiveSubs(subsRes.data as ActiveSub[]);
+    setTodayPanji(panjiRes.data as PanjiEntry | null);
     setLoading(false);
     setRefreshing(false);
   };
 
-  useEffect(() => { loadData(); }, []);
+  useFocusEffect(useCallback(() => { loadData(); }, []));
 
   const onRefresh = () => { setRefreshing(true); loadData(); };
 
@@ -153,7 +189,7 @@ export default function HomeScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: C.bg }]}
-      contentContainerStyle={{ paddingBottom: Spacing[10] }}
+      contentContainerStyle={{ paddingBottom: insets.bottom + Spacing[10] }}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.primary} />}
     >
@@ -177,14 +213,28 @@ export default function HomeScreen() {
             <Image source={require('@/assets/images/33logo-red_1.png')} style={styles.navLogoImg} resizeMode="contain" />
             <Text style={styles.navTitle}>Crores</Text>
           </View>
-          <TouchableOpacity
-            style={styles.adminPill}
-            onPress={() => router.push('/(customer)/profile')}
-            activeOpacity={0.85}
-          >
-            <User size={13} color={C.white} strokeWidth={2} />
-            <Text style={styles.adminPillText}>Profile</Text>
-          </TouchableOpacity>
+          <View style={styles.navRight}>
+            <TouchableOpacity
+              style={styles.bellBtn}
+              onPress={() => router.push('/(customer)/notification-feed')}
+              activeOpacity={0.85}
+            >
+              <Bell size={18} color={C.white} strokeWidth={2} />
+              {unreadCount > 0 && (
+                <View style={styles.bellBadge}>
+                  <Text style={styles.bellBadgeText}>{unreadCount > 9 ? '9+' : String(unreadCount)}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.adminPill}
+              onPress={() => router.push('/(customer)/profile')}
+              activeOpacity={0.85}
+            >
+              <User size={13} color={C.white} strokeWidth={2} />
+              <Text style={styles.adminPillText}>Profile</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Hero copy */}
@@ -252,6 +302,47 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Odia Panji Banner */}
+      <TouchableOpacity
+        style={styles.panjiBanner}
+        onPress={() => router.push('/(customer)/panji')}
+        activeOpacity={0.88}
+      >
+        <LinearGradient
+          colors={['#1C3A18', '#2D5A27']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.panjiBannerGrad}
+        >
+          <View style={styles.panjiBannerLeft}>
+            <View style={styles.panjiBannerIcon}>
+              <Sun size={20} color="#F0C060" strokeWidth={1.8} />
+            </View>
+            <View style={styles.panjiBannerText}>
+              <Text style={styles.panjiBannerTitle}>Odia Panji</Text>
+              {todayPanji ? (
+                <Text style={styles.panjiBannerSub} numberOfLines={1}>
+                  {[todayPanji.tithi, todayPanji.nakshatra].filter(Boolean).join(' · ') || todayPanji.odia_date || 'Today\'s Panji'}
+                </Text>
+              ) : (
+                <Text style={styles.panjiBannerSub}>View today's tithi, nakshatra & more</Text>
+              )}
+            </View>
+          </View>
+          <View style={styles.panjiBannerRight}>
+            {todayPanji && (todayPanji.festivals?.length ?? 0) > 0 && (
+              <View style={styles.panjiFestivalPill}>
+                <Star size={10} color="#F0C060" />
+                <Text style={styles.panjiFestivalPillText} numberOfLines={1}>{todayPanji.festivals[0]}</Text>
+              </View>
+            )}
+            <View style={styles.panjiBannerArrow}>
+              <ArrowRight size={14} color={C.white} strokeWidth={2.2} />
+            </View>
+          </View>
+        </LinearGradient>
+      </TouchableOpacity>
+
       {/* Active Subscriptions */}
       {activeSubs.length > 0 && (
         <View style={styles.subSection}>
@@ -276,7 +367,7 @@ export default function HomeScreen() {
             const isExpired = effectiveStatus === 'expired';
             const renewalState = getRenewalState(sub);
             const needsRenewal = renewalState !== null;
-            const endDate = sub.end_date ? parseISO(sub.end_date) : computeEndDate(sub);
+            const endDate = sub.new_end_date ? parseISO(sub.new_end_date) : sub.end_date ? parseISO(sub.end_date) : computeEndDate(sub);
             const today = new Date(); today.setHours(0, 0, 0, 0);
             const daysLeft = differenceInDays(endDate, today);
             const totalDays = differenceInDays(endDate, new Date(sub.start_date));
@@ -534,7 +625,7 @@ const styles = StyleSheet.create({
 
   hero: {
     width: '100%',
-    height: height * 0.62,
+    height: height * 0.52,
     justifyContent: 'flex-end',
     overflow: 'hidden',
   },
@@ -587,6 +678,21 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
     marginLeft: -15
   },
+  navRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
+  bellBtn: {
+    position: 'relative',
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  bellBadge: {
+    position: 'absolute', top: -2, right: -2,
+    backgroundColor: Colors.error, borderRadius: 10,
+    minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center',
+    paddingHorizontal: 3, borderWidth: 1.5, borderColor: 'transparent',
+  },
+  bellBadgeText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.white },
   adminPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -680,6 +786,76 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
 
+  panjiBanner: {
+    marginHorizontal: Spacing[5],
+    marginTop: Spacing[4],
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+    ...Shadow.sm,
+  },
+  panjiBannerGrad: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: Spacing[4],
+  },
+  panjiBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[3],
+    flex: 1,
+  },
+  panjiBannerIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(240,192,96,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(240,192,96,0.3)',
+  },
+  panjiBannerText: { flex: 1, gap: 2 },
+  panjiBannerTitle: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.sm,
+    color: C.white,
+  },
+  panjiBannerSub: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.65)',
+  },
+  panjiBannerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+  },
+  panjiFestivalPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(212,168,83,0.22)',
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing[2],
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(212,168,83,0.4)',
+    maxWidth: 100,
+  },
+  panjiFestivalPillText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: 10,
+    color: '#F0C060',
+  },
+  panjiBannerArrow: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   customOrderBanner: {
     flexDirection: 'row',
     alignItems: 'center',

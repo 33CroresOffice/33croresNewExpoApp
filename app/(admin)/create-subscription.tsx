@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   TextInput,
 } from 'react-native';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import { router } from 'expo-router';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
@@ -17,13 +18,26 @@ import {
   ArrowLeft, User, MapPin, Package, CreditCard,
   Search, Check, ChevronDown, X, Plus, CircleCheck,
 } from 'lucide-react-native';
-import { addWeeks, addMonths, format, isValid, parseISO } from 'date-fns';
+import { addWeeks, addMonths, addDays, format, isValid, parseISO } from 'date-fns';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type PlaceCategory = 'Individual' | 'Apartment' | 'Business' | 'Temple';
 type AddressType = 'Home' | 'Work' | 'Other';
 type PaymentMode = 'cash' | 'upi' | 'razorpay' | 'bank_transfer' | 'card' | 'cheque';
+
+interface SavedAddress {
+  id: string;
+  label: string;
+  street: string;
+  city: string;
+  state: string;
+  pincode: string;
+  landmark: string | null;
+  place_category: string | null;
+  apartment_name: string | null;
+  is_default: boolean;
+}
 
 interface FormErrors {
   userSearch?: string;
@@ -55,12 +69,12 @@ const PAYMENT_MODES: { value: PaymentMode; label: string }[] = [
   { value: 'cheque', label: 'Cheque' },
 ];
 
-const DURATION_OPTIONS: { value: DeliveryFrequency; label: string; months: number }[] = [
+const DURATION_OPTIONS: { value: DeliveryFrequency; label: string; months: number; days?: number }[] = [
   { value: 'weekly', label: 'Weekly (1 week)', months: 0.25 },
   { value: 'biweekly', label: 'Bi-Weekly (2 weeks)', months: 0.5 },
-  { value: 'monthly', label: 'Monthly (1 month)', months: 1 },
-  { value: '3months', label: '3 Months', months: 3 },
-  { value: '6months', label: '6 Months', months: 6 },
+  { value: 'monthly', label: 'Monthly (29 days)', months: 1, days: 29 },
+  { value: '3months', label: '3 Months (89 days)', months: 3, days: 89 },
+  { value: '6months', label: '6 Months (179 days)', months: 6, days: 179 },
 ];
 
 const INDIA_STATES = [
@@ -317,9 +331,121 @@ function FormInput({
   );
 }
 
+function AddressFormFields({
+  placeCategory, setPlaceCategory,
+  flatPlot, setFlatPlot,
+  apartmentName, setApartmentName,
+  locality, setLocality,
+  city, setCity,
+  addrState, setAddrState,
+  pincode, setPincode,
+  landmark, setLandmark,
+  addressType, setAddressType,
+  stateOptions,
+  errors, setErrors,
+}: {
+  placeCategory: PlaceCategory | '';
+  setPlaceCategory: (v: PlaceCategory) => void;
+  flatPlot: string; setFlatPlot: (v: string) => void;
+  apartmentName: string; setApartmentName: (v: string) => void;
+  locality: string; setLocality: (v: string) => void;
+  city: string; setCity: (v: string) => void;
+  addrState: string; setAddrState: (v: string) => void;
+  pincode: string; setPincode: (v: string) => void;
+  landmark: string; setLandmark: (v: string) => void;
+  addressType: AddressType | ''; setAddressType: (v: AddressType) => void;
+  stateOptions: { value: string; label: string }[];
+  errors: FormErrors;
+  setErrors: React.Dispatch<React.SetStateAction<FormErrors>>;
+}) {
+  return (
+    <>
+      <View style={styles.fieldWrap}>
+        <FieldLabel label="Place Category" required />
+        <PillSelector
+          options={PLACE_CATEGORIES} value={placeCategory}
+          onChange={(v) => { setPlaceCategory(v); setErrors((e) => ({ ...e, placeCategory: undefined })); }}
+          error={errors.placeCategory}
+        />
+      </View>
+
+      <View style={styles.twoCol}>
+        <View style={styles.twoColItem}>
+          <FormInput
+            label="Apartment / Flat / Plot" value={flatPlot} required
+            onChangeText={(v) => { setFlatPlot(v); setErrors((e) => ({ ...e, flatPlot: undefined })); }}
+            placeholder="e.g. Flat 4B" error={errors.flatPlot}
+          />
+        </View>
+        <View style={styles.twoColItem}>
+          <FormInput
+            label="Apartment Name" value={apartmentName}
+            onChangeText={setApartmentName} placeholder="e.g. Sunrise Residency"
+          />
+        </View>
+      </View>
+
+      <View style={styles.twoCol}>
+        <View style={styles.twoColItem}>
+          <FormInput
+            label="Locality" value={locality} required
+            onChangeText={(v) => { setLocality(v); setErrors((e) => ({ ...e, locality: undefined })); }}
+            placeholder="e.g. Koramangala" error={errors.locality}
+          />
+        </View>
+        <View style={styles.twoColItem}>
+          <FormInput
+            label="Town / City" value={city} required
+            onChangeText={(v) => { setCity(v); setErrors((e) => ({ ...e, city: undefined })); }}
+            placeholder="e.g. Bangalore" error={errors.city}
+          />
+        </View>
+      </View>
+
+      <View style={styles.twoCol}>
+        <View style={styles.twoColItem}>
+          <SelectField
+            label="State" value={addrState} options={stateOptions} required
+            onChange={(v) => { setAddrState(v); setErrors((e) => ({ ...e, state: undefined })); }}
+            placeholder="Select state" error={errors.state}
+          />
+        </View>
+        <View style={styles.twoColItem}>
+          <FormInput
+            label="Pincode" value={pincode}
+            onChangeText={setPincode} placeholder="e.g. 560034" keyboardType="numeric"
+          />
+        </View>
+      </View>
+
+      <FormInput
+        label="Landmark" value={landmark}
+        onChangeText={setLandmark} placeholder="e.g. Near Metro Station"
+      />
+
+      <View style={styles.fieldWrap}>
+        <FieldLabel label="Address Type" required />
+        <PillSelector
+          options={ADDRESS_TYPES} value={addressType}
+          onChange={(v) => { setAddressType(v); setErrors((e) => ({ ...e, addressType: undefined })); }}
+          error={errors.addressType}
+        />
+      </View>
+    </>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function CreateSubscriptionScreen() {
+  return (
+    <ModuleGuard module="orders">
+      <CreateSubscriptionScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function CreateSubscriptionScreenContent() {
   const isWeb = Platform.OS === 'web';
 
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
@@ -335,6 +461,10 @@ export default function CreateSubscriptionScreen() {
   const [newMobile, setNewMobile] = useState('');
 
   // Address section
+  const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>([]);
+  const [addressesLoading, setAddressesLoading] = useState(false);
+  const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
+  const [addressMode, setAddressMode] = useState<'saved' | 'new'>('saved');
   const [placeCategory, setPlaceCategory] = useState<PlaceCategory | ''>('');
   const [flatPlot, setFlatPlot] = useState('');
   const [apartmentName, setApartmentName] = useState('');
@@ -389,7 +519,9 @@ export default function CreateSubscriptionScreen() {
       const durOpt = DURATION_OPTIONS.find((d) => d.value === duration);
       if (!durOpt) { setEndDate(''); return; }
       let end: Date;
-      if (durOpt.months < 1) {
+      if (durOpt.days !== undefined) {
+        end = addDays(start, durOpt.days);
+      } else if (durOpt.months < 1) {
         end = addWeeks(start, Math.round(durOpt.months * 4));
       } else {
         end = addMonths(start, durOpt.months);
@@ -399,6 +531,34 @@ export default function CreateSubscriptionScreen() {
       setEndDate('');
     }
   }, [startDate, duration]);
+
+  // ── Load addresses when user is selected ──
+  useEffect(() => {
+    if (!selectedUser) {
+      setSavedAddresses([]);
+      setSelectedAddressId(null);
+      setAddressMode('saved');
+      return;
+    }
+    setAddressesLoading(true);
+    supabase
+      .from('addresses')
+      .select('id, label, street, city, state, pincode, landmark, place_category, apartment_name, is_default')
+      .eq('user_id', selectedUser.id)
+      .order('is_default', { ascending: false })
+      .then(({ data }) => {
+        const addrs = (data as SavedAddress[]) ?? [];
+        setSavedAddresses(addrs);
+        if (addrs.length > 0) {
+          const def = addrs.find((a) => a.is_default) ?? addrs[0];
+          setSelectedAddressId(def.id);
+          setAddressMode('saved');
+        } else {
+          setAddressMode('new');
+        }
+        setAddressesLoading(false);
+      });
+  }, [selectedUser]);
 
   // ── Search users ──
   const handleSearch = useCallback(async (q: string) => {
@@ -427,12 +587,17 @@ export default function CreateSubscriptionScreen() {
       else if (!/^\d{10}$/.test(newMobile.trim())) e.newMobile = 'Enter a valid 10-digit mobile number.';
     }
 
-    if (!placeCategory) e.placeCategory = 'Place category is required.';
-    if (!flatPlot.trim()) e.flatPlot = 'Apartment / Flat / Plot is required.';
-    if (!locality.trim()) e.locality = 'Locality is required.';
-    if (!city.trim()) e.city = 'Town / City is required.';
-    if (!addrState) e.state = 'State is required.';
-    if (!addressType) e.addressType = 'Address type is required.';
+    const useNewAddress = userMode === 'new' || addressMode === 'new';
+    if (useNewAddress) {
+      if (!placeCategory) e.placeCategory = 'Place category is required.';
+      if (!flatPlot.trim()) e.flatPlot = 'Apartment / Flat / Plot is required.';
+      if (!locality.trim()) e.locality = 'Locality is required.';
+      if (!city.trim()) e.city = 'Town / City is required.';
+      if (!addrState) e.state = 'State is required.';
+      if (!addressType) e.addressType = 'Address type is required.';
+    } else {
+      if (!selectedAddressId) e.flatPlot = 'Please select an address.';
+    }
 
     if (!planId) e.planId = 'Please select a product / plan.';
     if (!duration) e.duration = 'Subscription duration is required.';
@@ -450,7 +615,10 @@ export default function CreateSubscriptionScreen() {
     const userOk = userMode === 'search'
       ? !!selectedUser
       : (newFullName.trim().length > 0 && /^\d{10}$/.test(newMobile.trim()));
-    const addrOk = !!placeCategory && flatPlot.trim() && locality.trim() && city.trim() && !!addrState && !!addressType;
+    const useNewAddress = userMode === 'new' || addressMode === 'new';
+    const addrOk = useNewAddress
+      ? !!(placeCategory && flatPlot.trim() && locality.trim() && city.trim() && addrState && addressType)
+      : !!selectedAddressId;
     const productOk = !!planId && !!duration && !!startDate;
     const paymentOk = amount.trim() && Number(amount) > 0 && !!paymentMode;
     return !!(userOk && addrOk && productOk && paymentOk);
@@ -464,6 +632,7 @@ export default function CreateSubscriptionScreen() {
     // Snapshot state before any async work to avoid stale closures
     const snap = {
       userMode, selectedUser, newFullName, newMobile,
+      addressMode, selectedAddressId,
       placeCategory, flatPlot, apartmentName, locality,
       city, addrState, pincode, landmark, addressType,
       planId, startDate, endDate, amount, paymentMode,
@@ -475,23 +644,29 @@ export default function CreateSubscriptionScreen() {
     try {
       const { data: { session } } = await supabase.auth.getSession();
 
+      const useNewAddress = snap.userMode === 'new' || snap.addressMode === 'new';
       const streetParts = [snap.flatPlot.trim(), snap.apartmentName.trim()].filter(Boolean).join(', ');
       const streetFull = [streetParts, snap.locality.trim()].filter(Boolean).join(', ');
 
       const body: Record<string, any> = {
         user_mode: snap.userMode,
-        address_label: snap.addressType,
-        address_street: streetFull,
-        address_city: snap.city.trim(),
-        address_state: snap.addrState,
-        address_pincode: snap.pincode.trim(),
-        address_landmark: snap.landmark.trim() || null,
         plan_id: snap.planId,
         start_date: snap.startDate,
         end_date: snap.endDate || null,
         amount_rupees: Number(snap.amount),
         payment_mode: snap.paymentMode,
       };
+
+      if (!useNewAddress && snap.selectedAddressId) {
+        body.address_id = snap.selectedAddressId;
+      } else {
+        body.address_label = snap.addressType;
+        body.address_street = streetFull;
+        body.address_city = snap.city.trim();
+        body.address_state = snap.addrState;
+        body.address_pincode = snap.pincode.trim();
+        body.address_landmark = snap.landmark.trim() || null;
+      }
 
       if (snap.userMode === 'search') {
         body.user_id = snap.selectedUser!.id;
@@ -531,6 +706,7 @@ export default function CreateSubscriptionScreen() {
     setSuccess(false);
     setSelectedUser(null); setSearchQuery(''); setUserMode('search');
     setNewFullName(''); setNewMobile('');
+    setSavedAddresses([]); setSelectedAddressId(null); setAddressMode('saved');
     setPlaceCategory(''); setFlatPlot(''); setApartmentName('');
     setLocality(''); setCity(''); setAddrState(''); setPincode('');
     setLandmark(''); setAddressType('');
@@ -701,77 +877,118 @@ export default function CreateSubscriptionScreen() {
             title="Address Details"
             accent="#1565C0"
           >
-            <View style={styles.fieldWrap}>
-              <FieldLabel label="Place Category" required />
-              <PillSelector
-                options={PLACE_CATEGORIES} value={placeCategory}
-                onChange={(v) => { setPlaceCategory(v); setErrors((e) => ({ ...e, placeCategory: undefined })); }}
-                error={errors.placeCategory}
+            {/* Existing user: show saved addresses picker */}
+            {userMode === 'search' && selectedUser && (
+              <>
+                {addressesLoading ? (
+                  <View style={styles.loadingRow}>
+                    <ActivityIndicator size="small" color={Colors.primary} />
+                    <Text style={styles.loadingText}>Loading addresses…</Text>
+                  </View>
+                ) : (
+                  <>
+                    {savedAddresses.length > 0 && (
+                      <>
+                        <View style={styles.toggleRow}>
+                          <TouchableOpacity
+                            style={[styles.toggleBtn, addressMode === 'saved' && styles.toggleBtnActive]}
+                            onPress={() => setAddressMode('saved')}
+                          >
+                            <MapPin size={14} color={addressMode === 'saved' ? Colors.white : Colors.textSecondary} />
+                            <Text style={[styles.toggleText, addressMode === 'saved' && styles.toggleTextActive]}>Saved Addresses</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.toggleBtn, addressMode === 'new' && styles.toggleBtnActive]}
+                            onPress={() => setAddressMode('new')}
+                          >
+                            <Plus size={14} color={addressMode === 'new' ? Colors.white : Colors.textSecondary} />
+                            <Text style={[styles.toggleText, addressMode === 'new' && styles.toggleTextActive]}>New Address</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        {addressMode === 'saved' && (
+                          <View style={styles.savedAddrList}>
+                            {savedAddresses.map((addr) => (
+                              <TouchableOpacity
+                                key={addr.id}
+                                style={[styles.savedAddrCard, selectedAddressId === addr.id && styles.savedAddrCardActive]}
+                                onPress={() => { setSelectedAddressId(addr.id); setErrors((e) => ({ ...e, flatPlot: undefined })); }}
+                                activeOpacity={0.8}
+                              >
+                                <View style={styles.savedAddrRadio}>
+                                  <View style={[styles.radioOuter, selectedAddressId === addr.id && styles.radioOuterActive]}>
+                                    {selectedAddressId === addr.id && <View style={styles.radioInner} />}
+                                  </View>
+                                </View>
+                                <View style={styles.savedAddrInfo}>
+                                  <View style={styles.savedAddrTopRow}>
+                                    <Text style={[styles.savedAddrLabel, selectedAddressId === addr.id && styles.savedAddrLabelActive]}>
+                                      {addr.label}
+                                    </Text>
+                                    {addr.is_default && (
+                                      <View style={styles.defaultBadgeSmall}>
+                                        <Text style={styles.defaultBadgeSmallText}>Default</Text>
+                                      </View>
+                                    )}
+                                    {addr.place_category && (
+                                      <View style={styles.categoryBadge}>
+                                        <Text style={styles.categoryBadgeText}>{addr.place_category}</Text>
+                                      </View>
+                                    )}
+                                  </View>
+                                  <Text style={styles.savedAddrStreet} numberOfLines={2}>
+                                    {addr.street}{addr.city ? `, ${addr.city}` : ''}{addr.state ? `, ${addr.state}` : ''}
+                                    {addr.pincode ? ` - ${addr.pincode}` : ''}
+                                  </Text>
+                                  {addr.landmark ? (
+                                    <Text style={styles.savedAddrLandmark}>Near: {addr.landmark}</Text>
+                                  ) : null}
+                                </View>
+                              </TouchableOpacity>
+                            ))}
+                            <FieldError error={errors.flatPlot} />
+                          </View>
+                        )}
+                      </>
+                    )}
+
+                    {/* No saved addresses or new address mode */}
+                    {(savedAddresses.length === 0 || addressMode === 'new') && (
+                      <AddressFormFields
+                        placeCategory={placeCategory} setPlaceCategory={setPlaceCategory}
+                        flatPlot={flatPlot} setFlatPlot={setFlatPlot}
+                        apartmentName={apartmentName} setApartmentName={setApartmentName}
+                        locality={locality} setLocality={setLocality}
+                        city={city} setCity={setCity}
+                        addrState={addrState} setAddrState={setAddrState}
+                        pincode={pincode} setPincode={setPincode}
+                        landmark={landmark} setLandmark={setLandmark}
+                        addressType={addressType} setAddressType={setAddressType}
+                        stateOptions={stateOptions}
+                        errors={errors} setErrors={setErrors}
+                      />
+                    )}
+                  </>
+                )}
+              </>
+            )}
+
+            {/* New user: always show address form */}
+            {(userMode === 'new' || !selectedUser) && (
+              <AddressFormFields
+                placeCategory={placeCategory} setPlaceCategory={setPlaceCategory}
+                flatPlot={flatPlot} setFlatPlot={setFlatPlot}
+                apartmentName={apartmentName} setApartmentName={setApartmentName}
+                locality={locality} setLocality={setLocality}
+                city={city} setCity={setCity}
+                addrState={addrState} setAddrState={setAddrState}
+                pincode={pincode} setPincode={setPincode}
+                landmark={landmark} setLandmark={setLandmark}
+                addressType={addressType} setAddressType={setAddressType}
+                stateOptions={stateOptions}
+                errors={errors} setErrors={setErrors}
               />
-            </View>
-
-            <View style={styles.twoCol}>
-              <View style={styles.twoColItem}>
-                <FormInput
-                  label="Apartment / Flat / Plot" value={flatPlot} required
-                  onChangeText={(v) => { setFlatPlot(v); setErrors((e) => ({ ...e, flatPlot: undefined })); }}
-                  placeholder="e.g. Flat 4B" error={errors.flatPlot}
-                />
-              </View>
-              <View style={styles.twoColItem}>
-                <FormInput
-                  label="Apartment Name" value={apartmentName}
-                  onChangeText={setApartmentName} placeholder="e.g. Sunrise Residency"
-                />
-              </View>
-            </View>
-
-            <View style={styles.twoCol}>
-              <View style={styles.twoColItem}>
-                <FormInput
-                  label="Locality" value={locality} required
-                  onChangeText={(v) => { setLocality(v); setErrors((e) => ({ ...e, locality: undefined })); }}
-                  placeholder="e.g. Koramangala" error={errors.locality}
-                />
-              </View>
-              <View style={styles.twoColItem}>
-                <FormInput
-                  label="Town / City" value={city} required
-                  onChangeText={(v) => { setCity(v); setErrors((e) => ({ ...e, city: undefined })); }}
-                  placeholder="e.g. Bangalore" error={errors.city}
-                />
-              </View>
-            </View>
-
-            <View style={styles.twoCol}>
-              <View style={styles.twoColItem}>
-                <SelectField
-                  label="State" value={addrState} options={stateOptions} required
-                  onChange={(v) => { setAddrState(v); setErrors((e) => ({ ...e, state: undefined })); }}
-                  placeholder="Select state" error={errors.state}
-                />
-              </View>
-              <View style={styles.twoColItem}>
-                <FormInput
-                  label="Pincode" value={pincode}
-                  onChangeText={setPincode} placeholder="e.g. 560034" keyboardType="numeric"
-                />
-              </View>
-            </View>
-
-            <FormInput
-              label="Landmark" value={landmark}
-              onChangeText={setLandmark} placeholder="e.g. Near Metro Station"
-            />
-
-            <View style={styles.fieldWrap}>
-              <FieldLabel label="Address Type" required />
-              <PillSelector
-                options={ADDRESS_TYPES} value={addressType}
-                onChange={(v) => { setAddressType(v); setErrors((e) => ({ ...e, addressType: undefined })); }}
-                error={errors.addressType}
-              />
-            </View>
+            )}
           </SectionCard>
 
           {/* ── Section 3: Product Details ── */}
@@ -1137,6 +1354,60 @@ const styles = StyleSheet.create({
     fontSize: Typography.size.sm, color: Colors.textSecondary,
   },
   pillTextActive: { color: Colors.primary },
+
+  // Saved address picker
+  savedAddrList: { gap: Spacing[3] },
+  savedAddrCard: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing[3],
+    padding: Spacing[4],
+    borderWidth: 1.5, borderColor: Colors.border,
+    borderRadius: Radius.md, backgroundColor: Colors.white,
+  },
+  savedAddrCardActive: {
+    borderColor: Colors.primary, backgroundColor: Colors.primarySurface,
+  },
+  savedAddrRadio: { paddingTop: 2 },
+  radioOuter: {
+    width: 18, height: 18, borderRadius: 9,
+    borderWidth: 2, borderColor: Colors.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  radioOuterActive: { borderColor: Colors.primary },
+  radioInner: {
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: Colors.primary,
+  },
+  savedAddrInfo: { flex: 1, gap: Spacing[1] },
+  savedAddrTopRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], flexWrap: 'wrap' },
+  savedAddrLabel: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.sm, color: Colors.textPrimary,
+  },
+  savedAddrLabelActive: { color: Colors.primary },
+  savedAddrStreet: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm, color: Colors.textSecondary, lineHeight: 18,
+  },
+  savedAddrLandmark: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs, color: Colors.textTertiary,
+  },
+  defaultBadgeSmall: {
+    paddingVertical: 2, paddingHorizontal: Spacing[2],
+    backgroundColor: Colors.successSurface, borderRadius: Radius.full,
+  },
+  defaultBadgeSmallText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs, color: Colors.success,
+  },
+  categoryBadge: {
+    paddingVertical: 2, paddingHorizontal: Spacing[2],
+    backgroundColor: '#EFF6FF', borderRadius: Radius.full,
+  },
+  categoryBadgeText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs, color: '#1D4ED8',
+  },
 
   // Two-column layout
   twoCol: { flexDirection: 'row', gap: Spacing[4] },

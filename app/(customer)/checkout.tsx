@@ -34,13 +34,14 @@ export default function CheckoutScreen() {
   const [addresses, setAddresses] = useState<Address[]>([]);
   const [selectedAddress, setSelectedAddress] = useState<string>('');
   const [startDate, setStartDate] = useState(() => getMinSubscriptionStartDate());
+  const [renewalMinDate, setRenewalMinDate] = useState<Date | null>(null);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
   const [error, setError] = useState('');
   const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
 
   const pastCutoff = isPastCutoffIST();
-  const minDate = getMinSubscriptionStartDate();
+  const minDate = renewalMinDate ?? getMinSubscriptionStartDate();
 
   const loadAddresses = useCallback(async () => {
     if (!profile) return;
@@ -58,20 +59,33 @@ export default function CheckoutScreen() {
   useEffect(() => {
     const load = async () => {
       if (!profile) return;
-      const [planRes, addressRes] = await Promise.all([
+      const fetches: Promise<any>[] = [
         supabase.from('subscription_plans').select('*').eq('id', planId).single(),
         supabase.from('addresses').select('*').eq('user_id', profile.id),
-      ]);
+      ];
+      if (renewFromSubscriptionId) {
+        fetches.push(
+          supabase.from('subscriptions').select('end_date').eq('id', renewFromSubscriptionId).maybeSingle()
+        );
+      }
+      const [planRes, addressRes, oldSubRes] = await Promise.all(fetches);
       if (planRes.data) setPlan(planRes.data);
       if (addressRes.data) {
         setAddresses(addressRes.data);
-        const def = addressRes.data.find((a) => a.is_default);
+        const def = addressRes.data.find((a: Address) => a.is_default);
         setSelectedAddress(def?.id || addressRes.data[0]?.id || '');
+      }
+      if (oldSubRes?.data?.end_date) {
+        const oldEnd = new Date(oldSubRes.data.end_date);
+        oldEnd.setHours(0, 0, 0, 0);
+        const minStart = addDays(oldEnd, 1);
+        setRenewalMinDate(minStart);
+        setStartDate(minStart);
       }
       setLoading(false);
     };
     load();
-  }, [profile, planId]);
+  }, [profile, planId, renewFromSubscriptionId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -101,6 +115,7 @@ export default function CheckoutScreen() {
       plan_id: planId,
       address_id: selectedAddress || null,
       renew_from_subscription_id: renewFromSubscriptionId ?? null,
+      start_date: format(startDate, 'yyyy-MM-dd'),
     });
     if (verifyError) {
       setError(verifyData?.error || verifyError.message || 'Payment verification failed');
@@ -119,11 +134,13 @@ export default function CheckoutScreen() {
   };
 
   const getCallbackUrl = () => {
+    const startDateStr = format(startDate, 'yyyy-MM-dd');
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       const base = window.location.origin;
       const params = new URLSearchParams({
         plan_id: planId as string,
         address_id: selectedAddress,
+        start_date: startDateStr,
         ...(renewFromSubscriptionId ? { renew_from_subscription_id: renewFromSubscriptionId } : {}),
       });
       return `${base}/(customer)/payment-callback?${params.toString()}`;
@@ -131,6 +148,7 @@ export default function CheckoutScreen() {
     const params = new URLSearchParams({
       plan_id: planId as string,
       address_id: selectedAddress,
+      start_date: startDateStr,
       ...(renewFromSubscriptionId ? { renew_from_subscription_id: renewFromSubscriptionId } : {}),
     });
     return `https://rzp-callback.33crores.app/payment-callback?${params.toString()}`;
@@ -151,6 +169,7 @@ export default function CheckoutScreen() {
           plan_id: planId,
           address_id: selectedAddress || null,
           renew_from_subscription_id: renewFromSubscriptionId ?? null,
+          start_date: format(startDate, 'yyyy-MM-dd'),
         },
       });
 
@@ -299,6 +318,7 @@ export default function CheckoutScreen() {
       plan_id: planId,
       address_id: selectedAddress || null,
       renew_from_subscription_id: renewFromSubscriptionId ?? null,
+      start_date: format(startDate, 'yyyy-MM-dd'),
     });
     if (verifyError) {
       setError(verifyData?.error || verifyError.message || 'Payment verification failed');
@@ -402,44 +422,51 @@ export default function CheckoutScreen() {
           )}
         </View>
 
-        {/* First Delivery Date Picker — hidden for renewals */}
-        {!renewFromSubscriptionId && (
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Calendar size={16} color={Colors.primary} />
-              <Text style={styles.cardLabel}>First Delivery Date</Text>
-            </View>
-
-            {pastCutoff && (
-              <View style={styles.cutoffBanner}>
-                <Clock size={14} color={Colors.warning} />
-                <Text style={styles.cutoffText}>
-                  Subscriptions placed after 5 PM start from the day after tomorrow. Earliest start: {format(minDate, 'dd MMM yyyy')}.
-                </Text>
-              </View>
-            )}
-
-            <View style={styles.datePicker}>
-              <TouchableOpacity
-                style={[styles.dateArrow, isPrevDisabled && styles.dateArrowDisabled]}
-                onPress={() => shiftDate(-1)}
-                disabled={isPrevDisabled}
-              >
-                <ChevronLeft size={20} color={isPrevDisabled ? Colors.textTertiary : Colors.primary} />
-              </TouchableOpacity>
-              <View style={styles.dateDisplay}>
-                <Text style={styles.dateDay}>{format(startDate, 'EEEE')}</Text>
-                <Text style={styles.dateValue}>{format(startDate, 'dd MMMM yyyy')}</Text>
-                {format(startDate, 'yyyy-MM-dd') === format(minDate, 'yyyy-MM-dd') && (
-                  <Text style={styles.earliestLabel}>earliest</Text>
-                )}
-              </View>
-              <TouchableOpacity style={styles.dateArrow} onPress={() => shiftDate(1)}>
-                <ChevronRight size={20} color={Colors.primary} />
-              </TouchableOpacity>
-            </View>
+        {/* Start Date Picker */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Calendar size={16} color={Colors.primary} />
+            <Text style={styles.cardLabel}>
+              {renewFromSubscriptionId ? 'New Subscription Start Date' : 'First Delivery Date'}
+            </Text>
           </View>
-        )}
+
+          {renewFromSubscriptionId && renewalMinDate ? (
+            <View style={styles.cutoffBanner}>
+              <Clock size={14} color={Colors.primary} />
+              <Text style={[styles.cutoffText, { color: Colors.primaryDark }]}>
+                Renewal starts after your current subscription ends. Earliest start: {format(minDate, 'dd MMM yyyy')}.
+              </Text>
+            </View>
+          ) : pastCutoff ? (
+            <View style={styles.cutoffBanner}>
+              <Clock size={14} color={Colors.warning} />
+              <Text style={styles.cutoffText}>
+                Subscriptions placed after 5 PM start from the day after tomorrow. Earliest start: {format(minDate, 'dd MMM yyyy')}.
+              </Text>
+            </View>
+          ) : null}
+
+          <View style={styles.datePicker}>
+            <TouchableOpacity
+              style={[styles.dateArrow, isPrevDisabled && styles.dateArrowDisabled]}
+              onPress={() => shiftDate(-1)}
+              disabled={isPrevDisabled}
+            >
+              <ChevronLeft size={20} color={isPrevDisabled ? Colors.textTertiary : Colors.primary} />
+            </TouchableOpacity>
+            <View style={styles.dateDisplay}>
+              <Text style={styles.dateDay}>{format(startDate, 'EEEE')}</Text>
+              <Text style={styles.dateValue}>{format(startDate, 'dd MMMM yyyy')}</Text>
+              {format(startDate, 'yyyy-MM-dd') === format(minDate, 'yyyy-MM-dd') && (
+                <Text style={styles.earliestLabel}>earliest</Text>
+              )}
+            </View>
+            <TouchableOpacity style={styles.dateArrow} onPress={() => shiftDate(1)}>
+              <ChevronRight size={20} color={Colors.primary} />
+            </TouchableOpacity>
+          </View>
+        </View>
 
         {/* Order Summary */}
         <View style={styles.summaryCard}>

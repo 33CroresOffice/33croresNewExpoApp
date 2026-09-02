@@ -109,7 +109,7 @@ export default function OrdersScreen() {
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + Spacing[8] }]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

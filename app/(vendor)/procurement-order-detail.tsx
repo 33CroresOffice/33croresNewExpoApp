@@ -29,7 +29,7 @@ export default function VendorProcurementOrderDetail() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
-  const [prices, setPrices] = useState<Record<string, string>>({});
+  const [totals, setTotals] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -44,11 +44,11 @@ export default function VendorProcurementOrderDetail() {
     if (orderRes.data) setOrder(orderRes.data);
     if (itemsRes.data) {
       setItems(itemsRes.data);
-      const initialPrices: Record<string, string> = {};
+      const initialTotals: Record<string, string> = {};
       itemsRes.data.forEach((item: any) => {
-        initialPrices[item.id] = item.price_per_unit != null ? String(item.price_per_unit) : '';
+        initialTotals[item.id] = item.total_price != null ? String(item.total_price) : '';
       });
-      setPrices(initialPrices);
+      setTotals(initialTotals);
     }
     setLoading(false);
   }, [id]);
@@ -61,20 +61,25 @@ export default function VendorProcurementOrderDetail() {
     setSaveSuccess(false);
 
     const updates = items
-      .map(item => ({ item, price: parseFloat(prices[item.id] ?? '') }))
-      .filter(({ price }) => !isNaN(price) && price >= 0);
+      .map(item => {
+        const totalPrice = parseFloat(totals[item.id] ?? '');
+        const unitPrice = !isNaN(totalPrice) && item.quantity > 0 ? totalPrice / item.quantity : NaN;
+        return { item, totalPrice, unitPrice };
+      })
+      .filter(({ totalPrice }) => !isNaN(totalPrice) && totalPrice >= 0);
 
     if (updates.length === 0) {
-      setSaveError('Please enter at least one valid price.');
+      setSaveError('Please enter at least one valid total price.');
       setSaving(false);
       return;
     }
 
-    for (const { item, price } of updates) {
+    for (const { item, totalPrice, unitPrice } of updates) {
       const { error } = await supabase
-        .from('procurement_order_items')
-        .update({ price_per_unit: price })
-        .eq('id', item.id);
+        .rpc('update_vendor_item_price', {
+          p_item_id: item.id,
+          p_price_per_unit: unitPrice,
+        });
       if (error) {
         setSaveError(error.message);
         setSaving(false);
@@ -122,8 +127,8 @@ export default function VendorProcurementOrderDetail() {
   const allPriced = totalPriced === items.length && items.length > 0;
 
   const hasChanges = items.some(item => {
-    const current = prices[item.id] ?? '';
-    const saved = item.price_per_unit != null ? String(item.price_per_unit) : '';
+    const current = totals[item.id] ?? '';
+    const saved = item.total_price != null ? String(item.total_price) : '';
     return current !== saved && current !== '';
   });
 
@@ -267,21 +272,31 @@ export default function VendorProcurementOrderDetail() {
                     </Text>
                     {item.price_per_unit != null && (
                       <Text style={s.savedTotal}>
-                        Saved: ₹{Number(item.total_price ?? 0).toLocaleString('en-IN')}
+                        Unit: ₹{Number(item.price_per_unit).toFixed(2)} / {item.unit_type ?? item.flower_type?.unit_type ?? 'unit'}
                       </Text>
                     )}
                   </View>
 
-                  <View style={s.priceInputWrap}>
-                    <Text style={s.rupeeSymbol}>₹</Text>
-                    <TextInput
-                      style={s.priceInput}
-                      value={prices[item.id] ?? ''}
-                      onChangeText={val => setPrices(prev => ({ ...prev, [item.id]: val }))}
-                      keyboardType="decimal-pad"
-                      placeholder="0.00"
-                      placeholderTextColor={Colors.textDisabled}
-                    />
+                  <View style={s.priceCol}>
+                    <View style={s.priceInputWrap}>
+                      <Text style={s.rupeeSymbol}>₹</Text>
+                      <TextInput
+                        style={s.priceInput}
+                        value={totals[item.id] ?? ''}
+                        onChangeText={val => setTotals(prev => ({ ...prev, [item.id]: val }))}
+                        keyboardType="decimal-pad"
+                        placeholder="Total price"
+                        placeholderTextColor={Colors.textDisabled}
+                      />
+                    </View>
+                    {(() => {
+                      const t = parseFloat(totals[item.id] ?? '');
+                      if (!isNaN(t) && item.quantity > 0) {
+                        const u = (t / item.quantity).toFixed(2);
+                        return <Text style={s.unitHint}>₹{u} / {item.unit_type ?? item.flower_type?.unit_type ?? 'unit'}</Text>;
+                      }
+                      return null;
+                    })()}
                   </View>
                 </View>
               );
@@ -406,10 +421,12 @@ const s = StyleSheet.create({
     backgroundColor: Colors.primarySurface, minWidth: 100,
   },
   rupeeSymbol: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.primary },
+  priceCol: { alignItems: 'flex-end', gap: 4 },
   priceInput: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm,
-    color: Colors.textPrimary, minWidth: 70, padding: 0,
+    color: Colors.textPrimary, minWidth: 90, padding: 0,
   },
+  unitHint: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.primary },
 
   saveBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing[2],

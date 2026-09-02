@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Modal, TextInput, Platform, ActivityIndicator, RefreshControl,
@@ -69,6 +71,14 @@ const EMPTY_FORM = {
 };
 
 export default function ExpensesScreen() {
+  return (
+    <ModuleGuard module="finance">
+      <ExpensesScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function ExpensesScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const { profile } = useAuthStore();
@@ -95,7 +105,7 @@ export default function ExpensesScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  usePageVisibility(load);
 
   const openCreate = () => {
     setEditing(null);

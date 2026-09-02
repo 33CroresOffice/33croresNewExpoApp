@@ -40,7 +40,7 @@ Deno.serve(async (req: Request) => {
         id: userId,
         mobile: "2222222222",
         full_name: "Rider",
-        role: "rider",
+        role: "customer",
         is_verified: true,
         notification_sms: false,
         notification_whatsapp: false,

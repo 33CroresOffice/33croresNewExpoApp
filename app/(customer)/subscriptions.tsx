@@ -11,7 +11,7 @@ import {
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Plus, Package, ChevronRight, TriangleAlert as AlertTriangle, RotateCcw, History } from 'lucide-react-native';
+import { Plus, Package, ChevronRight, TriangleAlert as AlertTriangle, RotateCcw, History, Flower2 } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -24,10 +24,11 @@ import { getEffectiveStatus } from '@/utils/subscriptionStatus';
 
 function getRenewalState(sub: Subscription): 'expired' | 'grace' | 'warning' | null {
   if (sub.status === 'renewed' || sub.status === 'cancelled') return null;
-  if (!sub.end_date) return null;
+  const effectiveEndDate = sub.new_end_date ?? sub.end_date;
+  if (!effectiveEndDate) return null;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const end = parseISO(sub.end_date);
+  const end = parseISO(effectiveEndDate);
   const daysLeft = differenceInDays(end, today);
 
   if (sub.status === 'expired') return 'expired';
@@ -44,17 +45,29 @@ export default function SubscriptionsScreen() {
   const insets = useSafeAreaInsets();
   const { profile } = useAuthStore();
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const [customOrders, setCustomOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [topTab, setTopTab] = useState<'subscription' | 'customize'>('subscription');
 
   const load = async () => {
     if (!profile) return;
-    const { data } = await supabase
-      .from('subscriptions')
-      .select('*, plan:subscription_plans(*), delivery_address:addresses(*)')
-      .eq('user_id', profile.id)
-      .order('created_at', { ascending: false });
-    if (data) setSubscriptions(data as Subscription[]);
+    const { data: { user } } = await supabase.auth.getUser();
+    const uid = user?.id ?? profile.id;
+    const [subsRes, customRes] = await Promise.all([
+      supabase
+        .from('subscriptions')
+        .select('*, plan:subscription_plans(*), delivery_address:addresses(*)')
+        .eq('user_id', profile.id)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('custom_orders')
+        .select('*')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false }),
+    ]);
+    if (subsRes.data) setSubscriptions(subsRes.data as Subscription[]);
+    if (customRes.data) setCustomOrders(customRes.data);
     setLoading(false);
     setRefreshing(false);
   };
@@ -112,14 +125,14 @@ export default function SubscriptionsScreen() {
           <View style={styles.cardTop}>
             <View style={styles.cardTitleRow}>
               <Text style={[styles.cardTitle, dimmed && styles.cardTitlePast]}>{sub.plan?.name}</Text>
-              <StatusChip status={effectiveStatus} />
+              {!isExpiredState && <StatusChip status={effectiveStatus} />}
             </View>
             <Text style={styles.cardFreq}>
               {frequencyLabel[sub.plan?.frequency ?? 'monthly']} • {formatPrice(sub.plan?.price ?? 0)}/mo
             </Text>
           </View>
 
-          {needsRenewal && sub.end_date && (
+          {needsRenewal && (sub.new_end_date ?? sub.end_date) && (
             <View style={[
               styles.renewalBanner,
               isExpiredState ? styles.renewalBannerExpired : styles.renewalBannerWarn,
@@ -132,7 +145,7 @@ export default function SubscriptionsScreen() {
                 styles.renewalBannerText,
                 { color: isExpiredState ? Colors.error : Colors.warning },
               ]}>
-                {isExpiredState ? 'Subscription expired' : getDaysLeftLabel(sub.end_date)}
+                {isExpiredState ? 'Subscription expired' : getDaysLeftLabel(sub.new_end_date ?? sub.end_date!)}
               </Text>
               <TouchableOpacity
                 style={[styles.renewBtn, isExpiredState ? styles.renewBtnError : styles.renewBtnWarn]}
@@ -158,14 +171,14 @@ export default function SubscriptionsScreen() {
                 </Text>
               </View>
             )}
-            {sub.end_date && (
+            {(sub.new_end_date ?? sub.end_date) && (
               <View style={styles.metaItem}>
-                <Text style={styles.metaLabel}>{dimmed ? 'Ended' : 'End Date'}</Text>
+                <Text style={styles.metaLabel}>{dimmed ? 'Ended' : 'New End Date'}</Text>
                 <Text style={[
                   styles.metaValue,
                   needsRenewal && { color: isExpiredState ? Colors.error : Colors.warning },
                 ]}>
-                  {format(parseISO(sub.end_date), 'dd MMM yyyy')}
+                  {format(parseISO(sub.new_end_date ?? sub.end_date!), 'dd MMM yyyy')}
                 </Text>
               </View>
             )}
@@ -179,59 +192,137 @@ export default function SubscriptionsScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Text style={styles.title}>My Subscriptions</Text>
+        <Text style={styles.title}>My Orders</Text>
         <TouchableOpacity
           style={styles.addBtn}
-          onPress={() => router.push('/(customer)/plans')}
+          onPress={() => topTab === 'subscription' ? router.push('/(customer)/plans') : router.push('/(customer)/custom-order')}
         >
           <Plus size={18} color={Colors.white} />
         </TouchableOpacity>
       </View>
 
+      <View style={styles.topTabs}>
+        <TouchableOpacity
+          style={[styles.topTab, topTab === 'subscription' && styles.topTabActive]}
+          onPress={() => setTopTab('subscription')}
+        >
+          <Text style={[styles.topTabText, topTab === 'subscription' && styles.topTabTextActive]}>Subscription</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.topTab, topTab === 'customize' && styles.topTabActive]}
+          onPress={() => setTopTab('customize')}
+        >
+          <Text style={[styles.topTabText, topTab === 'customize' && styles.topTabTextActive]}>Customize</Text>
+        </TouchableOpacity>
+      </View>
+
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + Spacing[5] }]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
       >
-        {loading ? (
+        {topTab === 'subscription' ? (
+          loading ? (
+            <View style={styles.skeletonList}>
+              {[1, 2].map((k) => (
+                <View key={k} style={styles.skeletonCard}>
+                  <Skeleton height={120} borderRadius={12} />
+                  <View style={{ padding: Spacing[4], gap: 8 }}>
+                    <Skeleton height={18} width="55%" />
+                    <Skeleton height={13} width="75%" />
+                    <Skeleton height={13} width="45%" />
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : subscriptions.length === 0 ? (
+            <EmptyState
+              icon={<Package size={52} color={Colors.neutral[400]} />}
+              title="No subscriptions yet"
+              description="Choose a plan and start receiving beautiful fresh flowers at your door"
+              actionLabel="Browse Plans"
+              onAction={() => router.push('/(customer)/plans')}
+            />
+          ) : (
+            <View style={styles.list}>
+              {activeSubscriptions.map((sub) => renderCard(sub, false))}
+
+              <TouchableOpacity style={styles.newSubBtn} onPress={() => router.push('/(customer)/plans')}>
+                <Plus size={18} color={Colors.primary} />
+                <Text style={styles.newSubBtnText}>Add another subscription</Text>
+              </TouchableOpacity>
+
+              {pastSubscriptions.length > 0 && (
+                <View style={styles.pastSection}>
+                  <View style={styles.pastSectionHeader}>
+                    <History size={15} color={Colors.textTertiary} />
+                    <Text style={styles.pastSectionTitle}>Past Subscriptions</Text>
+                  </View>
+                  {pastSubscriptions.map((sub) => renderCard(sub, true))}
+                </View>
+              )}
+            </View>
+          )
+        ) : loading ? (
           <View style={styles.skeletonList}>
             {[1, 2].map((k) => (
-              <View key={k} style={styles.skeletonCard}>
-                <Skeleton height={120} borderRadius={12} />
-                <View style={{ padding: Spacing[4], gap: 8 }}>
-                  <Skeleton height={18} width="55%" />
-                  <Skeleton height={13} width="75%" />
-                  <Skeleton height={13} width="45%" />
-                </View>
-              </View>
+              <Skeleton key={k} height={80} borderRadius={12} />
             ))}
           </View>
-        ) : subscriptions.length === 0 ? (
+        ) : customOrders.length === 0 ? (
           <EmptyState
-            icon={<Package size={52} color={Colors.neutral[400]} />}
-            title="No subscriptions yet"
-            description="Choose a plan and start receiving beautiful fresh flowers at your door"
-            actionLabel="Browse Plans"
-            onAction={() => router.push('/(customer)/plans')}
+            icon={<Flower2 size={52} color={Colors.neutral[400]} />}
+            title="No custom orders yet"
+            description="Place a custom flower or garland order for any occasion"
+            actionLabel="Create Custom Order"
+            onAction={() => router.push('/(customer)/custom-order')}
           />
         ) : (
           <View style={styles.list}>
-            {activeSubscriptions.map((sub) => renderCard(sub, false))}
-
-            <TouchableOpacity style={styles.newSubBtn} onPress={() => router.push('/(customer)/plans')}>
-              <Plus size={18} color={Colors.primary} />
-              <Text style={styles.newSubBtnText}>Add another subscription</Text>
-            </TouchableOpacity>
-
-            {pastSubscriptions.length > 0 && (
-              <View style={styles.pastSection}>
-                <View style={styles.pastSectionHeader}>
-                  <History size={15} color={Colors.textTertiary} />
-                  <Text style={styles.pastSectionTitle}>Past Subscriptions</Text>
+            {customOrders.map((order) => (
+              <TouchableOpacity
+                key={order.id}
+                style={styles.customCard}
+                onPress={() => router.push({ pathname: '/(customer)/custom-order-detail', params: { id: order.id } })}
+                activeOpacity={0.85}
+              >
+                <View style={styles.customCardTop}>
+                  <View style={styles.customIconWrap}>
+                    <Flower2 size={18} color={Colors.primary} />
+                  </View>
+                  <View style={styles.customCardInfo}>
+                    <Text style={styles.customCardTitle}>
+                      {order.order_type === 'garland' ? 'Garland Order' : 'Flower Order'}
+                    </Text>
+                    <Text style={styles.customCardDate}>
+                      Delivery: {format(new Date(order.delivery_date), 'dd MMM yyyy')} · {order.delivery_time}
+                    </Text>
+                  </View>
+                  <StatusChip status={order.status} />
                 </View>
-                {pastSubscriptions.map((sub) => renderCard(sub, true))}
-              </View>
-            )}
+                <View style={styles.customItemsList}>
+                  {(order.items as any[]).map((item: any, i: number) => (
+                    <View key={i} style={styles.customItem}>
+                      <View style={styles.customItemDot} />
+                      <Text style={styles.customItemText}>
+                        {item.flower_name} — {item.quantity} {item.unit}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+                {order.special_instructions ? (
+                  <Text style={styles.customNote} numberOfLines={2}>
+                    Note: {order.special_instructions}
+                  </Text>
+                ) : null}
+                <View style={styles.customFooter}>
+                  <Text style={styles.customCreated}>
+                    Placed {format(new Date(order.created_at), 'dd MMM yyyy')}
+                  </Text>
+                  <ChevronRight size={14} color={Colors.textTertiary} />
+                </View>
+              </TouchableOpacity>
+            ))}
           </View>
         )}
       </ScrollView>
@@ -266,6 +357,102 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   content: { padding: Spacing[5], gap: Spacing[4] },
+  topTabs: {
+    flexDirection: 'row',
+    backgroundColor: Colors.white,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  topTab: {
+    flex: 1,
+    paddingVertical: Spacing[3],
+    alignItems: 'center',
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  topTabActive: { borderBottomColor: Colors.primary },
+  topTabText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.textTertiary,
+  },
+  topTabTextActive: {
+    color: Colors.primary,
+    fontFamily: Typography.fontFamily.sansSemiBold,
+  },
+  customCard: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius.lg,
+    padding: Spacing[4],
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Spacing[3],
+    ...Shadow.sm,
+  },
+  customCardTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing[3],
+  },
+  customIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  customCardInfo: { flex: 1, gap: 3 },
+  customCardTitle: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.base,
+    color: Colors.textPrimary,
+  },
+  customCardDate: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+    lineHeight: 16,
+  },
+  customItemsList: {
+    gap: Spacing[1],
+    paddingLeft: Spacing[2],
+    borderLeftWidth: 2,
+    borderLeftColor: Colors.primaryLight,
+  },
+  customItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+  },
+  customItemDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: Colors.primary,
+  },
+  customItemText: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textSecondary,
+  },
+  customNote: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+    fontStyle: 'italic',
+    lineHeight: 18,
+  },
+  customFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  customCreated: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: 11,
+    color: Colors.textDisabled,
+  },
   skeletonList: { gap: Spacing[4] },
   skeletonCard: {
     backgroundColor: Colors.white,

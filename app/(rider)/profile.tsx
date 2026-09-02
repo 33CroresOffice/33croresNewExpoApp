@@ -33,6 +33,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { format } from 'date-fns';
 import StatusChip from '@/components/ui/StatusChip';
+import { resolveRider } from '@/utils/riderLookup';
 
 interface RiderProfile {
   id: string;
@@ -77,17 +78,11 @@ export default function RiderProfile() {
   const load = useCallback(async () => {
     if (!profile?.id) return;
 
-    const { data: riderData } = await supabase
-      .from('riders')
-      .select(`
-        id, full_name, mobile, alternate_mobile, email,
-        vehicle_type, vehicle_number, license_number,
-        zone, is_active, joining_date, address,
-        emergency_contact_name, emergency_contact_mobile,
-        monthly_salary, per_delivery_rate
-      `)
-      .eq('profile_id', profile.id)
-      .maybeSingle();
+    const riderData = await resolveRider(
+      profile.id,
+      profile.mobile,
+      'id, full_name, mobile, alternate_mobile, email, vehicle_type, vehicle_number, license_number, zone, is_active, joining_date, address, emergency_contact_name, emergency_contact_mobile, monthly_salary, per_delivery_rate'
+    );
 
     if (riderData) {
       setRider(riderData as RiderProfile);

@@ -1,6 +1,18 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+async function getSecret(supabaseClient: ReturnType<typeof createClient>, key: string): Promise<string | undefined> {
+  try {
+    const { data } = await supabaseClient
+      .from('secret_keys')
+      .select('value')
+      .eq('key', key)
+      .maybeSingle();
+    if (data?.value) return data.value;
+  } catch { /* table not available */ }
+  return Deno.env.get(key);
+}
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
@@ -70,6 +82,7 @@ Deno.serve(async (req: Request) => {
       plan_id,
       address_id,
       renew_from_subscription_id,
+      start_date: clientStartDate,
     } = await req.json();
 
     const orderId = razorpay_order_id ?? razorpay_payment_link_id;
@@ -86,7 +99,7 @@ Deno.serve(async (req: Request) => {
       return respond({ success: false, error: "A delivery address is required" });
     }
 
-    const razorpayKeySecret = Deno.env.get("RAZORPAY_KEY_SECRET");
+    const razorpayKeySecret = await getSecret(serviceSupabase, "RAZORPAY_KEY_SECRET");
     const isTestMode = !razorpayKeySecret || orderId.startsWith("order_test_");
 
     if (!isTestMode) {
@@ -121,7 +134,23 @@ Deno.serve(async (req: Request) => {
 
       const oldEndDate = new Date(oldSub.end_date);
       oldEndDate.setUTCHours(0, 0, 0, 0);
-      startDateObj = addDays(oldEndDate, 1);
+      const minStartDate = addDays(oldEndDate, 1);
+
+      // Use client-chosen start date if it's on or after the minimum (oldEndDate + 1)
+      if (clientStartDate) {
+        const clientDate = new Date(clientStartDate);
+        clientDate.setUTCHours(0, 0, 0, 0);
+        startDateObj = clientDate >= minStartDate ? clientDate : minStartDate;
+      } else {
+        startDateObj = minStartDate;
+      }
+
+      endDateObj = addOneMonth(startDateObj);
+      nextDeliveryDate = new Date(startDateObj);
+    } else if (clientStartDate) {
+      // Use the start date chosen by the customer in checkout
+      startDateObj = new Date(clientStartDate);
+      startDateObj.setUTCHours(0, 0, 0, 0);
       endDateObj = addOneMonth(startDateObj);
       nextDeliveryDate = new Date(startDateObj);
     } else {
@@ -139,14 +168,20 @@ Deno.serve(async (req: Request) => {
       nextDeliveryDate = new Date(startDateObj);
     }
 
+    // Determine status: pending if start_date is in the future (IST)
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const todayIST = new Date(Date.now() + IST_OFFSET_MS).toISOString().split("T")[0];
+    const subscriptionStatus = toDateStr(startDateObj) > todayIST ? "pending" : "active";
+
     const { data: subscription, error: subError } = await serviceSupabase
       .from("subscriptions")
       .insert({
         user_id: user.id,
         plan_id,
-        status: "active",
+        status: subscriptionStatus,
         start_date: toDateStr(startDateObj),
         end_date: toDateStr(endDateObj),
+        new_end_date: toDateStr(endDateObj),
         next_delivery_date: toDateStr(nextDeliveryDate),
         delivery_address_id: address_id,
         ...(renew_from_subscription_id ? { renewed_from_subscription_id: renew_from_subscription_id } : {}),
@@ -186,7 +221,7 @@ Deno.serve(async (req: Request) => {
     if (renew_from_subscription_id) {
       const { error: renewalUpdateError } = await serviceSupabase
         .from("subscriptions")
-        .update({ renewal_status: "renewed", status: "renewed" })
+        .update({ renewal_status: "renewed" })
         .eq("id", renew_from_subscription_id);
 
       if (renewalUpdateError) {
@@ -217,6 +252,48 @@ Deno.serve(async (req: Request) => {
       if (historyError) {
         console.error("Renewal history insert error:", JSON.stringify(historyError));
       }
+    }
+
+    // Fire payment_received notifications
+    try {
+      const { data: plan } = await serviceSupabase
+        .from("subscription_plans")
+        .select("name, price")
+        .eq("id", plan_id)
+        .maybeSingle();
+
+      const { data: templates } = await serviceSupabase
+        .from("notification_templates")
+        .select("id, channel")
+        .eq("event_type", "payment_received")
+        .eq("is_active", true);
+
+      if (templates && templates.length > 0) {
+        const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+        const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+        await Promise.allSettled(
+          templates.map((t) =>
+            fetch(`${supabaseUrl}/functions/v1/send-notification`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                user_id: user.id,
+                event_type: "payment_received",
+                channel: t.channel,
+                template_id: t.id,
+                variables: {
+                  plan_name: plan?.name ?? "",
+                  amount: plan?.price ? String(plan.price / 100) : "",
+                  payment_id: razorpay_payment_id,
+                },
+                subscription_id: subscription.id,
+              }),
+            })
+          ),
+        );
+      }
+    } catch (notifErr) {
+      console.error("Notification error (non-fatal):", notifErr);
     }
 
     return respond({ success: true, subscription_id: subscription.id });

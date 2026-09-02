@@ -3,10 +3,13 @@ import { View, Text, StyleSheet, TouchableOpacity, Platform, Animated } from 're
 import { Tabs, router, usePathname } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Hop as Home, Package, ClipboardList, User, Layers, IndianRupee, X, Sparkles } from 'lucide-react-native';
+import { Hop as Home, Package, ClipboardList, User, Layers, IndianRupee, X, Sparkles, Sun } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
+import * as Application from 'expo-application';
+import Constants from 'expo-constants';
 
 const TAB_BAR_HEIGHT = Platform.OS === 'ios' ? 88 : Platform.OS === 'web' ? 60 : 64;
 const TAB_BAR_PADDING_BOTTOM = Platform.OS === 'ios' ? 28 : Platform.OS === 'web' ? 8 : 10;
@@ -85,7 +88,6 @@ function PendingPaymentBanner() {
         end={{ x: 1, y: 1 }}
         style={styles.bannerGradient}
       >
-        {/* Decorative accent strip */}
         <LinearGradient
           colors={['#D4A853', '#F0C060', '#D4A853']}
           start={{ x: 0, y: 0 }}
@@ -94,7 +96,6 @@ function PendingPaymentBanner() {
         />
 
         <View style={styles.bannerInner}>
-          {/* Left: icon + text */}
           <View style={styles.bannerLeft}>
             <View style={styles.bannerIconWrap}>
               <LinearGradient
@@ -120,7 +121,6 @@ function PendingPaymentBanner() {
             </View>
           </View>
 
-          {/* Right: dismiss + pay */}
           <View style={styles.bannerActions}>
             <TouchableOpacity
               style={styles.dismissBtn}
@@ -153,7 +153,65 @@ function PendingPaymentBanner() {
   );
 }
 
+function useLoginLogger() {
+  const { session } = useAuthStore();
+
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    const userId = session.user.id;
+
+    (async () => {
+      try {
+        const platform = Platform.OS;
+        const deviceModel =
+          Platform.OS === 'android'
+            ? (Application.modelName ?? 'Unknown')
+            : Platform.OS === 'ios'
+            ? (Application.modelName ?? 'Unknown')
+            : 'Web';
+        const appVersion =
+          Application.nativeApplicationVersion ??
+          Constants.expoConfig?.version ??
+          'Unknown';
+        const osVersion = String(Platform.Version ?? 'Unknown');
+
+        await supabase.from('customer_login_logs').insert({
+          user_id: userId,
+          platform,
+          device_model: deviceModel,
+          app_version: appVersion,
+          os_version: osVersion,
+        });
+      } catch {}
+    })();
+  }, [session?.user?.id]);
+}
+
+function usePushTokenRegistration() {
+  const { session } = useAuthStore();
+  const userId = session?.user?.id;
+  const [pushEnabled, setPushEnabled] = useState(true);
+
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('notification_preferences')
+        .select('push_enabled')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (!cancelled) setPushEnabled(data?.push_enabled ?? true);
+    })();
+    return () => { cancelled = true; };
+  }, [userId]);
+
+  usePushNotifications(userId, pushEnabled);
+}
+
 export default function CustomerLayout() {
+  useLoginLogger();
+  usePushTokenRegistration();
   return (
     <View style={{ flex: 1 }}>
       <Tabs
@@ -192,15 +250,16 @@ export default function CustomerLayout() {
         <Tabs.Screen
           name="subscriptions"
           options={{
-            title: 'Subscriptions',
+            title: 'Orders',
             tabBarIcon: ({ color, size }) => <Package size={size} color={color} strokeWidth={1.8} />,
           }}
         />
+        <Tabs.Screen name="orders" options={{ href: null }} />
         <Tabs.Screen
-          name="orders"
+          name="panji"
           options={{
-            title: 'Orders',
-            tabBarIcon: ({ color, size }) => <ClipboardList size={size} color={color} strokeWidth={1.8} />,
+            title: 'Panji',
+            tabBarIcon: ({ color, size }) => <Sun size={size} color={color} strokeWidth={1.8} />,
           }}
         />
         <Tabs.Screen
@@ -227,6 +286,8 @@ export default function CustomerLayout() {
         <Tabs.Screen name="receipt" options={{ href: null }} />
         <Tabs.Screen name="payment-callback" options={{ href: null }} />
         <Tabs.Screen name="custom-order-detail" options={{ href: null }} />
+        <Tabs.Screen name="delivery-history" options={{ href: null }} />
+        <Tabs.Screen name="notification-feed" options={{ href: null }} />
       </Tabs>
       <PendingPaymentBanner />
     </View>

@@ -4,8 +4,20 @@ import { Colors, Typography } from '@/constants/theme';
 import { Platform, View, StyleSheet } from 'react-native';
 import AdminSidebar from '@/components/admin/AdminSidebar';
 import { Slot } from 'expo-router';
+import { useEffect } from 'react';
+import { notifyAdminRefresh } from '@/hooks/useAdminRefresh';
 
 function WebLayout() {
+  useEffect(() => {
+    const handler = () => {
+      if (document.visibilityState === 'visible') {
+        notifyAdminRefresh();
+      }
+    };
+    document.addEventListener('visibilitychange', handler);
+    return () => document.removeEventListener('visibilitychange', handler);
+  }, []);
+
   return (
     <View style={styles.webRoot}>
       <AdminSidebar />
@@ -73,23 +85,39 @@ export default function AdminLayout() {
       <Tabs.Screen name="customer-detail"     options={{ href: null }} />
       <Tabs.Screen name="flower-types"        options={{ href: null }} />
       <Tabs.Screen name="vendors"             options={{ href: null }} />
+      <Tabs.Screen name="vendor-detail"       options={{ href: null }} />
+      <Tabs.Screen name="vendor-add-flowers"   options={{ href: null }} />
       <Tabs.Screen name="daily-requirements"  options={{ href: null }} />
       <Tabs.Screen name="procurement-orders"  options={{ href: null }} />
       <Tabs.Screen name="warehouse-receipts"  options={{ href: null }} />
       <Tabs.Screen name="procurement-order-detail" options={{ href: null }} />
 <Tabs.Screen name="finance"             options={{ href: null }} />
       <Tabs.Screen name="finance-payments"    options={{ href: null }} />
+      <Tabs.Screen name="payment-history"       options={{ href: null }} />
       <Tabs.Screen name="expenses"            options={{ href: null }} />
       <Tabs.Screen name="ledger"              options={{ href: null }} />
       <Tabs.Screen name="crm"                 options={{ href: null }} />
       <Tabs.Screen name="crm-segments"        options={{ href: null }} />
       <Tabs.Screen name="crm-tasks"           options={{ href: null }} />
+      <Tabs.Screen name="customer-logins"     options={{ href: null }} />
       <Tabs.Screen name="riders"              options={{ href: null }} />
       <Tabs.Screen name="rider-detail"        options={{ href: null }} />
-      <Tabs.Screen name="rider-assignments"   options={{ href: null }} />
-      <Tabs.Screen name="admin-users"         options={{ href: null }} />
-      <Tabs.Screen name="logs"                  options={{ href: null }} />
-      <Tabs.Screen name="create-subscription"   options={{ href: null }} />
+      <Tabs.Screen name="add-rider"            options={{ href: null }} />
+      <Tabs.Screen name="rider-assignments"       options={{ href: null }} />
+      <Tabs.Screen name="assigned-riders"          options={{ href: null }} />
+      <Tabs.Screen name="attendance-locations"    options={{ href: null }} />
+      <Tabs.Screen name="admin-users"              options={{ href: null }} />
+      <Tabs.Screen name="admin-login-logs"          options={{ href: null }} />
+      <Tabs.Screen name="logs"                     options={{ href: null }} />
+      <Tabs.Screen name="create-subscription"      options={{ href: null }} />
+      <Tabs.Screen name="notification-templates"   options={{ href: null }} />
+      <Tabs.Screen name="notification-logs"        options={{ href: null }} />
+      <Tabs.Screen name="send-notification"        options={{ href: null }} />
+      <Tabs.Screen name="roles"                     options={{ href: null }} />
+      <Tabs.Screen name="custom-order-detail"       options={{ href: null }} />
+      <Tabs.Screen name="panji"                     options={{ href: null }} />
+      <Tabs.Screen name="localities"                 options={{ href: null }} />
+      <Tabs.Screen name="apartments"                 options={{ href: null }} />
     </Tabs>
   );
 }

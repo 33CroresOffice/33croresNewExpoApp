@@ -1,6 +1,58 @@
-export type UserRole = 'customer' | 'admin' | 'vendor';
+export type UserRole = 'customer' | 'admin' | 'vendor' | 'rider';
 export type AdminRole = 'super_admin' | 'finance' | 'operations' | 'crm' | 'catalog';
+
+export interface CustomRole {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
 export type OtpChannel = 'sms' | 'whatsapp';
+export type NotificationChannel = 'sms' | 'whatsapp' | 'push' | 'in_app';
+export type NotificationEventType =
+  | 'subscription_expiring_3days'
+  | 'subscription_expiring_1day'
+  | 'subscription_expired'
+  | 'subscription_renewed'
+  | 'subscription_activated'
+  | 'subscription_paused'
+  | 'payment_pending'
+  | 'payment_received'
+  | 'renewal_due'
+  | 'order_dispatched'
+  | 'order_delivered'
+  | 'panji_festival_reminder'
+  | 'panji_daily_digest'
+  | 'subscription_pending'
+  | 'heavy_rainfall'
+  | 'custom';
+
+export interface PanjiEntry {
+  id: string;
+  date: string;
+  odia_date: string;
+  odia_month: string;
+  odia_year: number;
+  tithi: string;
+  nakshatra: string;
+  yoga: string;
+  karana: string;
+  vara: string;
+  sunrise: string;
+  sunset: string;
+  auspicious_timings: string[];
+  festivals: string[];
+  description: string;
+  is_published: boolean;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export type NotificationLogStatus = 'pending' | 'sent' | 'failed' | 'skipped';
 export type SubscriptionStatus = 'active' | 'paused' | 'cancelled' | 'expired' | 'renewed';
 export type RenewalStatus = 'none' | 'notified' | 'expired' | 'renewed';
 export type OrderStatus = 'scheduled' | 'out_for_delivery' | 'delivered' | 'failed';
@@ -20,14 +72,84 @@ export interface Profile {
   avatar_url: string | null;
   role: UserRole;
   admin_role: AdminRole | null;
+  custom_role_id: string | null;
   is_verified: boolean;
   notification_sms: boolean;
   notification_whatsapp: boolean;
+  notification_module_access: boolean;
   email: string | null;
   date_of_birth: string | null;
   gender: string | null;
   about: string | null;
   created_at: string;
+  updated_at: string;
+}
+
+export interface NotificationTemplate {
+  id: string;
+  name: string;
+  event_type: NotificationEventType;
+  channel: NotificationChannel;
+  is_active: boolean;
+  is_automated: boolean;
+  subject: string | null;
+  body: string;
+  msg91_template_id: string | null;
+  msg91_whatsapp_template_id: string | null;
+  msg91_whatsapp_namespace: string | null;
+  send_at_days_before: number | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotificationLog {
+  id: string;
+  user_id: string | null;
+  event_type: NotificationEventType;
+  channel: NotificationChannel;
+  template_id: string | null;
+  recipient_mobile: string | null;
+  recipient_push_token: string | null;
+  rendered_subject: string | null;
+  rendered_body: string;
+  status: NotificationLogStatus;
+  provider_response: Record<string, unknown> | null;
+  error_message: string | null;
+  sent_at: string | null;
+  delivered_at: string | null;
+  subscription_id: string | null;
+  order_id: string | null;
+  triggered_by: string | null;
+  created_at: string;
+  user?: Pick<Profile, 'id' | 'full_name' | 'mobile'>;
+  triggered_by_profile?: Pick<Profile, 'id' | 'full_name'>;
+}
+
+export interface InAppNotification {
+  id: string;
+  user_id: string;
+  title: string;
+  body: string;
+  event_type: NotificationEventType;
+  is_read: boolean;
+  read_at: string | null;
+  related_subscription_id: string | null;
+  related_order_id: string | null;
+  created_at: string;
+}
+
+export interface NotificationPreferences {
+  user_id: string;
+  push_enabled: boolean;
+  in_app_enabled: boolean;
+  updated_at: string;
+}
+
+export interface ExpoPushToken {
+  user_id: string;
+  token: string;
+  platform: 'ios' | 'android' | 'unknown';
   updated_at: string;
 }
 
@@ -75,6 +197,7 @@ export interface SubscriptionPlan {
   features: string[];
   deliveries_per_month: number;
   sort_order: number;
+  show_in_customer_plans: boolean;
   created_at: string;
   flower_requirements?: PlanFlowerRequirement[];
 }
@@ -91,6 +214,8 @@ export interface Address {
   landmark: string | null;
   apartment_name: string | null;
   place_category: string | null;
+  latitude: number | null;
+  longitude: number | null;
   created_at: string;
 }
 
@@ -101,6 +226,7 @@ export interface Subscription {
   status: SubscriptionStatus;
   start_date: string;
   end_date: string | null;
+  new_end_date: string | null;
   next_delivery_date: string | null;
   pause_until: string | null;
   pause_start_date: string | null;
@@ -196,7 +322,21 @@ export interface ProcurementOrderItem {
   unit_type: UnitType | null;
   price_per_unit: number | null;
   total_price: number | null;
+  price_set_by: 'vendor' | 'rider' | null;
   created_at: string;
+  flower_type?: FlowerType;
+}
+
+export interface VendorFlower {
+  id: string;
+  vendor_id: string;
+  flower_type_id: string;
+  unit_type: UnitType | null;
+  price_per_unit: number;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
   flower_type?: FlowerType;
 }
 

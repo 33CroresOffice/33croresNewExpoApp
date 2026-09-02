@@ -5,11 +5,10 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Share,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Download, CircleCheck as CheckCircle, Calendar, CreditCard, Hash, Leaf, MapPin, RefreshCw } from 'lucide-react-native';
+import { ArrowLeft, CircleCheck as CheckCircle, Calendar, CreditCard, Hash, Leaf, MapPin, RefreshCw } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -61,32 +60,6 @@ export default function ReceiptScreen() {
     load();
   }, [type, subscriptionId, renewalId]);
 
-  const handleShare = async () => {
-    const isRenewal = type === 'renewal';
-    const planName = subscription?.plan?.name ?? renewal?.plan?.name ?? 'Subscription';
-    const amount = isRenewal
-      ? renewal?.amount_paid != null ? `₹${(renewal.amount_paid / 100).toLocaleString('en-IN')}` : '—'
-      : subscription?.plan?.price != null ? `₹${(subscription.plan.price / 100).toLocaleString('en-IN')}` : '—';
-    const date = isRenewal
-      ? renewal?.renewed_at ? format(new Date(renewal.renewed_at), 'dd MMM yyyy, hh:mm a') : '—'
-      : subscription?.created_at ? format(new Date(subscription.created_at), 'dd MMM yyyy, hh:mm a') : '—';
-    const ref = isRenewal ? renewal?.razorpay_payment_id : null;
-
-    const text = [
-      '33 Crores – Payment Receipt',
-      '─────────────────────',
-      `Type: ${isRenewal ? 'Subscription Renewal' : 'New Subscription'}`,
-      `Plan: ${planName}`,
-      `Amount Paid: ${amount}`,
-      `Date: ${date}`,
-      ref ? `Payment Ref: ${ref}` : null,
-      '─────────────────────',
-      'Thank you for choosing 33 Crores.',
-    ].filter(Boolean).join('\n');
-
-    await Share.share({ message: text });
-  };
-
   if (loading) {
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -122,9 +95,7 @@ export default function ReceiptScreen() {
           <ArrowLeft size={22} color={Colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.title}>Receipt</Text>
-        <TouchableOpacity onPress={handleShare} style={styles.shareBtn}>
-          <Download size={20} color={Colors.primary} />
-        </TouchableOpacity>
+        <View style={{ width: 36 }} />
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
@@ -327,7 +298,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.white,
   },
   backBtn: { padding: Spacing[1] },
-  shareBtn: { padding: Spacing[1] },
   title: {
     fontFamily: Typography.fontFamily.bold,
     fontSize: Typography.size.xl,

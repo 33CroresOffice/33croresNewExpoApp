@@ -62,7 +62,7 @@ export default function AboutScreen() {
 
         <View style={styles.statsRow}>
           {[
-            { value: '10,000+', label: 'Happy Customers' },
+            { value: '500+', label: 'Happy Customers' },
             { value: '50+', label: 'Flower Varieties' },
             { value: '4.9★', label: 'Average Rating' },
           ].map((s) => (

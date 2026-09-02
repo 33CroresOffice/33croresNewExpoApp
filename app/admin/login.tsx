@@ -69,6 +69,21 @@ export default function AdminLoginScreen() {
         return;
       }
 
+      setLoading(false);
+      router.replace('/(admin)');
+
+      const { error: loginLogError } = await supabase.from('admin_activity_log').insert({
+        actor_id: profile.id,
+        actor_name: profile.full_name,
+        actor_role: profile.admin_role,
+        action: 'admin.login',
+        entity_type: 'admin',
+        entity_id: profile.id,
+        description: `${profile.full_name ?? email.trim().toLowerCase()} signed in`,
+        metadata: { platform: Platform.OS },
+      });
+      if (loginLogError) console.warn('Unable to record admin login', loginLogError.message);
+
       // Routing is handled by onAuthStateChange in _layout.tsx
     } catch {
       setError('Something went wrong. Please try again.');

@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Modal, TextInput, Platform, ActivityIndicator, RefreshControl,
@@ -80,6 +82,14 @@ const EMPTY_FORM = {
 };
 
 export default function CrmTasksScreen() {
+  return (
+    <ModuleGuard module="crm">
+      <CrmTasksScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function CrmTasksScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const { profile } = useAuthStore();
@@ -115,7 +125,7 @@ export default function CrmTasksScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  usePageVisibility(load);
 
   const searchCustomers = async (q: string) => {
     if (q.length < 2) { setCustomerSuggestions([]); return; }

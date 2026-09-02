@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   TextInput, Platform, ActivityIndicator, RefreshControl,
@@ -7,7 +8,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Truck, Search, ArrowLeft, X, ChevronRight, Calendar, CircleCheck as CheckCircle, CircleAlert as AlertCircle, Clock, User, MapPin, Plus, ChevronDown, Package, Zap, RefreshCw, ShieldAlert } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { format, isToday } from 'date-fns';
+import { format, isToday, parseISO } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -43,6 +44,14 @@ function scoreRider(rider: any, order: any, activeCountMap: Map<string, number>,
 }
 
 export default function RiderAssignmentsScreen() {
+  return (
+    <ModuleGuard module="riders">
+      <RiderAssignmentsScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function RiderAssignmentsScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const { profile: adminProfile } = useAuthStore();
@@ -386,13 +395,13 @@ export default function RiderAssignmentsScreen() {
               <EmptyState icon={<CheckCircle size={36} color={Colors.success} strokeWidth={1.2} />} title="All orders assigned!" sub="No unassigned orders at the moment." />
             ) : (
               filteredUnassigned.map(order => {
-                const isOrderToday = isToday(new Date(order.scheduled_date));
+                const isOrderToday = isToday(parseISO(order.scheduled_date));
                 return (
                   <View key={order.id} style={s.orderCard}>
                     <View style={s.orderCardLeft}>
                       <View style={[s.dateBadge, { backgroundColor: isOrderToday ? Colors.primarySurface : Colors.neutral[100] }]}>
-                        <Text style={[s.dateDay, { color: isOrderToday ? Colors.primary : Colors.textSecondary }]}>{format(new Date(order.scheduled_date), 'dd')}</Text>
-                        <Text style={[s.dateMonth, { color: isOrderToday ? Colors.primaryLight : Colors.textTertiary }]}>{format(new Date(order.scheduled_date), 'MMM')}</Text>
+                        <Text style={[s.dateDay, { color: isOrderToday ? Colors.primary : Colors.textSecondary }]}>{format(parseISO(order.scheduled_date), 'dd')}</Text>
+                        <Text style={[s.dateMonth, { color: isOrderToday ? Colors.primaryLight : Colors.textTertiary }]}>{format(parseISO(order.scheduled_date), 'MMM')}</Text>
                       </View>
                     </View>
                     <View style={s.orderBody}>
@@ -524,7 +533,7 @@ export default function RiderAssignmentsScreen() {
                   <Text style={s.orderSummaryLabel}>Order</Text>
                   <Text style={s.orderSummaryId}>#{selectedOrder.id.slice(-8).toUpperCase()}</Text>
                   <Text style={s.orderSummaryCustomer}>{selectedOrder.user?.full_name ?? selectedOrder.user?.mobile}</Text>
-                  <Text style={s.orderSummaryDate}>{format(new Date(selectedOrder.scheduled_date), 'EEEE, dd MMM yyyy')}</Text>
+                  <Text style={s.orderSummaryDate}>{format(parseISO(selectedOrder.scheduled_date), 'EEEE, dd MMM yyyy')}</Text>
                   {selectedOrder.subscription?.delivery_address && <Text style={s.orderSummaryAddr}>{selectedOrder.subscription.delivery_address.street}, {selectedOrder.subscription.delivery_address.city}</Text>}
                 </View>
               )}

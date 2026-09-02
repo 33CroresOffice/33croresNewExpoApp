@@ -14,8 +14,6 @@ expo-env.d.ts
 *.p12
 *.key
 *.mobileprovision
-android/app/release.keystore
-keystore_base64.txt
 
 # metro
 .metro-health-check*
@@ -35,3 +33,4 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+keystore_base64.txt

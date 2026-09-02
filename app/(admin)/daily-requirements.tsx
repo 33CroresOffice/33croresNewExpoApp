@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Platform, ActivityIndicator, RefreshControl, Modal, TextInput,
@@ -18,6 +20,14 @@ const STATUS_COLORS: Record<string, { bg: string; text: string; label: string }>
 };
 
 export default function DailyRequirementsScreen() {
+  return (
+    <ModuleGuard module="procurement">
+      <DailyRequirementsScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function DailyRequirementsScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const [date, setDate] = useState(new Date());
@@ -46,6 +56,7 @@ export default function DailyRequirementsScreen() {
     }
   };
 
+  usePageVisibility(load);
   useEffect(() => { load(); }, [dateStr]);
 
   const generate = async () => {

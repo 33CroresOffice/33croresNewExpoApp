@@ -100,10 +100,14 @@ export default function OtpVerifyScreen() {
       setSession(session as any);
       const profile = await loadProfile(authData.user.id);
 
-      if (!profile?.full_name) {
-        router.replace('/auth/profile-setup');
+      if (!profile) {
+        router.replace('/auth/welcome');
       } else if (profile.role === 'admin') {
         router.replace('/(admin)');
+      } else if (profile.role === 'vendor') {
+        router.replace('/(vendor)');
+      } else if (!profile.full_name) {
+        router.replace('/auth/profile-setup');
       } else {
         router.replace('/(customer)');
       }
@@ -140,6 +144,12 @@ export default function OtpVerifyScreen() {
       setResending(false);
     }
   };
+
+  useEffect(() => {
+    if (otp.length === 6 && !loading) {
+      handleVerify();
+    }
+  }, [otp]);
 
   const canVerify = otp.length === 6;
 

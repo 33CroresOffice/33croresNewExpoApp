@@ -1,14 +1,26 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+async function getSecret(supabaseClient: ReturnType<typeof createClient>, key: string): Promise<string | undefined> {
+  try {
+    const { data } = await supabaseClient
+      .from('secret_keys')
+      .select('value')
+      .eq('key', key)
+      .maybeSingle();
+    if (data?.value) return data.value;
+  } catch { /* table not available */ }
+  return Deno.env.get(key);
+}
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-async function hashOtp(otp: string): Promise<string> {
-  const secret = Deno.env.get("OTP_SECRET") ?? "";
+async function hashOtp(supabaseClient: ReturnType<typeof createClient>, otp: string): Promise<string> {
+  const secret = (await getSecret(supabaseClient, "OTP_SECRET")) ?? "";
   const encoder = new TextEncoder();
   const data = encoder.encode(otp + secret);
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
@@ -36,7 +48,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const otpHash = await hashOtp(String(otp));
+    const otpHash = await hashOtp(supabase, String(otp));
     const now = new Date().toISOString();
 
     const { data: otpRecord, error: fetchError } = await supabase
@@ -66,22 +78,50 @@ Deno.serve(async (req: Request) => {
       .update({ is_used: true })
       .eq("id", otpRecord.id);
 
-    const email = `${mobile}@petal.app`;
-    const secret = Deno.env.get("OTP_SECRET") ?? "";
+    const secret = (await getSecret(supabase, "OTP_SECRET")) ?? "";
     const password = `petal_${mobile}_${secret}`;
 
-    const { data: authUserRows, error: authLookupError } = await supabase
-      .rpc("get_auth_user_by_email", { p_email: email });
+    // Check if a profile already exists for this mobile (may belong to a legacy @customers.internal account)
+    const { data: profileByMobileEarly } = await supabase
+      .from("profiles")
+      .select("id, mobile, role")
+      .eq("mobile", mobile)
+      .maybeSingle();
 
+    // If a profile exists, find the canonical auth account for that profile id
+    // and use that account so the user logs into their existing data
+    let canonicalEmail: string | null = null;
     let userId: string | null = null;
 
-    if (!authLookupError && authUserRows && authUserRows.length > 0) {
-      userId = authUserRows[0].id;
+    if (profileByMobileEarly) {
+      // Look up the auth user whose id matches the profile
+      try {
+        const { data: canonicalRows } = await supabase.rpc("get_auth_user_by_id", { p_id: profileByMobileEarly.id });
+        if (canonicalRows && canonicalRows.length > 0) {
+          canonicalEmail = canonicalRows[0].email;
+          userId = canonicalRows[0].id;
+        }
+      } catch (e) {
+        console.error("get_auth_user_by_id error:", e);
+      }
+    }
+
+    // Fall back to petal.app email scheme if no canonical account found
+    const email = canonicalEmail ?? `${mobile}@petal.app`;
+
+    if (!userId) {
+      const { data: authUserRows, error: authLookupError } = await supabase
+        .rpc("get_auth_user_by_email", { p_email: email });
+
+      if (!authLookupError && authUserRows && authUserRows.length > 0) {
+        userId = authUserRows[0].id;
+      }
     }
 
     if (!userId) {
+      const newEmail = `${mobile}@petal.app`;
       const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
-        email,
+        email: newEmail,
         password,
         email_confirm: true,
         user_metadata: { mobile },
@@ -102,6 +142,15 @@ Deno.serve(async (req: Request) => {
         console.error("Password update error:", updateError);
       }
     }
+
+    // Check if mobile belongs to an approved rider (for linking profile_id only)
+    const { data: riderRecord } = await supabase
+      .from("riders")
+      .select("id, approval_status, full_name")
+      .eq("mobile", mobile)
+      .maybeSingle();
+
+    const isApprovedRider = riderRecord?.approval_status === "approved";
 
     const { data: profileById } = await supabase
       .from("profiles")
@@ -135,9 +184,11 @@ Deno.serve(async (req: Request) => {
           console.error("Profile copy error:", profileInsertError);
         }
       } else {
+        const fullName = isApprovedRider ? (riderRecord?.full_name ?? "") : "";
         const { error: profileError } = await supabase.from("profiles").insert({
           id: userId,
           mobile,
+          full_name: fullName,
           role: "customer",
           is_verified: true,
         });
@@ -145,6 +196,11 @@ Deno.serve(async (req: Request) => {
           console.error("Profile creation error:", profileError);
         }
       }
+    }
+
+    // Link rider profile_id if this is an approved rider — without changing profile.role
+    if (isApprovedRider && riderRecord) {
+      await supabase.from("riders").update({ profile_id: userId }).eq("id", riderRecord.id);
     }
 
     return new Response(

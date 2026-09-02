@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import ModuleGuard from '@/components/admin/ModuleGuard';
+import DatePickerField from '@/components/ui/DatePickerField';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Platform, ActivityIndicator, Modal, TextInput, Switch,
@@ -6,7 +8,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeft, Bike, Phone, MapPin, Package, CreditCard, Calendar, CircleCheck as CheckCircle, Circle as XCircle, Clock, Plus, X, Truck, Star, ChevronDown, ChevronRight, Pencil, CircleAlert as AlertCircle, Users, ChartBar as BarChart3, IndianRupee, BedDouble } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { format, subDays, startOfMonth, endOfMonth } from 'date-fns';
+import { format, subDays, subMonths, startOfMonth, endOfMonth } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -43,6 +45,14 @@ const PAYOUT_STATUS_CONFIG: Record<string, { label: string; color: string; bg: s
 };
 
 export default function RiderDetailScreen() {
+  return (
+    <ModuleGuard module="riders">
+      <RiderDetailScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function RiderDetailScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -60,11 +70,17 @@ export default function RiderDetailScreen() {
   const [attForm, setAttForm] = useState({ date: format(new Date(), 'yyyy-MM-dd'), status: 'present', notes: '', check_in: '', check_out: '' });
   const [savingAtt, setSavingAtt] = useState(false);
   const [attStatusPicker, setAttStatusPicker] = useState(false);
+  const [attMonthKey, setAttMonthKey] = useState('');
+  const [attDateFrom, setAttDateFrom] = useState<Date | null>(null);
+  const [attDateTo, setAttDateTo] = useState<Date | null>(null);
 
   const [showPayoutModal, setShowPayoutModal] = useState(false);
   const [payoutForm, setPayoutForm] = useState({ period_start: format(startOfMonth(new Date()), 'yyyy-MM-dd'), period_end: format(endOfMonth(new Date()), 'yyyy-MM-dd'), base_amount: '', delivery_bonus: '', deductions: '', notes: '', payment_method: 'upi' });
   const [savingPayout, setSavingPayout] = useState(false);
   const [pmPicker, setPmPicker] = useState(false);
+
+  const [dateFrom, setDateFrom] = useState<Date | null>(null);
+  const [dateTo, setDateTo] = useState<Date | null>(null);
 
   const [showLeaveModal, setShowLeaveModal] = useState(false);
   const [leaveForm, setLeaveForm] = useState({ leave_date: format(new Date(), 'yyyy-MM-dd'), reason: '', notes: '' });
@@ -315,12 +331,36 @@ export default function RiderDetailScreen() {
               <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.success }]}>{totalDeliveries}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
               <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.error }]}>{totalFailed}</Text><Text style={s.assignStatLabel}>Failed</Text></View>
               <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>{assignments.filter(a => ['assigned', 'accepted', 'picked_up'].includes(a.status)).length}</Text><Text style={s.assignStatLabel}>In Progress</Text></View>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{successRate}%</Text><Text style={s.assignStatLabel}>Success</Text></View>
+              <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{successRate}%</Text><Text style={s.assignStatLabel}>Success</Text></View>
             </View>
-            {assignments.length === 0 ? (
-              <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title="No assignments yet" sub="Assign orders to this rider to see delivery history." />
-            ) : (
-              assignments.map(a => {
+
+            {/* Date Range Filter */}
+            <View style={[s.dateFilterRow, isWeb && s.dateFilterRowWeb]}>
+              <View style={s.dateFilterPicker}>
+                <DatePickerField label="From" value={dateFrom} onChange={setDateFrom} maxDate={dateTo ?? undefined} />
+              </View>
+              <View style={s.dateFilterPicker}>
+                <DatePickerField label="To" value={dateTo} onChange={setDateTo} minDate={dateFrom ?? undefined} />
+              </View>
+              {(dateFrom || dateTo) && (
+                <TouchableOpacity onPress={() => { setDateFrom(null); setDateTo(null); }} style={s.dateFilterClear}>
+                  <X size={13} color={Colors.error} strokeWidth={2} />
+                  <Text style={s.dateFilterClearText}>Clear</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {(() => {
+              const filtered = assignments.filter(a => {
+                const d = a.assigned_at ? a.assigned_at.slice(0, 10) : '';
+                if (dateFrom && d < format(dateFrom, 'yyyy-MM-dd')) return false;
+                if (dateTo && d > format(dateTo, 'yyyy-MM-dd')) return false;
+                return true;
+              });
+              return filtered.length === 0 ? (
+                <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={assignments.length === 0 ? 'No assignments yet' : 'No deliveries in this date range'} sub={assignments.length === 0 ? 'Assign orders to this rider to see delivery history.' : 'Try adjusting the From / To dates.'} />
+              ) : (
+                filtered.map(a => {
                 const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
                 return (
                   <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
@@ -346,21 +386,67 @@ export default function RiderDetailScreen() {
                   </TouchableOpacity>
                 );
               })
-            )}
+              );
+            })()}
           </>
         )}
 
         {/* ATTENDANCE */}
-        {activeTab === 'attendance' && (
+        {activeTab === 'attendance' && (() => {
+          // Build last-6-months chips
+          const monthChips: { key: string; label: string }[] = [];
+          for (let i = 0; i < 6; i++) {
+            const d = subMonths(startOfMonth(new Date()), i);
+            monthChips.push({ key: format(d, 'yyyy-MM'), label: format(d, 'MMM yyyy') });
+          }
+          const filteredAtt = attendance.filter(a => {
+            if (attMonthKey && !a.date.startsWith(attMonthKey)) return false;
+            if (attDateFrom && a.date < format(attDateFrom, 'yyyy-MM-dd')) return false;
+            if (attDateTo && a.date > format(attDateTo, 'yyyy-MM-dd')) return false;
+            return true;
+          });
+          const hasAttFilter = !!(attMonthKey || attDateFrom || attDateTo);
+          return (
           <>
             <TouchableOpacity style={s.addBtn} onPress={() => { setAttForm({ date: format(new Date(), 'yyyy-MM-dd'), status: 'present', notes: '', check_in: '', check_out: '' }); setShowAttModal(true); }} activeOpacity={0.8}>
               <Plus size={15} color={Colors.white} strokeWidth={2} />
               <Text style={s.addBtnText}>Mark Attendance</Text>
             </TouchableOpacity>
+
+            {/* Month quick-filter chips */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
+              {monthChips.map(chip => (
+                <TouchableOpacity
+                  key={chip.key}
+                  style={[s.attMonthChip, attMonthKey === chip.key && s.attMonthChipActive]}
+                  onPress={() => { setAttMonthKey(p => p === chip.key ? '' : chip.key); setAttDateFrom(null); setAttDateTo(null); }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[s.attMonthChipText, attMonthKey === chip.key && s.attMonthChipTextActive]}>{chip.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            {/* Date range filter */}
+            <View style={[s.dateFilterRow, isWeb && s.dateFilterRowWeb]}>
+              <View style={s.dateFilterPicker}>
+                <DatePickerField label="From" value={attDateFrom} onChange={d => { setAttDateFrom(d); setAttMonthKey(''); }} maxDate={attDateTo ?? undefined} />
+              </View>
+              <View style={s.dateFilterPicker}>
+                <DatePickerField label="To" value={attDateTo} onChange={d => { setAttDateTo(d); setAttMonthKey(''); }} minDate={attDateFrom ?? undefined} />
+              </View>
+              {hasAttFilter && (
+                <TouchableOpacity onPress={() => { setAttMonthKey(''); setAttDateFrom(null); setAttDateTo(null); }} style={s.dateFilterClear}>
+                  <X size={13} color={Colors.error} strokeWidth={2} />
+                  <Text style={s.dateFilterClearText}>Clear</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
             <View style={[s.attStats, isWeb && s.attStatsWeb]}>
               {(['present', 'absent', 'half_day', 'leave'] as const).map(st => {
                 const cfg = ATTENDANCE_CONFIG[st];
-                const count = attendance.filter(a => a.status === st).length;
+                const count = filteredAtt.filter(a => a.status === st).length;
                 return (
                   <View key={st} style={[s.attStat, { backgroundColor: cfg.bg }]}>
                     <Text style={[s.attStatVal, { color: cfg.color }]}>{count}</Text>
@@ -369,10 +455,10 @@ export default function RiderDetailScreen() {
                 );
               })}
             </View>
-            {attendance.length === 0 ? (
-              <EmptyBlock icon={<Calendar size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title="No attendance records" sub="Start marking attendance for this rider." />
+            {filteredAtt.length === 0 ? (
+              <EmptyBlock icon={<Calendar size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={attendance.length === 0 ? 'No attendance records' : 'No records in this range'} sub={attendance.length === 0 ? 'Start marking attendance for this rider.' : 'Try a different month or date range.'} />
             ) : (
-              attendance.map(a => {
+              filteredAtt.map(a => {
                 const cfg = ATTENDANCE_CONFIG[a.status] ?? ATTENDANCE_CONFIG.present;
                 return (
                   <View key={a.id} style={s.attCard}>
@@ -393,7 +479,8 @@ export default function RiderDetailScreen() {
               })
             )}
           </>
-        )}
+          );
+        })()}
 
         {/* PAYOUTS */}
         {activeTab === 'payouts' && (
@@ -697,10 +784,10 @@ const s = StyleSheet.create({
   vehicleText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, color: Colors.accentDark },
   assignBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing[1], paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.primary, backgroundColor: Colors.primarySurface },
   assignBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.primary },
-  tabScroll: { backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border, maxHeight: 48, flexGrow: 0 },
-  tabScrollContent: { flexDirection: 'row', paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], gap: Spacing[2] },
+  tabScroll: { backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border, flexGrow: 0, flexShrink: 0 },
+  tabScrollContent: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], gap: Spacing[2] },
   tabScrollContentWeb: { paddingHorizontal: Spacing[8] },
-  tab: { paddingVertical: Spacing[2], paddingHorizontal: Spacing[4], borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.neutral[50] },
+  tab: { height: 34, justifyContent: 'center', paddingHorizontal: Spacing[4], borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.neutral[50] },
   tabActive: { backgroundColor: Colors.primarySurface, borderColor: Colors.primary },
   tabText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
   tabTextActive: { color: Colors.primary, fontFamily: Typography.fontFamily.sansSemiBold },
@@ -726,7 +813,13 @@ const s = StyleSheet.create({
   addBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white },
   assignStats: { flexDirection: 'row', backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden', ...Shadow.sm },
   assignStatsWeb: {},
-  assignStat: { flex: 1, alignItems: 'center', paddingVertical: Spacing[3], borderRightWidth: 1, borderRightColor: Colors.divider },
+  assignStat: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing[3], borderRightWidth: 1, borderRightColor: Colors.divider },
+  assignStatLast: { borderRightWidth: 0 },
+  dateFilterRow: { flexDirection: 'row', alignItems: 'flex-end', gap: Spacing[3], backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, paddingHorizontal: Spacing[4], paddingVertical: Spacing[3] },
+  dateFilterRowWeb: {},
+  dateFilterPicker: { flex: 1 },
+  dateFilterClear: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: Spacing[2], paddingVertical: Spacing[1], borderRadius: Radius.md, backgroundColor: '#FFF5F5', borderWidth: 1, borderColor: Colors.error + '30' },
+  dateFilterClearText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.error },
   assignStatVal: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.xl },
   assignStatLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 10, color: Colors.textTertiary, marginTop: 2 },
   assignCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden', ...Shadow.sm },
@@ -745,6 +838,11 @@ const s = StyleSheet.create({
   statusBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11 },
   attStats: { flexDirection: 'row', gap: Spacing[3] },
   attStatsWeb: { gap: Spacing[4] },
+  attMonthChips: { flexDirection: 'row', gap: Spacing[2], paddingVertical: Spacing[1] },
+  attMonthChip: { paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.neutral[50] },
+  attMonthChipActive: { backgroundColor: Colors.primarySurface, borderColor: Colors.primary },
+  attMonthChipText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.textSecondary },
+  attMonthChipTextActive: { color: Colors.primary, fontFamily: Typography.fontFamily.sansSemiBold },
   attStat: { flex: 1, alignItems: 'center', paddingVertical: Spacing[3], borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border },
   attStatVal: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.xl },
   attStatLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 10, marginTop: 2 },

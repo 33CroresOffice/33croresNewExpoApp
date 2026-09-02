@@ -18,6 +18,7 @@ export default function PaymentCallbackScreen() {
     razorpay_signature?: string;
     plan_id?: string;
     address_id?: string;
+    start_date?: string;
     renew_from_subscription_id?: string;
   }>();
 
@@ -45,6 +46,7 @@ export default function PaymentCallbackScreen() {
         razorpay_signature,
         plan_id,
         address_id,
+        start_date,
         renew_from_subscription_id,
       } = params;
 
@@ -70,6 +72,7 @@ export default function PaymentCallbackScreen() {
           razorpay_signature,
           plan_id,
           address_id,
+          start_date: start_date ?? null,
           renew_from_subscription_id: renew_from_subscription_id ?? null,
         }),
       });

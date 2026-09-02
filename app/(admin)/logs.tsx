@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View,
   Text,
@@ -87,6 +88,14 @@ function relativeLabel(ts: string): string {
 }
 
 export default function LogsScreen() {
+  return (
+    <ModuleGuard module="logs">
+      <LogsScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function LogsScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
 

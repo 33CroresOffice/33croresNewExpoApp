@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { router } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Check, ChevronRight, Layers } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
@@ -28,13 +29,14 @@ export default function PlansScreen() {
       .from('subscription_plans')
       .select('*')
       .eq('is_active', true)
+      .eq('show_in_customer_plans', true)
       .order('sort_order');
     if (data) setPlans(data);
     setLoading(false);
     setRefreshing(false);
   };
 
-  useEffect(() => { load(); }, []);
+  useFocusEffect(useCallback(() => { load(); }, []));
 
   const formatPrice = (paise: number) => `₹${(paise / 100).toLocaleString('en-IN')}`;
 
@@ -65,7 +67,7 @@ export default function PlansScreen() {
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + Spacing[5] }]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

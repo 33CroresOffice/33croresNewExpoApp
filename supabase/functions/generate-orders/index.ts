@@ -7,6 +7,16 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+function nowInIST(): Date {
+  return new Date(Date.now() + IST_OFFSET_MS);
+}
+
+function istDateStr(d: Date): string {
+  return d.toISOString().split("T")[0];
+}
+
 function addDays(date: Date, days: number): Date {
   const result = new Date(date);
   result.setDate(result.getDate() + days);
@@ -15,6 +25,8 @@ function addDays(date: Date, days: number): Date {
 
 function getNextDeliveryDate(currentDate: Date, frequency: string): Date {
   switch (frequency) {
+    case "daily":
+      return addDays(currentDate, 1);
     case "weekly":
       return addDays(currentDate, 7);
     case "biweekly":
@@ -38,9 +50,9 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    const today = new Date();
-    const todayStr = today.toISOString().split("T")[0];
-    const tomorrowStr = addDays(today, 1).toISOString().split("T")[0];
+    const today = nowInIST();
+    const todayStr = istDateStr(today);
+    const tomorrowStr = istDateStr(addDays(today, 1));
 
     // Fetch active subscriptions whose next_delivery_date is today or tomorrow
     const { data: subscriptions, error } = await serviceSupabase
@@ -61,32 +73,45 @@ Deno.serve(async (req: Request) => {
     let created = 0;
 
     for (const sub of subscriptions ?? []) {
-      // Check if order already exists for this date
-      const { count } = await serviceSupabase
-        .from("orders")
-        .select("*", { count: "exact", head: true })
+      // Check if this delivery date falls within an active pause period
+      const { data: pauses } = await serviceSupabase
+        .from("subscription_pause_history")
+        .select("pause_start_date, pause_until")
         .eq("subscription_id", sub.id)
-        .eq("scheduled_date", sub.next_delivery_date);
+        .eq("is_cancelled", false)
+        .lte("pause_start_date", sub.next_delivery_date)
+        .gte("pause_until", sub.next_delivery_date);
 
-      if ((count ?? 0) === 0) {
-        await serviceSupabase.from("orders").insert({
-          subscription_id: sub.id,
-          user_id: sub.user_id,
-          scheduled_date: sub.next_delivery_date,
-          status: "scheduled",
-        });
-        created++;
+      const isPaused = (pauses ?? []).length > 0;
+
+      if (!isPaused) {
+        // Check if order already exists for this date
+        const { count } = await serviceSupabase
+          .from("orders")
+          .select("*", { count: "exact", head: true })
+          .eq("subscription_id", sub.id)
+          .eq("scheduled_date", sub.next_delivery_date);
+
+        if ((count ?? 0) === 0) {
+          await serviceSupabase.from("orders").insert({
+            subscription_id: sub.id,
+            user_id: sub.user_id,
+            scheduled_date: sub.next_delivery_date,
+            status: "scheduled",
+          });
+          created++;
+        }
       }
 
       // Advance next_delivery_date
       const nextDate = getNextDeliveryDate(
-        new Date(sub.next_delivery_date),
+        new Date(sub.next_delivery_date + "T00:00:00Z"),
         sub.plan?.frequency ?? "monthly"
       );
 
       await serviceSupabase
         .from("subscriptions")
-        .update({ next_delivery_date: nextDate.toISOString().split("T")[0] })
+        .update({ next_delivery_date: istDateStr(nextDate) })
         .eq("id", sub.id);
     }
 

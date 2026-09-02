@@ -8,10 +8,10 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Pause, MapPin, Calendar, Clock, History, TriangleAlert as AlertTriangle, RotateCcw, CircleCheck as CheckCircle, CalendarClock, Pencil, X } from 'lucide-react-native';
+import { ArrowLeft, Pause, MapPin, Calendar, Clock, History, TriangleAlert as AlertTriangle, RotateCcw, CircleCheck as CheckCircle, CalendarClock, Pencil, X, FileText, CreditCard, Receipt, Leaf } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
-import { Subscription, SubscriptionRenewalHistory } from '@/types/database';
+import { Subscription, SubscriptionRenewalHistory, Payment } from '@/types/database';
 import StatusChip from '@/components/ui/StatusChip';
 import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
@@ -19,6 +19,7 @@ import DatePickerField from '@/components/ui/DatePickerField';
 import { format, addMonths, isAfter, addDays, isBefore, differenceInDays, parseISO } from 'date-fns';
 import { getMinSubscriptionStartDate, isPastCutoffIST, getSubscriptionCutoffNotice, toLocalDateStr } from '@/utils/istCutoff';
 import { getEffectiveStatus } from '@/utils/subscriptionStatus';
+import { dedupePauseHistory } from '@/utils/pauseHistory';
 
 interface PauseHistory {
   id: string;
@@ -34,25 +35,161 @@ function computeEndDate(sub: Subscription, pauseHistory: PauseHistory[]): Date {
   let totalPausedDays = 0;
 
   for (const p of pauseHistory) {
+    if (p.is_cancelled) continue;
     const pauseStart = new Date(p.pause_start_date);
-    const pauseEnd = p.resumed_at ? new Date(p.resumed_at) : new Date(p.pause_until);
-    const days = differenceInDays(pauseEnd, pauseStart);
+    // Full pause: inclusive (start through end). Early resume: non-inclusive of resumed_at.
+    const days = p.resumed_at
+      ? differenceInDays(new Date(p.resumed_at), pauseStart)
+      : differenceInDays(new Date(p.pause_until), pauseStart) + 1;
     if (days > 0) totalPausedDays += days;
   }
 
   if (sub.status === 'paused' && sub.pause_start_date && sub.pause_until) {
     const alreadyCounted = pauseHistory.some(
-      (p) => p.pause_start_date === sub.pause_start_date
+      (p) => p.pause_start_date === sub.pause_start_date && !p.is_cancelled
     );
     if (!alreadyCounted) {
       const pauseStart = new Date(sub.pause_start_date);
       const pauseEnd = new Date(sub.pause_until);
-      const days = differenceInDays(pauseEnd, pauseStart);
+      const days = differenceInDays(pauseEnd, pauseStart) + 1;
       if (days > 0) totalPausedDays += days;
     }
   }
 
   return addDays(base, 29 + totalPausedDays);
+}
+
+function InvoicesTab({
+  subscription,
+  payments,
+  renewalHistory,
+}: {
+  subscription: Subscription;
+  payments: Payment[];
+  renewalHistory: SubscriptionRenewalHistory[];
+}) {
+  const formatPrice = (paise: number) => `₹${(paise / 100).toLocaleString('en-IN')}`;
+
+  type InvoiceItem = {
+    id: string;
+    type: 'initial' | 'renewal';
+    date: string;
+    amount: number;
+    planName: string;
+    paymentRef: string | null;
+    status: 'success' | 'pending' | 'failed';
+    renewalId?: string;
+    subscriptionId: string;
+  };
+
+  const renewalByPaymentId = new Map(
+    renewalHistory
+      .filter((r) => r.razorpay_payment_id)
+      .map((r) => [r.razorpay_payment_id!, r])
+  );
+
+  const invoices: InvoiceItem[] = payments.map((p) => {
+    const renewal = renewalByPaymentId.get(p.razorpay_payment_id ?? '');
+    const isRenewal = !!renewal || (p.subscription_id !== subscription.id);
+    return {
+      id: p.id,
+      type: isRenewal ? 'renewal' : 'initial',
+      date: p.created_at,
+      amount: p.amount,
+      planName: renewal?.plan?.name ?? subscription.plan?.name ?? '—',
+      paymentRef: p.razorpay_payment_id,
+      status: p.status === 'success' ? 'success' : p.status === 'pending' ? 'pending' : 'failed',
+      renewalId: renewal?.id,
+      subscriptionId: p.subscription_id ?? subscription.id,
+    };
+  });
+
+  invoices.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  if (invoices.length === 0) {
+    return (
+      <View style={styles.invoiceEmpty}>
+        <FileText size={40} color={Colors.textTertiary} />
+        <Text style={styles.invoiceEmptyText}>No invoices yet.
+Payments will appear here once made.</Text>
+      </View>
+    );
+  }
+
+  const statusConfig = {
+    success: { bg: styles.invoiceStatusSuccess, color: Colors.success, label: 'Paid' },
+    pending: { bg: styles.invoiceStatusPending, color: Colors.warning, label: 'Pending' },
+    failed: { bg: styles.invoiceStatusFailed, color: Colors.error, label: 'Failed' },
+  };
+
+  return (
+    <>
+      {invoices.map((inv) => {
+        const cfg = statusConfig[inv.status];
+        const receiptParams = inv.type === 'renewal' && inv.renewalId
+          ? { type: 'renewal' as const, renewalId: inv.renewalId }
+          : { type: 'new' as const, subscriptionId: inv.subscriptionId ?? subscription.id };
+
+        return (
+          <View key={inv.id} style={styles.invoiceCard}>
+            <View style={styles.invoiceHeader}>
+              <View style={styles.invoiceHeaderLeft}>
+                <View style={styles.invoiceIconWrap}>
+                  {inv.type === 'renewal'
+                    ? <RotateCcw size={18} color={Colors.primary} />
+                    : <Leaf size={18} color={Colors.primary} />}
+                </View>
+                <View>
+                  <Text style={styles.invoiceType}>
+                    {inv.type === 'renewal' ? 'Renewal Payment' : 'Initial Payment'}
+                  </Text>
+                  <Text style={styles.invoiceDate}>
+                    {format(new Date(inv.date), 'dd MMM yyyy, hh:mm a')}
+                  </Text>
+                </View>
+              </View>
+              <Text style={styles.invoiceAmount}>
+                {inv.amount != null ? formatPrice(inv.amount) : '—'}
+              </Text>
+            </View>
+
+            <View style={styles.invoiceBody}>
+              <View style={styles.invoiceRow}>
+                <Text style={styles.invoiceRowLabel}>Invoice No.</Text>
+                <Text style={styles.invoiceRowValue}>{inv.id.slice(0, 8).toUpperCase()}</Text>
+              </View>
+              <View style={styles.invoiceRow}>
+                <Text style={styles.invoiceRowLabel}>Plan</Text>
+                <Text style={styles.invoiceRowValue}>{inv.planName}</Text>
+              </View>
+              {inv.paymentRef && (
+                <View style={styles.invoiceRow}>
+                  <Text style={styles.invoiceRowLabel}>Payment Ref</Text>
+                  <Text style={styles.invoiceRowValue}>{inv.paymentRef}</Text>
+                </View>
+              )}
+              <View style={styles.invoiceRow}>
+                <Text style={styles.invoiceRowLabel}>Status</Text>
+                <View style={[styles.invoiceStatusBadge, cfg.bg]}>
+                  <Text style={[styles.invoiceStatusText, { color: cfg.color }]}>{cfg.label}</Text>
+                </View>
+              </View>
+
+              <View style={styles.invoiceFooter}>
+                <TouchableOpacity
+                  style={styles.invoiceReceiptBtn}
+                  onPress={() => router.push({ pathname: '/(customer)/receipt', params: receiptParams })}
+                >
+                  <Receipt size={14} color={Colors.primary} />
+                  <Text style={styles.invoiceReceiptBtnText}>View Receipt</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        );
+      })}
+    </>
+  );
 }
 
 export default function SubscriptionDetailScreen() {
@@ -62,7 +199,10 @@ export default function SubscriptionDetailScreen() {
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [pauseHistory, setPauseHistory] = useState<PauseHistory[]>([]);
   const [renewalHistory, setRenewalHistory] = useState<SubscriptionRenewalHistory[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'details' | 'invoices'>('details');
+  const [refreshing, setRefreshing] = useState(false);
   const [pauseModal, setPauseModal] = useState(false);
   const [resumeModal, setResumeModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -77,7 +217,8 @@ export default function SubscriptionDetailScreen() {
   const [editDateError, setEditDateError] = useState('');
 
   const load = async () => {
-    const [subRes, histRes, renewalRes] = await Promise.all([
+    setRefreshing(true);
+    const [subRes, histRes, renewalRes, paymentsRes] = await Promise.all([
       supabase
         .from('subscriptions')
         .select('*, plan:subscription_plans(*), delivery_address:addresses(*)')
@@ -93,11 +234,20 @@ export default function SubscriptionDetailScreen() {
         .select('*, plan:subscription_plans(*)')
         .eq('original_subscription_id', id)
         .order('renewed_at', { ascending: false }),
+      supabase
+        .from('payments')
+        .select('*')
+        .eq('subscription_id', id)
+        .order('created_at', { ascending: false }),
     ]);
     if (subRes.data) setSubscription(subRes.data as Subscription);
-    if (histRes.data) setPauseHistory(histRes.data as PauseHistory[]);
+    if (histRes.data) {
+      setPauseHistory(dedupePauseHistory(histRes.data as PauseHistory[]));
+    }
     if (renewalRes.data) setRenewalHistory(renewalRes.data as SubscriptionRenewalHistory[]);
+    if (paymentsRes.data) setPayments(paymentsRes.data as Payment[]);
     setLoading(false);
+    setRefreshing(false);
   };
 
   useEffect(() => { load(); }, [id]);
@@ -130,34 +280,21 @@ export default function SubscriptionDetailScreen() {
     }
 
     setActionLoading(true);
-    const pauseDays = differenceInDays(new Date(pauseUntilStr), new Date(pauseStartStr)) + 1;
-    const newEndDate = subscription?.end_date
-      ? toLocalDateStr(addDays(new Date(subscription.end_date), pauseDays))
-      : undefined;
-
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const pauseStartsToday = new Date(pauseStartStr) <= today;
 
-    await Promise.all([
-      supabase.from('subscriptions').update({
-        status: pauseStartsToday ? 'paused' : 'active',
-        pause_start_date: pauseStartStr,
-        pause_until: pauseUntilStr,
-        ...(newEndDate ? { end_date: newEndDate } : {}),
-      }).eq('id', id),
-      supabase.from('subscription_pause_history').insert({
-        subscription_id: id,
-        pause_start_date: pauseStartStr,
-        pause_until: pauseUntilStr,
-      }),
-    ]);
+    await supabase.from('subscriptions').update({
+      status: pauseStartsToday ? 'paused' : 'active',
+      pause_start_date: pauseStartStr,
+      pause_until: pauseUntilStr,
+    }).eq('id', id);
 
     setPauseModal(false);
     setActionLoading(false);
     setCustomStartDate(null);
     setCustomEndDate(null);
-    load();
+    await load();
   };
 
   const handleResume = async () => {
@@ -167,25 +304,11 @@ export default function SubscriptionDetailScreen() {
 
     const activeEntry = pauseHistory.find((h) => h.resumed_at === null);
 
-    let endDateUpdate: string | undefined;
-    if (activeEntry && subscription?.end_date) {
-      const unusedDays = differenceInDays(
-        new Date(activeEntry.pause_until),
-        resumeEffectiveDate
-      ) + 1;
-      if (unusedDays > 0) {
-        endDateUpdate = toLocalDateStr(
-          addDays(new Date(subscription.end_date), -unusedDays)
-        );
-      }
-    }
-
     await Promise.all([
       supabase.from('subscriptions').update({
         status: 'active',
         pause_until: null,
         next_delivery_date: resumedAtStr,
-        ...(endDateUpdate ? { end_date: endDateUpdate } : {}),
       }).eq('id', id),
       activeEntry
         ? supabase.from('subscription_pause_history')
@@ -196,15 +319,14 @@ export default function SubscriptionDetailScreen() {
 
     setResumeModal(false);
     setActionLoading(false);
-    load();
+    await load();
   };
 
   const openEditPauseModal = () => {
     if (!subscription) return;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const todayStr = toLocalDateStr(new Date());
     const pauseStarted = subscription.pause_start_date
-      ? today >= new Date(subscription.pause_start_date)
+      ? subscription.pause_start_date <= todayStr
       : false;
     setEditStartDate(pauseStarted || !subscription.pause_start_date ? null : new Date(subscription.pause_start_date));
     if (!pauseStarted && subscription.pause_start_date) {
@@ -219,10 +341,9 @@ export default function SubscriptionDetailScreen() {
     if (!subscription) return;
     setEditDateError('');
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const todayStr = toLocalDateStr(new Date());
     const pauseStarted = subscription.pause_start_date
-      ? today >= new Date(subscription.pause_start_date)
+      ? subscription.pause_start_date <= todayStr
       : false;
 
     const minDate = getMinSubscriptionStartDate();
@@ -254,18 +375,6 @@ export default function SubscriptionDetailScreen() {
       newEndStr = toLocalDateStr(editEndDate);
     }
 
-    const oldStartStr = subscription.pause_start_date!;
-    const oldEndStr = subscription.pause_until!;
-
-    const oldPauseDays = differenceInDays(new Date(oldEndStr), new Date(oldStartStr)) + 1;
-    const newPauseDays = differenceInDays(new Date(newEndStr), new Date(newStartStr)) + 1;
-    const daysDiff = newPauseDays - oldPauseDays;
-
-    let newEndDate: string | undefined;
-    if (subscription.end_date && daysDiff !== 0) {
-      newEndDate = toLocalDateStr(addDays(new Date(subscription.end_date), daysDiff));
-    }
-
     setActionLoading(true);
 
     const activeEntry = pauseHistory.find((h) => h.resumed_at === null);
@@ -274,7 +383,6 @@ export default function SubscriptionDetailScreen() {
       supabase.from('subscriptions').update({
         pause_start_date: newStartStr,
         pause_until: newEndStr,
-        ...(newEndDate ? { end_date: newEndDate } : {}),
       }).eq('id', id),
       activeEntry
         ? supabase.from('subscription_pause_history').update({
@@ -286,34 +394,31 @@ export default function SubscriptionDetailScreen() {
 
     setEditPauseModal(false);
     setActionLoading(false);
-    load();
+    await load();
   };
 
   const handleCancelPause = async () => {
-    setActionLoading(true);
+    if (!subscription?.pause_start_date || !subscription.pause_until) return;
 
-    let endDateUpdate: string | undefined;
-    if (subscription?.end_date && subscription.pause_start_date && subscription.pause_until) {
-      const pauseDays = differenceInDays(new Date(subscription.pause_until), new Date(subscription.pause_start_date)) + 1;
-      endDateUpdate = toLocalDateStr(addDays(new Date(subscription.end_date), -pauseDays));
-    }
+    setActionLoading(true);
 
     await Promise.all([
       supabase.from('subscriptions').update({
         status: 'active',
         pause_start_date: null,
         pause_until: null,
-        ...(endDateUpdate ? { end_date: endDateUpdate } : {}),
       }).eq('id', id),
       supabase.from('subscription_pause_history')
         .update({ is_cancelled: true })
         .eq('subscription_id', id)
+        .eq('pause_start_date', subscription.pause_start_date)
+        .eq('pause_until', subscription.pause_until)
         .is('resumed_at', null)
         .eq('is_cancelled', false),
     ]);
 
     setActionLoading(false);
-    load();
+    await load();
   };
 
   const formatPrice = (paise: number) => `₹${(paise / 100).toLocaleString('en-IN')}`;
@@ -355,7 +460,33 @@ export default function SubscriptionDetailScreen() {
         <View style={{ width: 36 }} />
       </View>
 
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'details' && styles.tabActive]}
+          onPress={() => setActiveTab('details')}
+        >
+          <FileText size={16} color={activeTab === 'details' ? Colors.primary : Colors.textTertiary} />
+          <Text style={[styles.tabText, activeTab === 'details' && styles.tabTextActive]}>Details</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'invoices' && styles.tabActive]}
+          onPress={() => setActiveTab('invoices')}
+        >
+          <Receipt size={16} color={activeTab === 'invoices' ? Colors.primary : Colors.textTertiary} />
+          <Text style={[styles.tabText, activeTab === 'invoices' && styles.tabTextActive]}>Invoices</Text>
+        </TouchableOpacity>
+      </View>
+
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        {refreshing && <View style={styles.refreshOverlay} />}
+        {activeTab === 'invoices' ? (
+          <InvoicesTab
+            subscription={subscription}
+            payments={payments}
+            renewalHistory={renewalHistory}
+          />
+        ) : (
+        <>
         <View style={styles.heroCard}>
           <View style={styles.heroTop}>
             <View style={styles.heroInfo}>
@@ -374,9 +505,15 @@ export default function SubscriptionDetailScreen() {
           <View style={styles.infoItem}>
             <MapPin size={16} color={Colors.accent} />
             <Text style={styles.infoLabel}>Delivery To</Text>
-            <Text style={styles.infoValue} numberOfLines={2}>
+            <Text style={styles.infoValue} numberOfLines={3}>
               {subscription.delivery_address
-                ? `${subscription.delivery_address.city}, ${subscription.delivery_address.pincode}`
+                ? [
+                    subscription.delivery_address.apartment_name,
+                    subscription.delivery_address.street,
+                    subscription.delivery_address.landmark,
+                    subscription.delivery_address.city,
+                    `${subscription.delivery_address.state} - ${subscription.delivery_address.pincode}`,
+                  ].filter(Boolean).join(', ')
                 : '—'}
             </Text>
           </View>
@@ -387,21 +524,33 @@ export default function SubscriptionDetailScreen() {
           </View>
           <View style={styles.infoItem}>
             <Calendar size={16} color={Colors.primary} />
-            <Text style={styles.infoLabel}>End Date</Text>
+            <Text style={styles.infoLabel}>New End Date</Text>
             <Text style={styles.infoValue}>
-              {subscription.end_date
-                ? format(new Date(subscription.end_date), 'dd MMM yyyy')
-                : format(computeEndDate(subscription, pauseHistory), 'dd MMM yyyy')}
+              {subscription.new_end_date
+                ? format(new Date(subscription.new_end_date), 'dd MMM yyyy')
+                : '—'}
             </Text>
           </View>
         </View>
 
         {(() => {
           if (!subscription.end_date) return null;
-          const currentEnd = new Date(subscription.end_date);
-          const originalEnd = addDays(new Date(subscription.start_date), 29);
-          const totalPausedDays = differenceInDays(currentEnd, originalEnd);
-          if (totalPausedDays <= 0) return null;
+          const originalEnd = new Date(subscription.end_date);
+          const currentNewEnd = subscription.new_end_date
+            ? new Date(subscription.new_end_date)
+            : originalEnd;
+          // Sum up paused days from non-cancelled history entries only
+          const accumulatedPauseDays = pauseHistory
+            .filter((p) => !p.is_cancelled)
+            .reduce((sum, p) => {
+              const pStart = new Date(p.pause_start_date);
+              const days = p.resumed_at
+                ? differenceInDays(new Date(p.resumed_at), pStart)
+                : differenceInDays(new Date(p.pause_until), pStart) + 1;
+              return sum + (days > 0 ? days : 0);
+            }, 0);
+          if (accumulatedPauseDays <= 0) return null;
+          const totalPausedDays = accumulatedPauseDays;
           return (
             <View style={styles.pauseExtensionCard}>
               <View style={styles.pauseExtensionHeader}>
@@ -418,7 +567,7 @@ export default function SubscriptionDetailScreen() {
                 </View>
                 <View style={styles.pauseExtensionDateBlock}>
                   <Text style={styles.pauseExtensionLabel}>NEW END DATE</Text>
-                  <Text style={styles.pauseExtensionDateNew}>{format(currentEnd, 'dd MMM yyyy')}</Text>
+                  <Text style={styles.pauseExtensionDateNew}>{format(currentNewEnd, 'dd MMM yyyy')}</Text>
                 </View>
               </View>
               <View style={styles.pauseExtensionPill}>
@@ -730,6 +879,8 @@ export default function SubscriptionDetailScreen() {
             })}
           </View>
         )}
+        </>
+        )}
       </ScrollView>
 
       <Modal visible={pauseModal} onClose={() => { setPauseModal(false); setDateError(''); setCustomStartDate(null); setCustomEndDate(null); }} title="Pause Subscription" scrollable>
@@ -829,9 +980,7 @@ export default function SubscriptionDetailScreen() {
       >
         {(() => {
           if (!subscription?.pause_start_date) return null;
-          const today = new Date();
-          today.setHours(0, 0, 0, 0);
-          const pauseStarted = today >= new Date(subscription.pause_start_date);
+          const pauseStarted = subscription.pause_start_date <= toLocalDateStr(new Date());
           return (
             <View style={styles.modalContent}>
               {pauseStarted && (
@@ -913,6 +1062,14 @@ export default function SubscriptionDetailScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+  refreshOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(255,255,255,0.4)',
+    zIndex: 10,
+  alignItems: 'center',
+    justifyContent: 'center',
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1457,5 +1614,157 @@ const styles = StyleSheet.create({
     color: Colors.success,
     lineHeight: Typography.size.sm * 1.5,
     opacity: 0.85,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: Colors.white,
+    paddingHorizontal: Spacing[5],
+    paddingTop: Spacing[2],
+    gap: Spacing[2],
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  tab: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+    paddingVertical: Spacing[3],
+    paddingHorizontal: Spacing[4],
+    borderRadius: Radius.md,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabActive: {
+    borderBottomColor: Colors.primary,
+  },
+  tabText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.textTertiary,
+  },
+  tabTextActive: {
+    color: Colors.primary,
+    fontFamily: Typography.fontFamily.sansSemiBold,
+  },
+  invoiceCard: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    overflow: 'hidden',
+    ...Shadow.sm,
+  },
+  invoiceHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: Spacing[4],
+    backgroundColor: Colors.neutral[50],
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.divider,
+  },
+  invoiceHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[3],
+  },
+  invoiceIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  invoiceType: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+  },
+  invoiceDate: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+    marginTop: 2,
+  },
+  invoiceAmount: {
+    fontFamily: Typography.fontFamily.bold,
+    fontSize: Typography.size.lg,
+    color: Colors.textPrimary,
+  },
+  invoiceBody: {
+    padding: Spacing[4],
+    gap: Spacing[3],
+  },
+  invoiceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  invoiceRowLabel: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+  },
+  invoiceRowValue: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+    flex: 1,
+    textAlign: 'right',
+  },
+  invoiceFooter: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingTop: Spacing[2],
+    borderTopWidth: 1,
+    borderTopColor: Colors.divider,
+  },
+  invoiceReceiptBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+    paddingVertical: Spacing[2],
+    paddingHorizontal: Spacing[3],
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  invoiceReceiptBtnText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.xs,
+    color: Colors.primary,
+  },
+  invoiceStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing[2],
+    paddingVertical: 2,
+  },
+  invoiceStatusSuccess: {
+    backgroundColor: Colors.successSurface,
+  },
+  invoiceStatusPending: {
+    backgroundColor: Colors.warningSurface,
+  },
+  invoiceStatusFailed: {
+    backgroundColor: Colors.errorSurface,
+  },
+  invoiceStatusText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: 10,
+  },
+  invoiceEmpty: {
+    alignItems: 'center',
+    paddingVertical: Spacing[10],
+    gap: Spacing[3],
+  },
+  invoiceEmptyText: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textTertiary,
+    textAlign: 'center',
   },
 });

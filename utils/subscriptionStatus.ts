@@ -2,6 +2,7 @@ import { Subscription } from '@/types/database';
 
 export type EffectiveStatus =
   | 'active'
+  | 'pending'
   | 'paused'
   | 'scheduled_pause'
   | 'expired'
@@ -19,6 +20,19 @@ export function getEffectiveStatus(sub: Subscription): EffectiveStatus {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+
+  // If start_date is in the future, show as pending regardless of DB status
+  if (sub.start_date) {
+    const startDate = new Date(sub.start_date);
+    startDate.setHours(0, 0, 0, 0);
+    if (startDate > today) {
+      return 'pending';
+    }
+  }
+
+  if (sub.status === 'pending') {
+    return 'pending';
+  }
 
   if (sub.pause_start_date && sub.pause_until) {
     const pauseStart = new Date(sub.pause_start_date);

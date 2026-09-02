@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Modal, TextInput, Switch, Platform, ActivityIndicator, RefreshControl, Linking,
@@ -29,6 +31,14 @@ const EMPTY_FORM = {
 };
 
 export default function VendorsScreen() {
+  return (
+    <ModuleGuard module="procurement">
+      <VendorsScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function VendorsScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -53,7 +63,7 @@ export default function VendorsScreen() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  usePageVisibility(load);
 
   const openCreate = () => {
     setEditing(null);
@@ -119,7 +129,7 @@ export default function VendorsScreen() {
   const filtered = vendors.filter(v => tab === 'active' ? v.is_active : !v.is_active);
 
   const VendorCard = ({ v }: { v: Vendor }) => (
-    <TouchableOpacity style={[s.card, isWeb && s.cardWeb]} onPress={() => openEdit(v)} activeOpacity={0.8}>
+    <TouchableOpacity style={[s.card, isWeb && s.cardWeb]} onPress={() => router.push({ pathname: '/(admin)/vendor-detail' as any, params: { id: v.id } })} activeOpacity={0.8}>
       <View style={s.cardTop}>
         <View style={s.avatar}>
           <Text style={s.avatarText}>{(v.business_name ?? v.contact_person ?? '?')[0]?.toUpperCase()}</Text>

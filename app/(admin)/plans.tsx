@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { usePageVisibility } from '@/hooks/usePageVisibility';
+import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View,
   Text,
@@ -15,7 +17,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Plus, ChevronRight, ChevronDown, X, Check, Pencil, Sprout, Leaf, Upload, Image as ImageIcon } from 'lucide-react-native';
+import { Plus, ChevronRight, ChevronDown, X, Check, Pencil, Sprout, Leaf, Upload, Image as ImageIcon, Eye, EyeOff } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
@@ -42,6 +44,14 @@ const EMPTY_FORM = {
 };
 
 export default function AdminPlansScreen() {
+  return (
+    <ModuleGuard module="catalog">
+      <AdminPlansScreenContent />
+    </ModuleGuard>
+  );
+}
+
+function AdminPlansScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
@@ -66,11 +76,16 @@ export default function AdminPlansScreen() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  usePageVisibility(load);
 
   const handleToggleActive = async (id: string, current: boolean) => {
     await supabase.from('subscription_plans').update({ is_active: !current }).eq('id', id);
     setPlans((prev) => prev.map((p) => p.id === id ? { ...p, is_active: !current } : p));
+  };
+
+  const handleToggleVisible = async (id: string, current: boolean) => {
+    await supabase.from('subscription_plans').update({ show_in_customer_plans: !current }).eq('id', id);
+    setPlans((prev) => prev.map((p) => p.id === id ? { ...p, show_in_customer_plans: !current } : p));
   };
 
   const openCreate = () => {
@@ -554,6 +569,7 @@ export default function AdminPlansScreen() {
             <Text style={[webStyles.thCell, { flex: 1 }]}>MRP</Text>
             <Text style={[webStyles.thCell, { flex: 1 }]}>Frequency</Text>
             <Text style={[webStyles.thCell, { flex: 1 }]}>Status</Text>
+            <Text style={[webStyles.thCell, { flex: 1 }]}>Visible to Customers</Text>
             <Text style={[webStyles.thCell, { width: 100 }]}>Actions</Text>
           </View>
 
@@ -582,6 +598,25 @@ export default function AdminPlansScreen() {
                     trackColor={{ false: Colors.neutral[300], true: Colors.primaryLight }}
                     thumbColor={plan.is_active ? Colors.primary : Colors.neutral[400]}
                   />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <TouchableOpacity
+                    style={[webStyles.visibilityBtn, plan.show_in_customer_plans && webStyles.visibilityBtnActive]}
+                    onPress={() => handleToggleVisible(plan.id, plan.show_in_customer_plans ?? true)}
+                    activeOpacity={0.75}
+                  >
+                    {plan.show_in_customer_plans !== false ? (
+                      <>
+                        <Eye size={13} color={Colors.primary} strokeWidth={2} />
+                        <Text style={webStyles.visibilityBtnTextActive}>Shown</Text>
+                      </>
+                    ) : (
+                      <>
+                        <EyeOff size={13} color={Colors.textTertiary} strokeWidth={2} />
+                        <Text style={webStyles.visibilityBtnText}>Hidden</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
                 </View>
                 <View style={[webStyles.actionsCell, { width: 100 }]}>
                   <TouchableOpacity style={webStyles.iconBtn} onPress={() => openEdit(plan)}>
@@ -636,6 +671,17 @@ export default function AdminPlansScreen() {
                     thumbColor={plan.is_active ? Colors.primary : Colors.neutral[400]}
                   />
                 </View>
+                <TouchableOpacity
+                  style={[styles.visibilityToggleBtn, plan.show_in_customer_plans !== false && styles.visibilityToggleBtnActive]}
+                  onPress={() => handleToggleVisible(plan.id, plan.show_in_customer_plans ?? true)}
+                  activeOpacity={0.75}
+                >
+                  {plan.show_in_customer_plans !== false ? (
+                    <Eye size={13} color={Colors.primary} strokeWidth={2} />
+                  ) : (
+                    <EyeOff size={13} color={Colors.textTertiary} strokeWidth={2} />
+                  )}
+                </TouchableOpacity>
                 <TouchableOpacity onPress={() => openEdit(plan)} style={styles.editIconBtn}>
                   <Pencil size={14} color={Colors.textSecondary} />
                 </TouchableOpacity>
@@ -731,6 +777,19 @@ const styles = StyleSheet.create({
     color: Colors.textTertiary,
   },
   editIconBtn: { padding: 4 },
+  visibilityToggleBtn: {
+    width: 28, height: 28,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.neutral[100],
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  visibilityToggleBtnActive: {
+    backgroundColor: Colors.primarySurface,
+    borderColor: Colors.primary,
+  },
   planDesc: {
     fontFamily: Typography.fontFamily.sansRegular,
     fontSize: Typography.size.sm,
@@ -854,6 +913,32 @@ const webStyles = StyleSheet.create({
     backgroundColor: Colors.neutral[100],
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  visibilityBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    alignSelf: 'flex-start',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.neutral[100],
+  },
+  visibilityBtnActive: {
+    backgroundColor: Colors.primarySurface,
+    borderColor: Colors.primary,
+  },
+  visibilityBtnText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+  },
+  visibilityBtnTextActive: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    color: Colors.primary,
   },
   emptyState: { paddingVertical: 48, alignItems: 'center' },
   emptyText: {
