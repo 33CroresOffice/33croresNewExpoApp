@@ -62,10 +62,10 @@ function SendNotificationScreenContent() {
   const [templates, setTemplates] = useState<NotificationTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
 
-  // Auto-select WhatsApp channel when a heavy_rainfall template is chosen
+  // Auto-select WhatsApp channel when a heavy_rainfall or early_delivery template is chosen
   useEffect(() => {
     const t = templates.find((t) => t.id === selectedTemplateId);
-    if (t?.event_type === 'heavy_rainfall') {
+    if (t?.event_type === 'heavy_rainfall' || t?.event_type === 'early_delivery') {
       setSelectedChannels(new Set(['whatsapp']));
     }
   }, [selectedTemplateId, templates]);

@@ -8,7 +8,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CreditCard, Search, ArrowLeft, CircleCheck as CheckCircle, Circle as XCircle, Clock, RotateCcw } from 'lucide-react-native';
 import { router } from 'expo-router';
-import { format } from 'date-fns';
+import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { PaymentStatus } from '@/types/database';
@@ -23,6 +23,13 @@ interface PaymentRow {
   profile?: { full_name: string | null; mobile: string };
   subscription?: { plan?: { name: string } };
 }
+
+const PERIOD_OPTIONS = [
+  { label: 'This Month', value: 0 },
+  { label: 'Last Month', value: 1 },
+  { label: '3 Months', value: 3 },
+  { label: 'All Time', value: -1 },
+];
 
 const STATUS_TABS: { label: string; value: PaymentStatus | 'all' }[] = [
   { label: 'All', value: 'all' },
@@ -55,14 +62,34 @@ function FinancePaymentsScreenContent() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<PaymentStatus | 'all'>('all');
+  const [dateFilter, setDateFilter] = useState(0);
 
   const load = useCallback(async () => {
     try {
-      const { data } = await supabase
+      let query = supabase
         .from('payments')
         .select('*, profile:profiles(full_name, mobile), subscription:subscriptions(plan:subscription_plans(name))')
         .order('created_at', { ascending: false })
-        .limit(200);
+        .limit(300);
+      if (dateFilter !== -1) {
+        const now = new Date();
+        let fromDate: Date;
+        let toDate: Date;
+        if (dateFilter === 0) {
+          fromDate = startOfMonth(now);
+          toDate = now;
+        } else if (dateFilter === 1) {
+          fromDate = startOfMonth(subMonths(now, 1));
+          toDate = endOfMonth(subMonths(now, 1));
+        } else {
+          fromDate = startOfMonth(subMonths(now, dateFilter - 1));
+          toDate = now;
+        }
+        query = query
+          .gte('created_at', fromDate.toISOString())
+          .lte('created_at', toDate.toISOString());
+      }
+      const { data } = await query;
       if (data) setPayments(data as any);
     } catch (e) {
       console.error('load error', e);
@@ -70,8 +97,9 @@ function FinancePaymentsScreenContent() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [dateFilter]);
 
+  useEffect(() => { load(); }, [load]);
   usePageVisibility(load);
 
   const filtered = payments.filter(p => {
@@ -130,6 +158,13 @@ function FinancePaymentsScreenContent() {
           <Search size={14} color={Colors.textTertiary} strokeWidth={1.8} />
           <TextInput style={s.searchInput} value={search} onChangeText={setSearch} placeholder="Search by name, mobile, plan or reference..." placeholderTextColor={Colors.textDisabled} />
         </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.periodPills}>
+          {PERIOD_OPTIONS.map(p => (
+            <TouchableOpacity key={p.value} style={[s.periodPill, dateFilter === p.value && s.periodPillActive]} onPress={() => setDateFilter(p.value)}>
+              <Text style={[s.periodPillText, dateFilter === p.value && s.periodPillTextActive]}>{p.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabScroll} contentContainerStyle={s.tabs}>
@@ -239,8 +274,13 @@ const s = StyleSheet.create({
   summaryPill: { flex: 1, backgroundColor: Colors.neutral[50], borderRadius: Radius.md, padding: Spacing[3], alignItems: 'center', borderWidth: 1, borderColor: Colors.border },
   summaryPillLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
   summaryPillValue: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, marginTop: 2 },
-  searchRow: { paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  searchRow: { paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border, gap: Spacing[2] },
   searchRowWeb: { paddingHorizontal: Spacing[8] },
+  periodPills: { flexDirection: 'row', gap: Spacing[2] },
+  periodPill: { paddingVertical: Spacing[1], paddingHorizontal: Spacing[3], borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.neutral[50] },
+  periodPillActive: { backgroundColor: Colors.primarySurface, borderColor: Colors.primary },
+  periodPillText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
+  periodPillTextActive: { color: Colors.primary, fontFamily: Typography.fontFamily.sansSemiBold },
   searchWrap: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], backgroundColor: Colors.neutral[50], borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingHorizontal: Spacing[3], paddingVertical: Spacing[2] },
   searchInput: { flex: 1, fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary, outlineStyle: 'none' } as any,
   tabScroll: { backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border, maxHeight: 48, flexGrow: 0 },

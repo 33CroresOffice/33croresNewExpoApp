@@ -11,15 +11,19 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Package, ChevronRight, Calendar } from 'lucide-react-native';
+import { ArrowLeft, Package, ChevronRight, Calendar, Leaf, X } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { format } from 'date-fns';
 import StatusChip from '@/components/ui/StatusChip';
+import DatePickerField from '@/components/ui/DatePickerField';
 
 const GRADIENT_TOP = '#1B3A18';
 const GRADIENT_BOT = '#3D7A35';
+
+const PENDING_STATUSES = ['draft', 'sent', 'accepted'];
+const COMPLETED_STATUSES = ['fulfilled', 'completed', 'paid'];
 
 const FILTER_OPTIONS = [
   { key: 'all', label: 'All Orders' },
@@ -38,6 +42,8 @@ export default function VendorProcurementOrders() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [activeFilter, setActiveFilter] = useState<string>('all');
+  const [startDate, setStartDate] = useState<Date | null>(null);
+  const [endDate, setEndDate] = useState<Date | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -64,7 +70,13 @@ export default function VendorProcurementOrders() {
 
     const { data, error } = await supabase
       .from('procurement_orders')
-      .select('id, status, requirement_date, created_at, notes')
+      .select(`
+        id, status, requirement_date, created_at, notes,
+        items:procurement_order_items(
+          id, quantity, unit_type, price_per_unit, total_price,
+          flower_type:flower_types(display_name, unit_type)
+        )
+      `)
       .eq('vendor_id', vendorData.id)
       .order('created_at', { ascending: false });
 
@@ -79,10 +91,26 @@ export default function VendorProcurementOrders() {
   }, [profile?.id]);
 
   const filteredOrders = orders.filter((o) => {
-    if (activeFilter === 'pending') return ['draft', 'sent', 'accepted'].includes(o.status);
-    if (activeFilter === 'completed') return o.status === 'completed';
+    const matchesStatus = activeFilter === 'pending'
+      ? PENDING_STATUSES.includes(o.status)
+      : activeFilter === 'completed'
+        ? COMPLETED_STATUSES.includes(o.status)
+        : true;
+
+    if (!matchesStatus) return false;
+    if (!startDate && !endDate) return true;
+
+    const requirementDate = o.requirement_date ? new Date(`${o.requirement_date}T00:00:00`) : null;
+    if (!requirementDate) return false;
+    if (startDate && requirementDate < startDate) return false;
+    if (endDate && requirementDate > endDate) return false;
     return true;
   });
+
+  const clearDateRange = () => {
+    setStartDate(null);
+    setEndDate(null);
+  };
 
   const containerPadding = isWeb ? 32 : Spacing[4];
 
@@ -108,20 +136,20 @@ export default function VendorProcurementOrders() {
 
         <View style={[styles.statsRow, { paddingHorizontal: containerPadding }]}>
           <View style={styles.statItem}>
-            <Text style={styles.statValue}>{orders.length}</Text>
+            <Text style={styles.statValue}>{filteredOrders.length}</Text>
             <Text style={styles.statLabel}>Total</Text>
           </View>
           <View style={styles.statDivider} />
           <View style={styles.statItem}>
             <Text style={styles.statValue}>
-              {orders.filter(o => ['draft', 'sent', 'accepted'].includes(o.status)).length}
+              {filteredOrders.filter(o => PENDING_STATUSES.includes(o.status)).length}
             </Text>
             <Text style={styles.statLabel}>Pending</Text>
           </View>
           <View style={styles.statDivider} />
           <View style={styles.statItem}>
             <Text style={styles.statValue}>
-              {orders.filter(o => o.status === 'completed').length}
+              {filteredOrders.filter(o => COMPLETED_STATUSES.includes(o.status)).length}
             </Text>
             <Text style={styles.statLabel}>Completed</Text>
           </View>
@@ -141,6 +169,43 @@ export default function VendorProcurementOrders() {
             </Text>
           </TouchableOpacity>
         ))}
+      </View>
+
+      <View style={[styles.dateRangeCard, { marginHorizontal: containerPadding }]}>
+        <View style={styles.dateRangeHeader}>
+          <View>
+            <Text style={styles.dateRangeTitle}>Filter by required date</Text>
+            <Text style={styles.dateRangeSubtitle}>Show orders needed within a selected range</Text>
+          </View>
+          {(startDate || endDate) && (
+            <TouchableOpacity style={styles.clearDateBtn} onPress={clearDateRange} activeOpacity={0.7}>
+              <X size={14} color={Colors.primary} strokeWidth={2} />
+              <Text style={styles.clearDateText}>Clear</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        <View style={styles.dateFields}>
+          <View style={styles.dateField}>
+            <DatePickerField
+              label="From"
+              value={startDate}
+              minDate={new Date(2020, 0, 1)}
+              maxDate={endDate ?? undefined}
+              onChange={(date) => {
+                setStartDate(date);
+                if (endDate && date > endDate) setEndDate(null);
+              }}
+            />
+          </View>
+          <View style={styles.dateField}>
+            <DatePickerField
+              label="To"
+              value={endDate}
+              minDate={startDate ?? new Date(2020, 0, 1)}
+              onChange={setEndDate}
+            />
+          </View>
+        </View>
       </View>
 
       <ScrollView
@@ -190,6 +255,21 @@ export default function VendorProcurementOrders() {
                         : order.notes ?? 'No notes'}
                     </Text>
                   </View>
+                  {order.items && order.items.length > 0 && (
+                    <View style={styles.itemsPreview}>
+                      {order.items.slice(0, 3).map((item: any, idx: number) => (
+                        <View key={item.id} style={styles.itemChip}>
+                          <Leaf size={10} color={Colors.primary} strokeWidth={2} />
+                          <Text style={styles.itemChipText}>
+                            {item.flower_type?.display_name ?? 'Unknown'} · {item.quantity} {item.unit_type ?? ''}
+                          </Text>
+                        </View>
+                      ))}
+                      {order.items.length > 3 && (
+                        <Text style={styles.moreItemsText}>+{order.items.length - 3} more</Text>
+                      )}
+                    </View>
+                  )}
                 </View>
                 <View style={styles.listRight}>
                   <StatusChip status={order.status} />
@@ -252,6 +332,49 @@ const styles = StyleSheet.create({
   filterBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   filterText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
   filterTextActive: { color: Colors.white },
+  dateRangeCard: {
+    marginTop: Spacing[3],
+    padding: Spacing[4],
+    backgroundColor: Colors.white,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    ...Shadow.sm,
+  },
+  dateRangeHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: Spacing[3],
+    marginBottom: Spacing[3],
+  },
+  dateRangeTitle: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+  },
+  dateRangeSubtitle: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+    marginTop: 2,
+  },
+  clearDateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.primarySurface,
+  },
+  clearDateText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    color: Colors.primary,
+  },
+  dateFields: { flexDirection: 'row', gap: Spacing[3] },
+  dateField: { flex: 1 },
   scrollContent: { gap: Spacing[3], paddingBottom: Spacing[10] },
   emptyState: { paddingVertical: 60, alignItems: 'center', gap: Spacing[3] },
   emptyTitle: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textPrimary },
@@ -273,5 +396,13 @@ const styles = StyleSheet.create({
   listPrimary: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
   listMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   listSecondary: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  itemsPreview: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
+  itemChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: Colors.primarySurface, borderRadius: Radius.sm,
+    paddingHorizontal: 7, paddingVertical: 3,
+  },
+  itemChipText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.primary },
+  moreItemsText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.textTertiary, alignSelf: 'center' },
   listRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
 });

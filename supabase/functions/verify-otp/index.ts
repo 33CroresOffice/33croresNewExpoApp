@@ -203,6 +203,20 @@ Deno.serve(async (req: Request) => {
       await supabase.from("riders").update({ profile_id: userId }).eq("id", riderRecord.id);
     }
 
+    // Link auth_user_id on service_providers if this mobile belongs to an approved provider
+    const { data: providerRecord } = await supabase
+      .from("service_providers")
+      .select("id, approval_status, auth_user_id")
+      .eq("mobile", mobile)
+      .maybeSingle();
+
+    if (providerRecord && providerRecord.approval_status === "approved" && !providerRecord.auth_user_id) {
+      await supabase
+        .from("service_providers")
+        .update({ auth_user_id: userId, updated_at: new Date().toISOString() })
+        .eq("id", providerRecord.id);
+    }
+
     return new Response(
       JSON.stringify({ success: true, email, password }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }

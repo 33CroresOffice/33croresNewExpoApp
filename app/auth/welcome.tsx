@@ -77,15 +77,19 @@ export default function WelcomeScreen() {
 
           <View style={styles.portalLinksRow}>
             <TouchableOpacity onPress={() => router.push('/vendor/login')} activeOpacity={0.7}>
-              <Text style={styles.portalLinkText}>Vendor portal</Text>
+              <Text style={styles.portalLinkText}>Vendor</Text>
             </TouchableOpacity>
             <View style={styles.portalLinkDivider} />
             <TouchableOpacity onPress={() => router.push('/rider/login')} activeOpacity={0.7}>
-              <Text style={styles.portalLinkText}>Rider portal</Text>
+              <Text style={styles.portalLinkText}>Rider</Text>
+            </TouchableOpacity>
+            <View style={styles.portalLinkDivider} />
+            <TouchableOpacity onPress={() => router.push('/provider/login')} activeOpacity={0.7}>
+              <Text style={styles.portalLinkText}>Service provider</Text>
             </TouchableOpacity>
             <View style={styles.portalLinkDivider} />
             <TouchableOpacity onPress={() => router.push('/admin/login')} activeOpacity={0.7}>
-              <Text style={styles.portalLinkText}>Admin portal</Text>
+              <Text style={styles.portalLinkText}>Admin</Text>
             </TouchableOpacity>
           </View>
         </View>

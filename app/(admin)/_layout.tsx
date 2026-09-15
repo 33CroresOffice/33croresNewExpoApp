@@ -77,13 +77,14 @@ export default function AdminLayout() {
       <Tabs.Screen
         name="customers"
         options={{
-          title: 'Customers',
+          title: 'User',
           tabBarIcon: ({ color, size }) => <Users size={size} color={color} strokeWidth={1.8} />,
         }}
       />
       <Tabs.Screen name="order-detail"        options={{ href: null }} />
       <Tabs.Screen name="customer-detail"     options={{ href: null }} />
       <Tabs.Screen name="flower-types"        options={{ href: null }} />
+      <Tabs.Screen name="pooja-items"         options={{ href: null }} />
       <Tabs.Screen name="vendors"             options={{ href: null }} />
       <Tabs.Screen name="vendor-detail"       options={{ href: null }} />
       <Tabs.Screen name="vendor-add-flowers"   options={{ href: null }} />
@@ -93,6 +94,7 @@ export default function AdminLayout() {
       <Tabs.Screen name="procurement-order-detail" options={{ href: null }} />
 <Tabs.Screen name="finance"             options={{ href: null }} />
       <Tabs.Screen name="finance-payments"    options={{ href: null }} />
+      <Tabs.Screen name="vendor-payments"       options={{ href: null }} />
       <Tabs.Screen name="payment-history"       options={{ href: null }} />
       <Tabs.Screen name="expenses"            options={{ href: null }} />
       <Tabs.Screen name="ledger"              options={{ href: null }} />
@@ -115,6 +117,10 @@ export default function AdminLayout() {
       <Tabs.Screen name="send-notification"        options={{ href: null }} />
       <Tabs.Screen name="roles"                     options={{ href: null }} />
       <Tabs.Screen name="custom-order-detail"       options={{ href: null }} />
+      <Tabs.Screen name="service-order-detail"      options={{ href: null }} />
+      <Tabs.Screen name="service-orders"           options={{ href: null }} />
+      <Tabs.Screen name="package-management"     options={{ href: null }} />
+      <Tabs.Screen name="package-detail"          options={{ href: null }} />
       <Tabs.Screen name="panji"                     options={{ href: null }} />
       <Tabs.Screen name="localities"                 options={{ href: null }} />
       <Tabs.Screen name="apartments"                 options={{ href: null }} />

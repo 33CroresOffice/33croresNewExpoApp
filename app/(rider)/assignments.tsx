@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { PackageCheck, MapPin, User, X, Truck, Phone, Clock, CircleCheck as CheckCircle2 } from 'lucide-react-native';
+import { PackageCheck, MapPin, User, X, Truck, Phone, Clock, CircleCheck as CheckCircle2, ListOrdered } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -77,8 +77,10 @@ const subStatusMeta: Record<string, { color: string; bg: string; label: string }
   renewed: { color: Colors.accent, bg: Colors.accentSurface, label: 'Renewed' },
 };
 
-const subStatusStyle = (status: string | null | undefined) =>
-  (status && subStatusMeta[status]) ?? { color: Colors.textTertiary, bg: Colors.neutral[100], label: status ?? 'Unknown' };
+const subStatusStyle = (status: string | null | undefined): { color: string; bg: string; label: string } => {
+  const fallback = { color: Colors.textTertiary, bg: Colors.neutral[100], label: status ?? 'Unknown' };
+  return status ? (subStatusMeta[status] ?? fallback) : fallback;
+};
 
 export default function RiderAssignments() {
   const insets = useSafeAreaInsets();
@@ -92,6 +94,11 @@ export default function RiderAssignments() {
   const [selectedAssignment, setSelectedAssignment] = useState<Assignment | null>(null);
   const [attendanceCheckedIn, setAttendanceCheckedIn] = useState(false);
   const [deliveringId, setDeliveringId] = useState<string | null>(null);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
+  const [deliveryDeadlineTime, setDeliveryDeadlineTime] = useState<string | null>(null);
+  const [routeStops, setRouteStops] = useState<any[]>([]);
+  const [showRoute, setShowRoute] = useState(false);
+  const [routeLoading, setRouteLoading] = useState(false);
 
   const load = useCallback(async () => {
     if (!profile?.id) return;
@@ -105,6 +112,8 @@ export default function RiderAssignments() {
         return;
       }
       setRiderId(riderData.id);
+      const { data: deadline } = await supabase.rpc('get_delivery_deadline_time');
+      setDeliveryDeadlineTime(deadline ?? null);
       await fetchAssignments(riderData.id);
     } else {
       await fetchAssignments(riderId);
@@ -300,20 +309,56 @@ export default function RiderAssignments() {
     }
   };
 
+  const formatDeadlineAMPM = (raw: string): string => {
+    const clean = raw.slice(0, 5);
+    const [h, m] = clean.split(':').map(Number);
+    const period = h >= 12 ? 'PM' : 'AM';
+    const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${displayH}:${m.toString().padStart(2, '0')} ${period}`;
+  };
+
+  const isDeadlinePassed = (): boolean => {
+    if (!deliveryDeadlineTime) return false;
+    const nowIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+    const [dh, dm] = deliveryDeadlineTime.split(':').map(Number);
+    const deadlineMinutes = dh * 60 + dm;
+    const nowMinutes = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
+    return nowMinutes > deadlineMinutes;
+  };
+
+  const isDeliveredToday = (assignment: Assignment): boolean => {
+    if (assignment.status !== 'delivered' || !assignment.delivered_at) return false;
+    const todayIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const deliveredIST = new Date(new Date(assignment.delivered_at).getTime() + 5.5 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10);
+    return deliveredIST === todayIST;
+  };
+
   const deliverAssignment = async (assignment: Assignment) => {
-    if (!attendanceCheckedIn || assignment.status === 'delivered') return;
+    if (isDeliveredToday(assignment)) return;
+    setDeliveryError(null);
+
+    if (isDeadlinePassed()) {
+      setDeliveryError(`Delivery deadline (${formatDeadlineAMPM(deliveryDeadlineTime!)} IST) has passed. You can no longer mark deliveries today.`);
+      return;
+    }
+
     setDeliveringId(assignment.id);
 
     const coords = await getCurrentLocation();
+    if (!coords) {
+      setDeliveryError('Could not detect your location. Enable GPS and try again.');
+      setDeliveringId(null);
+      return;
+    }
 
     const update: Record<string, any> = {
       status: 'delivered',
       delivered_at: new Date().toISOString(),
     };
-    if (coords) {
-      update.delivery_latitude = coords.latitude;
-      update.delivery_longitude = coords.longitude;
-    }
+    update.delivery_latitude = coords.latitude;
+    update.delivery_longitude = coords.longitude;
 
     const { error } = await supabase
       .from('rider_order_assignments')
@@ -321,25 +366,79 @@ export default function RiderAssignments() {
       .eq('id', assignment.id)
       .eq('rider_id', riderId!);
 
-    if (!error) {
+    if (error) {
+      const msg = error.message || '';
+      if (msg.includes('deadline') || msg.includes('check_violation')) {
+        setDeliveryError(`Delivery deadline (${deliveryDeadlineTime ? formatDeadlineAMPM(deliveryDeadlineTime) : ''} IST) has passed. You can no longer mark deliveries today.`);
+      } else {
+        setDeliveryError('Could not update this delivery. Please try again.');
+      }
+    } else {
       setAssignments((current) => current.map((item) =>
-        item.id === assignment.id ? { ...item, status: 'delivered' as AssignmentStatus } : item
+        item.id === assignment.id ? { ...item, status: 'delivered' as AssignmentStatus, delivered_at: update.delivered_at } : item
       ));
     }
     setDeliveringId(null);
   };
 
+  const loadSuggestedRoute = async () => {
+    if (!riderId) return;
+    setRouteLoading(true);
+    const todayIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const { data, error } = await supabase.rpc('calculate_delivery_route', { p_rider_id: riderId, p_target_date: todayIST });
+    setRouteLoading(false);
+    if (error) {
+      setDeliveryError('Could not load the suggested route. Please try again.');
+      return;
+    }
+    setRouteStops(Array.isArray(data?.route) ? data.route : []);
+    setShowRoute(true);
+  };
+
+  const renderRouteModal = () => (
+    <Modal transparent animationType="slide" visible={showRoute} onRequestClose={() => setShowRoute(false)}>
+      <View style={mStyles.modalOverlay}>
+        <Pressable style={mStyles.modalBackdrop} onPress={() => setShowRoute(false)} />
+        <View style={[mStyles.modalSheet, { paddingBottom: insets.bottom + 16 }]}>
+          <View style={mStyles.modalHandle} />
+          <View style={mStyles.modalHeader}>
+            <View>
+              <Text style={mStyles.modalTitle}>Suggested Route</Text>
+              <Text style={mStyles.detailSub}>Nearest-first order from the warehouse</Text>
+            </View>
+            <TouchableOpacity onPress={() => setShowRoute(false)} style={mStyles.modalClose}>
+              <X size={20} color={Colors.textTertiary} strokeWidth={1.8} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {routeStops.length === 0 ? (
+              <View style={mStyles.emptyState}><Text style={mStyles.emptyText}>No GPS-enabled stops available.</Text></View>
+            ) : routeStops.map((stop: any) => (
+              <View key={stop.assignment_id} style={mStyles.routeStop}>
+                <View style={mStyles.routeNumber}><Text style={mStyles.routeNumberText}>{stop.sequence}</Text></View>
+                <View style={mStyles.detailContent}>
+                  <Text style={mStyles.detailValue}>{stop.customer_name ?? 'Customer'}</Text>
+                  <Text style={mStyles.detailSub}>{[stop.locality_name, stop.street, stop.city].filter(Boolean).join(', ') || 'Address unavailable'}</Text>
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+
   const renderCard = (a: Assignment) => {
     const d = a.orderDetail;
     return (
-      <TouchableOpacity
-        key={a.id}
-        style={mStyles.card}
-        onPress={() => setSelectedAssignment(a)}
-        activeOpacity={0.78}
-      >
+      <View key={a.id} style={mStyles.card}>
         <View style={mStyles.cardInner}>
-          <View style={mStyles.cardTopRow}>
+          <TouchableOpacity
+            style={mStyles.cardPressArea}
+            onPress={() => setSelectedAssignment(a)}
+            activeOpacity={0.78}
+          >
+            <View style={mStyles.cardTopRow}>
             <View style={[mStyles.cardIconWrap, { backgroundColor: Colors.primarySurface }]}>
               <User size={18} color={Colors.primary} strokeWidth={1.8} />
             </View>
@@ -375,12 +474,21 @@ export default function RiderAssignments() {
                 {formatAddressFromDetail(d)}
               </Text>
             </View>
-            <View style={mStyles.pickupTimeRow}>
+              <View style={mStyles.pickupTimeRow}>
               <Clock size={13} color={Colors.primary} strokeWidth={1.8} />
               <Text style={mStyles.pickupTimeLabel}>Today's Pickup Time:</Text>
               <Text style={mStyles.pickupTimeValue}>{formatPickupTime(a.picked_up_at)}</Text>
             </View>
-            <View style={mStyles.actionRow}>
+            {deliveryDeadlineTime && (
+              <View style={[mStyles.pickupTimeRow, { marginTop: 2 }]}>
+                <Clock size={13} color={isDeadlinePassed() ? Colors.error : Colors.warning} strokeWidth={1.8} />
+                <Text style={mStyles.pickupTimeLabel}>Delivery Deadline:</Text>
+                <Text style={[mStyles.pickupTimeValue, { color: isDeadlinePassed() ? Colors.error : Colors.warning }]}>{formatDeadlineAMPM(deliveryDeadlineTime)} IST</Text>
+              </View>
+            )}
+          </View>
+          </TouchableOpacity>
+          <View style={mStyles.actionRow}>
               <TouchableOpacity
                 style={[mStyles.callButton, !d?.customer_mobile && mStyles.callButtonDisabled]}
                 onPress={() => callCustomer(d?.customer_mobile)}
@@ -390,30 +498,34 @@ export default function RiderAssignments() {
                 <Phone size={15} color={Colors.white} strokeWidth={2.2} />
                 <Text style={mStyles.callButtonText}>Call</Text>
               </TouchableOpacity>
-              {a.status === 'delivered' ? (
+              {isDeliveredToday(a) ? (
                 <View style={mStyles.deliveredBadge}>
                   <CheckCircle2 size={14} color={Colors.success} strokeWidth={2.2} />
                   <Text style={mStyles.deliveredBadgeText}>Delivered</Text>
                 </View>
+              ) : isDeadlinePassed() ? (
+                <View style={[mStyles.deliverButton, mStyles.deliverButtonDisabled]}>
+                  <PackageCheck size={15} color={Colors.white} strokeWidth={2.2} />
+                  <Text style={mStyles.deliverButtonText}>Deadline Passed</Text>
+                </View>
               ) : (
                 <TouchableOpacity
-                  style={[mStyles.deliverButton, !attendanceCheckedIn && mStyles.deliverButtonDisabled]}
+                  style={mStyles.deliverButton}
                   onPress={() => deliverAssignment(a)}
-                  disabled={!attendanceCheckedIn || deliveringId === a.id}
+                  disabled={deliveringId === a.id}
                   activeOpacity={0.8}
                 >
                   {deliveringId === a.id
                     ? <ActivityIndicator size="small" color={Colors.white} />
                     : <PackageCheck size={15} color={Colors.white} strokeWidth={2.2} />}
                   <Text style={mStyles.deliverButtonText}>
-                    {attendanceCheckedIn ? 'Mark Delivered' : 'Mark attendance first'}
+                    Mark Delivered
                   </Text>
                 </TouchableOpacity>
               )}
             </View>
           </View>
         </View>
-      </TouchableOpacity>
     );
   };
 
@@ -494,6 +606,17 @@ export default function RiderAssignments() {
                     <Text style={mStyles.detailValue}>{formatPickupTime(a.picked_up_at)}</Text>
                   </View>
                 </View>
+                {deliveryDeadlineTime && (
+                  <View style={mStyles.detailRow}>
+                    <View style={[mStyles.detailIconWrap, { backgroundColor: isDeadlinePassed() ? Colors.errorSurface : Colors.warningSurface }]}>
+                      <Clock size={16} color={isDeadlinePassed() ? Colors.error : Colors.warning} strokeWidth={1.8} />
+                    </View>
+                    <View style={mStyles.detailContent}>
+                      <Text style={mStyles.detailLabel}>Delivery Deadline</Text>
+                      <Text style={[mStyles.detailValue, { color: isDeadlinePassed() ? Colors.error : Colors.warning }]}>{formatDeadlineAMPM(deliveryDeadlineTime)} IST</Text>
+                    </View>
+                  </View>
+                )}
               </View>
             </ScrollView>
           </View>
@@ -504,6 +627,7 @@ export default function RiderAssignments() {
 
   if (isWeb) {
     return (
+      <>
       <ScrollView
         style={{ flex: 1, backgroundColor: '#EEF2F5' }}
         contentContainerStyle={wStyles.content}
@@ -526,15 +650,28 @@ export default function RiderAssignments() {
                 <Text style={wStyles.headerDate}>{format(new Date(), 'EEEE, dd MMMM yyyy')}</Text>
               </View>
             </View>
-            {assignments.length > 0 && (
-              <View style={wStyles.headerCountBadge}>
-                <Text style={wStyles.headerCountText}>{assignments.length} {assignments.length === 1 ? 'order' : 'orders'}</Text>
-              </View>
-            )}
+            <View style={wStyles.headerActions}>
+              {assignments.length > 0 && (
+                <TouchableOpacity style={wStyles.routeButton} onPress={loadSuggestedRoute} disabled={routeLoading}>
+                  {routeLoading ? <ActivityIndicator size="small" color={ACCENT} /> : <ListOrdered size={15} color={ACCENT} strokeWidth={2} />}
+                  <Text style={wStyles.routeButtonText}>Suggested Route</Text>
+                </TouchableOpacity>
+              )}
+              {assignments.length > 0 && (
+                <View style={wStyles.headerCountBadge}>
+                  <Text style={wStyles.headerCountText}>{assignments.length} {assignments.length === 1 ? 'order' : 'orders'}</Text>
+                </View>
+              )}
+            </View>
           </View>
         </LinearGradient>
 
         <View style={{ margin: 32, marginTop: 16 }}>
+          {deliveryError && (
+            <View style={wStyles.deliveryErrorBanner}>
+              <Text style={wStyles.deliveryErrorText}>{deliveryError}</Text>
+            </View>
+          )}
           {loading ? (
             <View style={wStyles.emptyState}>
               <ActivityIndicator size="large" color={Colors.primary} />
@@ -582,6 +719,13 @@ export default function RiderAssignments() {
                       <Text style={wStyles.pickupTimeLabel}>Today's Pickup Time:</Text>
                       <Text style={wStyles.pickupTimeValue}>{formatPickupTime(a.picked_up_at)}</Text>
                     </View>
+                    {deliveryDeadlineTime && (
+                      <View style={wStyles.pickupTimeRow}>
+                        <Clock size={12} color={isDeadlinePassed() ? Colors.error : Colors.warning} strokeWidth={1.8} />
+                        <Text style={wStyles.pickupTimeLabel}>Delivery Deadline:</Text>
+                        <Text style={[wStyles.pickupTimeValue, { color: isDeadlinePassed() ? Colors.error : Colors.warning }]}>{formatDeadlineAMPM(deliveryDeadlineTime)} IST</Text>
+                      </View>
+                    )}
                     <View style={wStyles.actionRow}>
                       <TouchableOpacity
                         style={[wStyles.callButton, !d?.customer_mobile && wStyles.callButtonDisabled]}
@@ -592,23 +736,28 @@ export default function RiderAssignments() {
                         <Phone size={15} color={Colors.white} strokeWidth={2.2} />
                         <Text style={wStyles.callButtonText}>Call</Text>
                       </TouchableOpacity>
-                      {a.status === 'delivered' ? (
+                      {isDeliveredToday(a) ? (
                         <View style={wStyles.deliveredBadge}>
                           <CheckCircle2 size={14} color={Colors.success} strokeWidth={2.2} />
                           <Text style={wStyles.deliveredBadgeText}>Delivered</Text>
                         </View>
+                      ) : isDeadlinePassed() ? (
+                        <View style={[wStyles.deliverButton, wStyles.deliverButtonDisabled]}>
+                          <PackageCheck size={15} color={Colors.white} strokeWidth={2.2} />
+                          <Text style={wStyles.deliverButtonText}>Deadline Passed</Text>
+                        </View>
                       ) : (
                         <TouchableOpacity
-                          style={[wStyles.deliverButton, !attendanceCheckedIn && wStyles.deliverButtonDisabled]}
+                          style={wStyles.deliverButton}
                           onPress={() => deliverAssignment(a)}
-                          disabled={!attendanceCheckedIn || deliveringId === a.id}
+                          disabled={deliveringId === a.id}
                           activeOpacity={0.8}
                         >
                           {deliveringId === a.id
                             ? <ActivityIndicator size="small" color={Colors.white} />
                             : <PackageCheck size={15} color={Colors.white} strokeWidth={2.2} />}
                           <Text style={wStyles.deliverButtonText}>
-                            {attendanceCheckedIn ? 'Mark Delivered' : 'Mark attendance first'}
+                            Mark Delivered
                           </Text>
                         </TouchableOpacity>
                       )}
@@ -620,6 +769,8 @@ export default function RiderAssignments() {
           )}
         </View>
       </ScrollView>
+      {renderRouteModal()}
+      </>
     );
   }
 
@@ -641,11 +792,19 @@ export default function RiderAssignments() {
               <Text style={mStyles.headerDate}>{format(new Date(), 'EEEE, dd MMMM yyyy')}</Text>
             </View>
           </View>
-          {assignments.length > 0 && (
-            <View style={mStyles.headerCountPill}>
-              <Text style={mStyles.headerCountText}>{assignments.length}</Text>
-            </View>
-          )}
+          <View style={mStyles.headerActions}>
+            {assignments.length > 0 && (
+              <TouchableOpacity style={mStyles.routeButton} onPress={loadSuggestedRoute} disabled={routeLoading}>
+                {routeLoading ? <ActivityIndicator size="small" color={ACCENT} /> : <ListOrdered size={15} color={ACCENT} strokeWidth={2} />}
+                <Text style={mStyles.routeButtonText}>Route</Text>
+              </TouchableOpacity>
+            )}
+            {assignments.length > 0 && (
+              <View style={mStyles.headerCountPill}>
+                <Text style={mStyles.headerCountText}>{assignments.length}</Text>
+              </View>
+            )}
+          </View>
         </View>
       </LinearGradient>
 
@@ -654,6 +813,11 @@ export default function RiderAssignments() {
         contentContainerStyle={[mStyles.scrollContent, { paddingBottom: insets.bottom + 80 }]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
       >
+        {deliveryError && (
+          <View style={mStyles.deliveryErrorBanner}>
+            <Text style={mStyles.deliveryErrorText}>{deliveryError}</Text>
+          </View>
+        )}
         {loading && (
           <View style={mStyles.loadingState}>
             <ActivityIndicator size="large" color={Colors.primary} />
@@ -670,6 +834,7 @@ export default function RiderAssignments() {
       </ScrollView>
 
       {renderDetail()}
+      {renderRouteModal()}
     </View>
   );
 }
@@ -709,6 +874,12 @@ const mStyles = StyleSheet.create({
   headerCountText: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: '#FFFFFF',
   },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
+  routeButton: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 7, borderRadius: Radius.full, backgroundColor: 'rgba(58,175,228,0.14)', borderWidth: 1, borderColor: 'rgba(58,175,228,0.3)' },
+  routeButtonText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: ACCENT },
+  routeStop: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3], paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], borderBottomWidth: 1, borderBottomColor: Colors.divider },
+  routeNumber: { width: 28, height: 28, borderRadius: 14, backgroundColor: Colors.primarySurface, alignItems: 'center', justifyContent: 'center' },
+  routeNumberText: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.sm, color: Colors.primary },
   scrollContent: { padding: Spacing[4], gap: Spacing[3] },
   loadingState: { paddingVertical: 60, alignItems: 'center' },
   card: {
@@ -716,6 +887,7 @@ const mStyles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border, overflow: 'hidden', ...Shadow.sm,
   },
   cardInner: { flex: 1 },
+  cardPressArea: { paddingBottom: Spacing[1] },
   cardTopRow: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: Spacing[4], paddingTop: Spacing[4], paddingBottom: Spacing[3],
@@ -767,6 +939,18 @@ const mStyles = StyleSheet.create({
     backgroundColor: Colors.success, borderRadius: Radius.md, paddingVertical: 11, flex: 1,
   },
   deliverButtonDisabled: { backgroundColor: Colors.neutral[300] },
+  deliveryErrorBanner: {
+    backgroundColor: Colors.errorSurface,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  deliveryErrorText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.error,
+  },
   deliverButtonText: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white,
   },
@@ -866,6 +1050,12 @@ const wStyles = StyleSheet.create({
   headerCountText: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: 'rgba(255,255,255,0.9)',
   },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  routeButton: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: Radius.full, backgroundColor: 'rgba(58,175,228,0.14)', borderWidth: 1, borderColor: 'rgba(58,175,228,0.3)' },
+  routeButtonText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: ACCENT },
+  routeStop: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3], paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], borderBottomWidth: 1, borderBottomColor: Colors.divider },
+  routeNumber: { width: 28, height: 28, borderRadius: 14, backgroundColor: Colors.primarySurface, alignItems: 'center', justifyContent: 'center' },
+  routeNumberText: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.sm, color: Colors.primary },
   emptyState: { paddingVertical: 40, alignItems: 'center', gap: 10 },
   emptyText: {
     fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary,
@@ -924,6 +1114,18 @@ const wStyles = StyleSheet.create({
     cursor: 'pointer' as any,
   },
   deliverButtonDisabled: { backgroundColor: Colors.neutral[300] },
+  deliveryErrorBanner: {
+    backgroundColor: Colors.errorSurface,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  deliveryErrorText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.error,
+  },
   deliverButtonText: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white,
   },

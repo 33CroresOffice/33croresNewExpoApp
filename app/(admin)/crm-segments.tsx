@@ -54,13 +54,13 @@ function CrmSegmentsScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const { profile } = useAuthStore();
-  const params = useLocalSearchParams<{ highlight?: string }>();
+  const params = useLocalSearchParams<{ highlight?: string; tab?: string }>();
 
   const [segments, setSegments] = useState<Segment[]>([]);
   const [tags, setTags] = useState<Tag_[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'segments' | 'tags'>('segments');
+  const [activeTab, setActiveTab] = useState<'segments' | 'tags'>(params.tab === 'tags' ? 'tags' : 'segments');
 
   const [showSegModal, setShowSegModal] = useState(false);
   const [editSeg, setEditSeg] = useState<Segment | null>(null);
@@ -143,7 +143,11 @@ function CrmSegmentsScreenContent() {
       ? await supabase.from('customer_tags').update(payload).eq('id', editTag.id)
       : await supabase.from('customer_tags').insert(payload);
     setSavingTag(false);
-    if (error) { setTagError(error.message); return; }
+    if (error) {
+      console.error('[saveTag] insert error:', error.message, error.code, error.details);
+      setTagError(error.message || 'Failed to save tag. Please try again.');
+      return;
+    }
     setShowTagModal(false);
     load();
   };

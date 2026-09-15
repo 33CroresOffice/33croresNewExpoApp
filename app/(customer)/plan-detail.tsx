@@ -10,7 +10,8 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import { ArrowLeft, Check, Package, Truck } from 'lucide-react-native';
+import { ArrowLeft, Check, Package, Truck, Flame, CalendarDays } from 'lucide-react-native';
+import CollapsibleCategory from '@/components/ui/CollapsibleCategory';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { SubscriptionPlan } from '@/types/database';
@@ -25,7 +26,11 @@ export default function PlanDetailScreen() {
 
   useEffect(() => {
     const load = async () => {
-      const { data } = await supabase.from('subscription_plans').select('*').eq('id', id).single();
+      const { data } = await supabase
+        .from('subscription_plans')
+        .select('*, pooja_items:plan_pooja_items(*, pooja_item:pooja_items(id, name, description, unit_type, is_active, category_id, category:pooja_item_categories(id, name, sort_order)))')
+        .eq('id', id)
+        .single();
       if (data) setPlan(data);
       setLoading(false);
     };
@@ -33,6 +38,7 @@ export default function PlanDetailScreen() {
   }, [id]);
 
   const formatPrice = (paise: number) => `₹${(paise / 100).toLocaleString('en-IN')}`;
+  const isPooja = plan?.product_type === 'pooja';
 
   if (loading || !plan) {
     return (
@@ -75,7 +81,7 @@ export default function PlanDetailScreen() {
             </View>
             <View style={styles.priceBlock}>
               <Text style={styles.price}>{formatPrice(plan.price)}</Text>
-              <Text style={styles.pricePer}>/month</Text>
+              <Text style={styles.pricePer}>{isPooja ? '/delivery' : '/month'}</Text>
             </View>
           </View>
 
@@ -83,7 +89,7 @@ export default function PlanDetailScreen() {
 
           <View style={styles.statsRow}>
             {[
-              { icon: <Package size={18} color={Colors.primary} />, label: `${plan.deliveries_per_month} deliveries/mo` },
+              { icon: isPooja ? <Flame size={18} color={Colors.accent} /> : <Package size={18} color={Colors.primary} />, label: isPooja ? 'Pooja essentials' : `${plan.deliveries_per_month} deliveries/mo` },
               { icon: <Truck size={18} color={Colors.accent} />, label: 'Free delivery' },
             ].map((stat) => (
               <View key={stat.label} style={styles.statItem}>
@@ -95,17 +101,49 @@ export default function PlanDetailScreen() {
 
           <View style={styles.divider} />
 
-          <Text style={styles.sectionTitle}>What's included</Text>
-          <View style={styles.featuresList}>
-            {(plan.features as string[]).map((feat) => (
-              <View key={feat} style={styles.featureItem}>
-                <View style={styles.checkCircle}>
-                  <Check size={13} color={Colors.white} strokeWidth={2.5} />
+          <Text style={styles.sectionTitle}>{isPooja ? 'Included in this package' : "What's included"}</Text>
+          {isPooja ? (
+            <View style={styles.poojaItemsList}>
+              {(() => {
+                const items = (plan.pooja_items ?? []).filter((item) => item.pooja_item?.is_active === true && item.pooja_item.name.trim().length > 0);
+                const groups: Record<string, { name: string; items: typeof items }> = {};
+                for (const item of items) {
+                  const catId = item.pooja_item?.category_id ?? 'uncategorized';
+                  const catName = item.pooja_item?.category?.name ?? 'Uncategorized';
+                  if (!groups[catId]) groups[catId] = { name: catName, items: [] };
+                  groups[catId].items.push(item);
+                }
+                const groupEntries = Object.values(groups).sort((a, b) => {
+                  if (a.name === 'Uncategorized') return 1;
+                  if (b.name === 'Uncategorized') return -1;
+                  return a.name.localeCompare(b.name);
+                });
+                return groupEntries.map((group, idx) => (
+                  <CollapsibleCategory key={group.name} title={group.name} itemCount={group.items.length} defaultExpanded={idx === 0}>
+                    {group.items.map((item) => (
+                      <View key={item.pooja_item_id} style={styles.poojaItemRow}>
+                        <View style={styles.poojaItemIcon}><Flame size={16} color={Colors.accent} strokeWidth={2} /></View>
+                        <View style={styles.poojaItemInfo}>
+                          <Text style={styles.poojaItemName}>{item.pooja_item?.name}</Text>
+                          <Text style={styles.poojaItemDescription}>{item.pooja_item?.description}</Text>
+                        </View>
+                        <Text style={styles.poojaItemQty}>{item.quantity_per_delivery} {item.unit_type}</Text>
+                      </View>
+                    ))}
+                  </CollapsibleCategory>
+                ));
+              })()}
+            </View>
+          ) : (
+            <View style={styles.featuresList}>
+              {(plan.features as string[]).map((feat) => (
+                <View key={feat} style={styles.featureItem}>
+                  <View style={styles.checkCircle}><Check size={13} color={Colors.white} strokeWidth={2.5} /></View>
+                  <Text style={styles.featureText}>{feat}</Text>
                 </View>
-                <Text style={styles.featureText}>{feat}</Text>
-              </View>
-            ))}
-          </View>
+              ))}
+            </View>
+          )}
 
         </View>
       </ScrollView>
@@ -113,14 +151,13 @@ export default function PlanDetailScreen() {
       <View style={[styles.footer, { paddingBottom: insets.bottom + Spacing[4] }]}>
         <View style={styles.footerPrice}>
           <Text style={styles.footerPriceAmount}>{formatPrice(plan.price)}</Text>
-          <Text style={styles.footerPricePer}>/month</Text>
+          <Text style={styles.footerPricePer}>{isPooja ? '/delivery' : '/month'}</Text>
         </View>
-        <Button
-          label="Subscribe Now"
-          onPress={() => router.push({ pathname: '/(customer)/checkout', params: { planId: plan.id } })}
-          size="lg"
-          style={styles.subscribeBtn}
-        />
+        {isPooja && plan.supports_one_time ? (
+          <Button label="Buy Now" onPress={() => router.push({ pathname: '/(customer)/pooja-checkout', params: { planId: plan.id } })} size="lg" style={styles.subscribeBtn} />
+        ) : (
+          <Button label="Subscribe Now" onPress={() => router.push({ pathname: '/(customer)/checkout', params: { planId: plan.id } })} size="lg" style={styles.subscribeBtn} />
+        )}
       </View>
     </View>
   );
@@ -196,6 +233,13 @@ const styles = StyleSheet.create({
     marginBottom: -Spacing[2],
   },
   featuresList: { gap: Spacing[3] },
+  poojaItemsList: { gap: Spacing[3] },
+  poojaItemRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3], padding: Spacing[3], backgroundColor: '#FFF8ED', borderRadius: Radius.md, borderWidth: 1, borderColor: '#F3DFC0' },
+  poojaItemIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#FCEED8', alignItems: 'center', justifyContent: 'center' },
+  poojaItemInfo: { flex: 1, gap: 2 },
+  poojaItemName: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  poojaItemDescription: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  poojaItemQty: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.accent }, 
   featureItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3] },
   checkCircle: {
     width: 22,

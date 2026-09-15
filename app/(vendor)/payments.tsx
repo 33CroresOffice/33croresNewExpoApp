@@ -65,7 +65,7 @@ export default function VendorPayments() {
 
     const { data, error } = await supabase
       .from('vendor_payments')
-      .select('id, amount, status, payment_date, payment_method, notes')
+      .select('id, amount, status, payment_date, payment_method, notes, procurement_order_id, procurement_order:procurement_orders(order_number, total_amount)')
       .eq('vendor_id', vendorData.id)
       .order('payment_date', { ascending: false });
 
@@ -210,6 +210,9 @@ export default function VendorPayments() {
                     {pmt.payment_date ? format(new Date(pmt.payment_date), 'dd MMM yyyy') : '—'}
                     {pmt.payment_method ? ` · ${pmt.payment_method}` : ''}
                   </Text>
+                  {(pmt as any).procurement_order?.order_number ? (
+                    <Text style={styles.listOrderRef}>Order: {(pmt as any).procurement_order.order_number}</Text>
+                  ) : null}
                   {pmt.notes ? <Text style={styles.listNotes}>{pmt.notes}</Text> : null}
                 </View>
                 <StatusChip status={pmt.status} />
@@ -304,4 +307,5 @@ const styles = StyleSheet.create({
   listAmount: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, color: Colors.textPrimary },
   listDate: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
   listNotes: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginTop: 1 },
+  listOrderRef: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: ACCENT_GOLD, marginTop: 2 },
 });

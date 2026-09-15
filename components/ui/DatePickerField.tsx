@@ -22,7 +22,7 @@ import {
 } from 'date-fns';
 import { Colors, Typography, Spacing, Radius } from '@/constants/theme';
 
-type View = 'day' | 'month' | 'year';
+type PickerView = 'day' | 'month' | 'year';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -37,7 +37,7 @@ interface Props {
 
 export default function DatePickerField({ label, required, value, onChange, minDate, maxDate }: Props) {
   const [open, setOpen] = useState(false);
-  const [pickerView, setPickerView] = useState<View>('day');
+  const [pickerView, setPickerView] = useState<PickerView>('day');
   const [viewMonth, setViewMonth] = useState(() => {
     if (value) return value;
     if (minDate) return minDate;

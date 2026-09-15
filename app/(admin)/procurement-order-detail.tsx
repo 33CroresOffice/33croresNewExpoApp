@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Package, Store, Calendar, FileText, IndianRupee, CreditCard as Edit3, Check, X, Clock, Truck, CircleCheck as CheckCircle, Circle as XCircle, ChevronDown } from 'lucide-react-native';
+import { ArrowLeft, Package, Store, Calendar, FileText, IndianRupee, CreditCard as Edit3, Check, X, Clock, Truck, CircleCheck as CheckCircle, Circle as XCircle, ChevronDown, CircleDollarSign } from 'lucide-react-native';
 import { format, parseISO } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
@@ -17,10 +17,11 @@ const STATUS_CONFIG: Record<string, { bg: string; text: string; border: string; 
   sent:      { bg: '#E3F2FD',             text: '#1565C0',             border: '#90CAF9',            icon: Truck,        label: 'Sent' },
   accepted:  { bg: Colors.successSurface, text: Colors.success,        border: '#A5D6A7',            icon: CheckCircle,  label: 'Accepted' },
   fulfilled: { bg: '#E8F5E9',             text: '#1B5E20',             border: '#81C784',            icon: CheckCircle,  label: 'Fulfilled' },
+  paid:      { bg: Colors.successSurface, text: Colors.success,        border: '#A5D6A7',            icon: CircleDollarSign, label: 'Paid' },
   cancelled: { bg: Colors.errorSurface,   text: Colors.error,          border: '#EF9A9A',            icon: XCircle,      label: 'Cancelled' },
 };
 
-const STATUS_OPTIONS: ProcurementOrderStatus[] = ['draft', 'sent', 'accepted', 'fulfilled', 'cancelled'];
+const STATUS_OPTIONS: ProcurementOrderStatus[] = ['draft', 'sent', 'accepted', 'fulfilled', 'paid', 'cancelled'];
 
 export default function ProcurementOrderDetailScreen() {
   return (
@@ -46,6 +47,14 @@ function ProcurementOrderDetailScreenContent() {
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState(false);
 
+  const [payments, setPayments] = useState<any[]>([]);
+  const [showPayModal, setShowPayModal] = useState(false);
+  const [payAmount, setPayAmount] = useState('');
+  const [payMethod, setPayMethod] = useState('cash');
+  const [payNotes, setPayNotes] = useState('');
+  const [recordingPayment, setRecordingPayment] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     if (!id) {
       setLoading(false);
@@ -66,6 +75,13 @@ function ProcurementOrderDetailScreenContent() {
       ]);
       if (orderRes.data) setOrder(orderRes.data as any);
       if (itemsRes.data) setItems(itemsRes.data as any[]);
+
+      const { data: payData } = await supabase
+        .from('vendor_payments')
+        .select('id, amount, status, payment_date, payment_method, notes, created_at')
+        .eq('procurement_order_id', id!)
+        .order('created_at', { ascending: false });
+      if (payData) setPayments(payData);
     } catch (e) {
       console.error('load error', e);
     } finally {
@@ -117,6 +133,38 @@ function ProcurementOrderDetailScreenContent() {
     setOrder(prev => prev ? { ...prev, status } : prev);
     setUpdatingStatus(false);
     setShowStatusModal(false);
+  };
+
+  const totalPaid = payments.filter(p => p.status === 'completed').reduce((s, p) => s + Number(p.amount), 0);
+  const amountDue = Number(order?.total_amount ?? 0) - totalPaid;
+  const fullyPaid = amountDue <= 0 && totalPaid > 0;
+
+  const recordPayment = async () => {
+    const amt = parseFloat(payAmount);
+    if (isNaN(amt) || amt <= 0) { setPaymentError('Enter a valid amount'); return; }
+    setRecordingPayment(true);
+    setPaymentError(null);
+    const { data: { session } } = await supabase.auth.getSession();
+    const { error } = await supabase.from('vendor_payments').insert({
+      procurement_order_id: id!,
+      vendor_id: (order as any)?.vendor_id ?? (order as any)?.vendor?.id,
+      amount: amt,
+      payment_method: payMethod,
+      notes: payNotes,
+      status: 'completed',
+      recorded_by: session?.user?.id ?? null,
+    });
+    if (error) { setPaymentError(error.message); setRecordingPayment(false); return; }
+    setPayAmount(''); setPayNotes(''); setShowPayModal(false);
+
+    const newTotalPaid = totalPaid + amt;
+    const orderTotal = Number(order?.total_amount ?? 0);
+    if (newTotalPaid >= orderTotal && orderTotal > 0 && order?.status !== 'paid' && order?.status !== 'cancelled') {
+      await supabase.from('procurement_orders').update({ status: 'paid' }).eq('id', id!);
+    }
+
+    await load();
+    setRecordingPayment(false);
   };
 
   if (loading) {
@@ -322,10 +370,148 @@ function ProcurementOrderDetailScreenContent() {
             </View>
           )}
         </View>
+
+        {allPriced && Number(order.total_amount) > 0 && (
+          <View style={s.card}>
+            <View style={s.cardHeaderRow}>
+              <View style={s.cardHeader}>
+                <CircleDollarSign size={14} color={Colors.primary} strokeWidth={1.8} />
+                <Text style={s.cardTitle}>Vendor Payment</Text>
+              </View>
+              {fullyPaid ? (
+                <View style={s.paidBadge}>
+                  <CheckCircle size={12} color={Colors.success} strokeWidth={2} />
+                  <Text style={s.paidBadgeText}>Fully Paid</Text>
+                </View>
+              ) : (
+                <View style={s.dueBadge}>
+                  <Text style={s.dueBadgeText}>₹{amountDue.toLocaleString('en-IN')} due</Text>
+                </View>
+              )}
+            </View>
+
+            <View style={s.paySummaryRow}>
+              <View style={s.paySummaryItem}>
+                <Text style={s.paySummaryLabel}>Order Total</Text>
+                <Text style={s.paySummaryValue}>₹{Number(order.total_amount).toLocaleString('en-IN')}</Text>
+              </View>
+              <View style={s.paySummaryDivider} />
+              <View style={s.paySummaryItem}>
+                <Text style={s.paySummaryLabel}>Paid</Text>
+                <Text style={[s.paySummaryValue, { color: Colors.success }]}>₹{totalPaid.toLocaleString('en-IN')}</Text>
+              </View>
+              <View style={s.paySummaryDivider} />
+              <View style={s.paySummaryItem}>
+                <Text style={s.paySummaryLabel}>Balance</Text>
+                <Text style={[s.paySummaryValue, { color: fullyPaid ? Colors.success : Colors.error }]}>₹{Math.max(amountDue, 0).toLocaleString('en-IN')}</Text>
+              </View>
+            </View>
+
+            {payments.length > 0 && (
+              <View style={s.payHistoryBox}>
+                {payments.map((pmt, idx) => (
+                  <View key={pmt.id} style={[s.payHistoryRow, idx < payments.length - 1 && s.payHistoryBorder]}>
+                    <View style={s.payHistoryInfo}>
+                      <Text style={s.payHistoryAmount}>₹{Number(pmt.amount).toLocaleString('en-IN')}</Text>
+                      <Text style={s.payHistoryMeta}>
+                        {pmt.payment_date ? format(parseISO(pmt.payment_date), 'dd MMM yyyy') : '—'} · {pmt.payment_method}
+                      </Text>
+                      {pmt.notes ? <Text style={s.payHistoryNotes}>{pmt.notes}</Text> : null}
+                    </View>
+                    <View style={[s.payStatusPill, { backgroundColor: pmt.status === 'completed' ? '#E8F5E9' : Colors.accentSurface }]}>
+                      <Text style={[s.payStatusText, { color: pmt.status === 'completed' ? Colors.success : Colors.accentDark }]}>
+                        {pmt.status === 'completed' ? 'Paid' : 'Pending'}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {!fullyPaid && (
+              <TouchableOpacity style={s.recordPayBtn} onPress={() => setShowPayModal(true)} activeOpacity={0.8}>
+                <CircleDollarSign size={15} color={Colors.white} strokeWidth={1.8} />
+                <Text style={s.recordPayBtnText}>Record Payment</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
       </ScrollView>
 
+      <Modal visible={showPayModal} transparent animationType="fade" onRequestClose={() => setShowPayModal(false)}>
+        <View style={s.modalOverlay}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setShowPayModal(false)} />
+          <View style={[s.statusModal, isWeb && s.statusModalWeb]}>
+            <View style={s.statusModalHeader}>
+              <Text style={s.statusModalTitle}>Record Vendor Payment</Text>
+              <TouchableOpacity onPress={() => setShowPayModal(false)} style={s.closeBtn}>
+                <X size={15} color={Colors.textSecondary} strokeWidth={2} />
+              </TouchableOpacity>
+            </View>
+            <View style={s.payModalBody}>
+              <View style={s.payModalSummary}>
+                <Text style={s.payModalSummaryLabel}>Amount Due</Text>
+                <Text style={s.payModalSummaryValue}>₹{amountDue.toLocaleString('en-IN')}</Text>
+              </View>
+              <Text style={s.payFieldLabel}>Payment Amount *</Text>
+              <View style={s.priceInputWrap}>
+                <Text style={s.rupeeSymbol}>₹</Text>
+                <TextInput
+                  style={s.priceInput}
+                  value={payAmount}
+                  onChangeText={setPayAmount}
+                  keyboardType="decimal-pad"
+                  placeholder="Enter amount"
+                  placeholderTextColor={Colors.textDisabled}
+                />
+              </View>
+              <Text style={s.payFieldLabel}>Payment Method</Text>
+              <View style={s.payMethodRow}>
+                {['cash', 'bank_transfer', 'cheque', 'upi'].map(m => (
+                  <TouchableOpacity
+                    key={m}
+                    style={[s.payMethodChip, payMethod === m && s.payMethodChipActive]}
+                    onPress={() => setPayMethod(m)}
+                  >
+                    <Text style={[s.payMethodText, payMethod === m && s.payMethodTextActive]}>
+                      {m.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={s.payFieldLabel}>Notes</Text>
+              <TextInput
+                style={[s.priceInput, s.payNotesInput]}
+                value={payNotes}
+                onChangeText={setPayNotes}
+                placeholder="Optional notes..."
+                placeholderTextColor={Colors.textDisabled}
+                multiline
+              />
+              {paymentError && <Text style={s.errorText}>{paymentError}</Text>}
+            </View>
+            <View style={s.payModalFooter}>
+              <TouchableOpacity style={s.cancelBtn} onPress={() => setShowPayModal(false)}>
+                <Text style={s.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.recordPayBtn} onPress={recordPayment} disabled={recordingPayment} activeOpacity={0.85}>
+                {recordingPayment ? (
+                  <ActivityIndicator size="small" color={Colors.white} />
+                ) : (
+                  <>
+                    <Check size={14} color={Colors.white} strokeWidth={2.5} />
+                    <Text style={s.recordPayBtnText}>Record Payment</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={showStatusModal} transparent animationType="fade" onRequestClose={() => setShowStatusModal(false)}>
-        <TouchableOpacity style={s.modalOverlay} activeOpacity={1} onPress={() => setShowStatusModal(false)}>
+        <View style={s.modalOverlay}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setShowStatusModal(false)} />
           <View style={[s.statusModal, isWeb && s.statusModalWeb]}>
             <View style={s.statusModalHeader}>
               <Text style={s.statusModalTitle}>Update Status</Text>
@@ -357,7 +543,7 @@ function ProcurementOrderDetailScreenContent() {
               );
             })}
           </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
     </View>
   );
@@ -498,4 +684,41 @@ const s = StyleSheet.create({
   statusOptionActive: { borderColor: Colors.primary, backgroundColor: Colors.primarySurface },
   statusOptionIcon: { width: 28, height: 28, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
   statusOptionText: { flex: 1, fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textPrimary },
+
+  paidBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#E8F5E9', paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full },
+  paidBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11, color: Colors.success },
+  dueBadge: { backgroundColor: Colors.errorSurface, paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full },
+  dueBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11, color: Colors.error },
+  paySummaryRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.neutral[50], borderRadius: Radius.md, padding: Spacing[3], borderWidth: 1, borderColor: Colors.border },
+  paySummaryItem: { flex: 1, alignItems: 'center' },
+  paySummaryLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 10, color: Colors.textTertiary, textTransform: 'uppercase', letterSpacing: 0.4 },
+  paySummaryValue: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.sm, marginTop: 2 },
+  paySummaryDivider: { width: 1, height: 32, backgroundColor: Colors.border },
+  payHistoryBox: { gap: Spacing[2], marginTop: Spacing[2] },
+  payHistoryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: Spacing[2] },
+  payHistoryBorder: { borderBottomWidth: 1, borderBottomColor: Colors.divider },
+  payHistoryInfo: { flex: 1 },
+  payHistoryAmount: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  payHistoryMeta: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.textTertiary, marginTop: 1 },
+  payHistoryNotes: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.textSecondary, marginTop: 1 },
+  payStatusPill: { paddingVertical: 3, paddingHorizontal: 8, borderRadius: Radius.full },
+  payStatusText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11 },
+  recordPayBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: Colors.primary, paddingVertical: 12, borderRadius: Radius.md, marginTop: Spacing[3] },
+  recordPayBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white },
+
+  payModalBody: { gap: Spacing[2], paddingBottom: Spacing[3] },
+  payModalSummary: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: Colors.primarySurface, borderRadius: Radius.md, padding: Spacing[3], marginBottom: Spacing[3] },
+  payModalSummaryLabel: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.primary },
+  payModalSummaryValue: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.lg, color: Colors.primary },
+  payFieldLabel: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 12, color: Colors.textSecondary, marginTop: Spacing[1] },
+  payMethodRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: Spacing[1] },
+  payMethodChip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.white },
+  payMethodChipActive: { backgroundColor: Colors.primarySurface, borderColor: Colors.primary },
+  payMethodText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.textSecondary },
+  payMethodTextActive: { color: Colors.primary },
+  payNotesInput: { minHeight: 60, textAlignVertical: 'top', borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, padding: Spacing[2], marginTop: Spacing[1] },
+  payModalFooter: { flexDirection: 'row', gap: Spacing[2], marginTop: Spacing[3] },
+  cancelBtn: { flex: 1, paddingVertical: 12, borderRadius: Radius.md, backgroundColor: Colors.neutral[100], alignItems: 'center' },
+  cancelBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textSecondary },
+  errorText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 12, color: Colors.error, marginTop: Spacing[1] },
 });

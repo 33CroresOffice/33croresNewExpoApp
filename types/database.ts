@@ -28,6 +28,19 @@ export type NotificationEventType =
   | 'panji_daily_digest'
   | 'subscription_pending'
   | 'heavy_rainfall'
+  | 'early_delivery'
+  | 'booking_request_sent'
+  | 'booking_pandit_accepted'
+  | 'booking_awaiting_advance'
+  | 'booking_confirmed_customer'
+  | 'booking_confirmed_pandit'
+  | 'booking_pandit_on_the_way'
+  | 'booking_pandit_arrived'
+  | 'booking_pooja_started'
+  | 'booking_pooja_completed'
+  | 'booking_payment_completed_pandit'
+  | 'booking_payment_completed_customer'
+  | 'booking_settled'
   | 'custom';
 
 export interface PanjiEntry {
@@ -59,8 +72,9 @@ export type OrderStatus = 'scheduled' | 'out_for_delivery' | 'delivered' | 'fail
 export type PaymentStatus = 'pending' | 'success' | 'failed' | 'refunded';
 export type DeliveryFrequency = 'weekly' | 'biweekly' | 'monthly' | '3months' | '6months';
 export type UnitType = 'kg' | 'grams' | 'pieces' | 'bunch' | 'stems' | 'dozen' | 'ml' | 'litre' | 'packet' | 'tray' | 'box' | 'meter';
-export type ProcurementOrderStatus = 'draft' | 'sent' | 'accepted' | 'fulfilled' | 'cancelled';
+export type ProcurementOrderStatus = 'draft' | 'sent' | 'accepted' | 'fulfilled' | 'paid' | 'cancelled';
 export type DailyRequirementStatus = 'pending' | 'ordered' | 'fulfilled';
+export type ProcurementBatchStatus = 'draft' | 'approved' | 'pushed';
 export type VendorPaymentMethod = 'cash' | 'upi' | 'bank_transfer' | 'cheque';
 export type VendorPaymentStatus = 'pending' | 'completed' | 'failed';
 export type WarehouseReceiptStatus = 'complete' | 'partial' | 'rejected';
@@ -126,6 +140,20 @@ export interface NotificationLog {
   triggered_by_profile?: Pick<Profile, 'id' | 'full_name'>;
 }
 
+export type ProviderBookingStatus =
+  | 'request_sent'
+  | 'pandit_accepted'
+  | 'awaiting_advance_payment'
+  | 'booking_confirmed'
+  | 'pandit_on_the_way'
+  | 'pandit_arrived'
+  | 'pooja_in_progress'
+  | 'pooja_completed'
+  | 'payment_completed'
+  | 'settled'
+  | 'declined'
+  | 'cancelled';
+
 export interface InAppNotification {
   id: string;
   user_id: string;
@@ -136,6 +164,7 @@ export interface InAppNotification {
   read_at: string | null;
   related_subscription_id: string | null;
   related_order_id: string | null;
+  related_booking_id: string | null;
   created_at: string;
 }
 
@@ -185,6 +214,8 @@ export interface PlanFlowerRequirement {
   flower_type?: FlowerType;
 }
 
+export type ProductType = 'flower' | 'pooja';
+
 export interface SubscriptionPlan {
   id: string;
   name: string;
@@ -198,8 +229,68 @@ export interface SubscriptionPlan {
   deliveries_per_month: number;
   sort_order: number;
   show_in_customer_plans: boolean;
+  product_type: ProductType;
+  supports_one_time: boolean;
   created_at: string;
   flower_requirements?: PlanFlowerRequirement[];
+  pooja_items?: PlanPoojaItem[];
+}
+
+export interface PoojaItemCategory {
+  id: string;
+  name: string;
+  description: string;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PoojaItem {
+  id: string;
+  name: string;
+  description: string;
+  unit_type: string;
+  image_url: string | null;
+  is_active: boolean;
+  sort_order: number;
+  category_id: string | null;
+  created_at: string;
+  updated_at: string;
+  category?: PoojaItemCategory | null;
+}
+
+export interface PlanPoojaItem {
+  plan_id: string;
+  pooja_item_id: string;
+  quantity_per_delivery: number;
+  unit_type: string;
+  pooja_item?: PoojaItem;
+}
+
+export type PoojaOrderStatus = 'pending' | 'confirmed' | 'paid' | 'out_for_delivery' | 'delivered' | 'cancelled';
+export type PoojaOrderPaymentStatus = 'unpaid' | 'pending' | 'paid';
+
+export interface PoojaOrder {
+  id: string;
+  user_id: string;
+  plan_id: string;
+  delivery_date: string;
+  delivery_time: string;
+  address_id: string | null;
+  special_instructions: string | null;
+  status: PoojaOrderStatus;
+  payment_status: PoojaOrderPaymentStatus;
+  price: number;
+  delivery_price: number;
+  total_price: number;
+  razorpay_order_id: string | null;
+  razorpay_payment_id: string | null;
+  admin_note: string | null;
+  created_at: string;
+  updated_at: string;
+  plan?: SubscriptionPlan;
+  address?: Address;
 }
 
 export interface Address {
@@ -291,11 +382,62 @@ export interface DailyRequirement {
   total_quantity: number;
   unit_type: UnitType | null;
   active_subscriptions_count: number;
+  custom_orders_count: number;
   status: DailyRequirementStatus;
   procurement_order_id: string | null;
+  notes: string | null;
+  batch_id: string | null;
+  original_flower_type_id: string | null;
+  substituted: boolean;
+  generated_at: string;
+  updated_at: string;
+  flower_type?: FlowerType;
+  original_flower_type?: FlowerType;
+}
+
+export interface FlowerAvailability {
+  id: string;
+  flower_type_id: string;
+  unavailable_from: string;
+  unavailable_to: string;
+  alternate_flower_type_id: string | null;
+  alternate_quantity: number | null;
+  alternate_unit_type: string | null;
+  reason: string | null;
+  created_by: string | null;
   created_at: string;
   updated_at: string;
   flower_type?: FlowerType;
+  alternate_flower_type?: FlowerType;
+}
+
+export interface ProcurementBatch {
+  id: string;
+  batch_number: string;
+  requirement_date: string;
+  status: ProcurementBatchStatus;
+  approved_by: string | null;
+  approved_at: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  items?: ProcurementBatchItem[];
+}
+
+export interface ProcurementBatchItem {
+  id: string;
+  batch_id: string;
+  flower_type_id: string;
+  quantity: number;
+  unit_type: string | null;
+  original_flower_type_id: string | null;
+  vendor_id: string | null;
+  procurement_order_id: string | null;
+  created_at: string;
+  flower_type?: FlowerType;
+  original_flower_type?: FlowerType;
+  vendor?: Vendor;
 }
 
 export interface ProcurementOrder {
@@ -434,4 +576,122 @@ export interface WarehouseReceiptItem {
   has_discrepancy: boolean;
   notes: string | null;
   flower_type?: FlowerType;
+}
+
+export interface DeliveryFailureTracking {
+  id: string;
+  subscription_id: string;
+  address_id: string | null;
+  consecutive_failures: number;
+  last_failure_date: string | null;
+  last_failure_reason: string | null;
+  auto_paused: boolean;
+  auto_paused_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VendorPaymentAuto {
+  id: string;
+  vendor_id: string;
+  procurement_order_id: string;
+  amount: number;
+  status: 'pending' | 'approved' | 'paid';
+  generated_at: string;
+  approved_at: string | null;
+  paid_at: string | null;
+}
+
+export interface AutomationRunLog {
+  id: string;
+  automation_name: string;
+  run_date: string;
+  status: 'success' | 'failed' | 'partial';
+  summary: Record<string, unknown> | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface DailyOpsSummary {
+  id: string;
+  summary_date: string;
+  total_orders: number;
+  assigned_orders: number;
+  unassigned_orders: number;
+  delivered_orders: number;
+  failed_orders: number;
+  total_riders: number;
+  active_riders: number;
+  riders_on_leave: number;
+  no_show_riders: number;
+  total_procurement_orders: number;
+  pending_procurement_orders: number;
+  active_subscriptions: number;
+  expired_subscriptions: number;
+  auto_paused_subscriptions: number;
+  alerts: Array<{ severity: string; message: string }>;
+  created_at: string;
+}
+
+// ─── Pandit Pooja Setup Types ──────────────────────────────────────────────────
+
+export interface PoojaType {
+  id: string;
+  name: string;
+  description: string;
+  is_active: boolean;
+  sort_order: number;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderPoojaSetup {
+  id: string;
+  provider_id: string;
+  pooja_type_id: string;
+  description: string;
+  duration_minutes: number;
+  service_fee: number;
+  language: string;
+  special_instructions: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  pooja_type?: PoojaType;
+  items?: ProviderPoojaItem[];
+}
+
+export interface ProviderPoojaItem {
+  id: string;
+  pooja_setup_id: string;
+  pooja_item_id: string;
+  quantity: number;
+  created_at: string;
+  pooja_item?: PoojaItem;
+}
+
+export type PoojaTypeRequestStatus = 'pending' | 'approved' | 'rejected';
+
+export interface PoojaTypeRequest {
+  id: string;
+  provider_id: string;
+  requested_name: string;
+  requested_description: string;
+  status: PoojaTypeRequestStatus;
+  rejection_reason: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+}
+
+export interface PoojaListShare {
+  id: string;
+  provider_id: string;
+  pooja_setup_id: string;
+  customer_mobile: string;
+  share_token: string;
+  expires_at: string;
+  is_revoked: boolean;
+  created_at: string;
 }

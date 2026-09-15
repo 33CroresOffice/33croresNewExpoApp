@@ -4,7 +4,8 @@ import {
   ActivityIndicator, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ChevronLeft, ChevronRight, CreditCard, MapPin, RefreshCw, Search, X } from 'lucide-react-native';
+import { ChevronLeft, ChevronRight, CreditCard, MapPin, PauseCircle, RefreshCw, Search, X } from 'lucide-react-native';
+import { router } from 'expo-router';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { usePageVisibility } from '@/hooks/usePageVisibility';
@@ -26,6 +27,9 @@ type ModalData = {
   endDate: string;
   address: string;
   amount: number;
+  paymentDate: string;
+  paused: boolean;
+  orderId: string | null;
 };
 
 type MonthCell = {
@@ -52,6 +56,19 @@ function formatDate(date: string | null): string {
   if (!date) return '—';
   const [year, month, day] = date.slice(0, 10).split('-');
   return `${day}-${month}-${year}`;
+}
+
+function formatPaymentDate(date: string | null): string {
+  if (!date) return '—';
+  return new Intl.DateTimeFormat('en-IN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Kolkata',
+  }).format(new Date(date));
 }
 
 function formatAddress(addr: any): string {
@@ -88,7 +105,7 @@ function PaymentHistoryContent() {
       supabase
         .from('subscriptions')
         .select('id, user_id, start_date, end_date, new_end_date, plan:subscription_plans(name, price, frequency), profile:profiles(full_name, mobile), delivery_address:addresses(apartment_name, street, landmark, city, pincode)')
-        .eq('status', 'active')
+        .in('status', ['active', 'paused'])
         .order('user_id'),
       supabase
         .from('payments')
@@ -97,6 +114,8 @@ function PaymentHistoryContent() {
         .lt('created_at', fetchEnd),
     ]);
 
+    const subs = (subscriptionsRes.data ?? []) as Array<any>;
+
     if (subscriptionsRes.error || paymentsRes.error) {
       setError('Unable to load payment history. Please refresh and try again.');
       setRows([]);
@@ -104,8 +123,40 @@ function PaymentHistoryContent() {
       return;
     }
 
-    const subs = (subscriptionsRes.data ?? []) as Array<any>;
+    const subIds = subs.map((sub: any) => sub.id);
+    const [pauseRes, ordersRes] = await Promise.all([
+      subIds.length > 0
+        ? supabase.from('subscription_pause_history').select('subscription_id, pause_start_date, pause_until, is_cancelled').in('subscription_id', subIds)
+        : Promise.resolve({ data: [], error: null }),
+      subIds.length > 0
+        ? supabase.from('orders').select('id, subscription_id, scheduled_date, status').in('subscription_id', subIds).order('scheduled_date', { ascending: true })
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+
+    if (pauseRes.error || ordersRes.error) {
+      setError('Unable to load payment history. Please refresh and try again.');
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+
     const payments = (paymentsRes.data ?? []) as Array<{ subscription_id: string | null; user_id: string; amount: number; status: string; created_at: string }>;
+    const pauses = (pauseRes.data ?? []) as Array<{ subscription_id: string; pause_start_date: string; pause_until: string; is_cancelled: boolean }>;
+    const allOrders = (ordersRes.data ?? []) as Array<{ id: string; subscription_id: string; scheduled_date: string; status: string }>;
+
+    const ordersBySub = new Map<string, typeof allOrders>();
+    allOrders.forEach((o) => {
+      const list = ordersBySub.get(o.subscription_id) ?? [];
+      list.push(o);
+      ordersBySub.set(o.subscription_id, list);
+    });
+
+    const pausesBySub = new Map<string, typeof pauses>();
+    pauses.forEach((p) => {
+      const list = pausesBySub.get(p.subscription_id) ?? [];
+      list.push(p);
+      pausesBySub.set(p.subscription_id, list);
+    });
 
     const subMap = new Map<string, { duration: number; planName: string; planAmount: string; startDate: string; endDate: string; address: string }>();
     subs.forEach((sub: any) => {
@@ -119,6 +170,29 @@ function PaymentHistoryContent() {
         address: formatAddress(sub.delivery_address),
       });
     });
+
+    const isMonthPaused = (subId: string, year: number, monthIndex: number): boolean => {
+      const subPauses = pausesBySub.get(subId) ?? [];
+      const monthStart = new Date(Date.UTC(year, monthIndex, 1));
+      const monthEnd = new Date(Date.UTC(year, monthIndex + 1, 0));
+      return subPauses.some((p) => {
+        if (p.is_cancelled) return false;
+        const pauseStart = new Date(p.pause_start_date + 'T00:00:00Z');
+        const pauseEnd = new Date(p.pause_until + 'T23:59:59Z');
+        return pauseStart <= monthEnd && pauseEnd >= monthStart;
+      });
+    };
+
+    const findPausedOrderId = (subId: string, year: number, monthIndex: number): string | null => {
+      const subOrders = ordersBySub.get(subId) ?? [];
+      const monthStart = new Date(Date.UTC(year, monthIndex, 1));
+      const monthEnd = new Date(Date.UTC(year, monthIndex + 1, 0));
+      const orderInMonth = subOrders.find((o) => {
+        const d = new Date(o.scheduled_date + 'T00:00:00Z');
+        return d >= monthStart && d <= monthEnd;
+      });
+      return orderInMonth?.id ?? subOrders[0]?.id ?? null;
+    };
 
     const subsByUser = new Map<string, any[]>();
     subs.forEach((sub: any) => {
@@ -163,16 +237,18 @@ function PaymentHistoryContent() {
           const rel = abs - year * 12;
           if (rel < 0 || rel > 11) continue;
           cells[rel].covered = true;
-          if (i === 0) {
-            cells[rel].isStart = true;
-            cells[rel].modal = {
-              planName: subInfo.planName,
-              startDate: subInfo.startDate,
-              endDate: subInfo.endDate,
-              address: subInfo.address,
-              amount: payment.amount,
-            };
-          }
+          const monthPaused = isMonthPaused(payment.subscription_id!, year, rel);
+          if (i === 0) cells[rel].isStart = true;
+          cells[rel].modal = {
+            planName: subInfo.planName,
+            startDate: subInfo.startDate,
+            endDate: subInfo.endDate,
+            address: subInfo.address,
+            amount: payment.amount,
+            paymentDate: formatPaymentDate(payment.created_at),
+            paused: monthPaused,
+            orderId: monthPaused ? findPausedOrderId(payment.subscription_id!, year, rel) : null,
+          };
         }
       });
 
@@ -263,15 +339,15 @@ function PaymentHistoryContent() {
                   <Text style={[styles.cellText, styles.amountColumn]}>{row.planAmount}</Text>
                   <Text style={[styles.cellText, styles.endColumn]}>{row.endDate}</Text>
                   {row.monthCells.map((cell, monthIndex) => {
-                    if (cell.covered && cell.isStart && cell.modal) {
+                    if (cell.covered && cell.modal) {
                       return (
                         <TouchableOpacity
                           key={`${row.id}-${monthIndex}`}
-                          style={[styles.monthCell, styles.paidCell, styles.startCell]}
+                          style={[styles.monthCell, styles.paidCell, cell.isStart && styles.startCell]}
                           onPress={() => setModalData(cell.modal!)}
                           activeOpacity={0.7}
                         >
-                          <Text style={[styles.monthText, styles.paidText, styles.startText]}>Paid</Text>
+                          <Text style={[styles.monthText, styles.paidText, cell.isStart && styles.startText]}>Paid</Text>
                         </TouchableOpacity>
                       );
                     }
@@ -338,6 +414,10 @@ function PaymentHistoryContent() {
                   <Text style={styles.modalValue}>{modalData.endDate}</Text>
                 </View>
                 <View style={styles.modalRow}>
+                  <Text style={styles.modalLabel}>Payment Date</Text>
+                  <Text style={styles.modalValue}>{modalData.paymentDate}</Text>
+                </View>
+                <View style={styles.modalRow}>
                   <Text style={styles.modalLabel}>Amount</Text>
                   <Text style={[styles.modalValue, { color: Colors.success }]}>{formatAmount(modalData.amount)}</Text>
                 </View>
@@ -348,6 +428,21 @@ function PaymentHistoryContent() {
                   </View>
                   <Text style={[styles.modalValue, styles.modalAddressValue]}>{modalData.address}</Text>
                 </View>
+                {modalData.paused && (
+                  <TouchableOpacity
+                    style={styles.pausedBadge}
+                    onPress={() => {
+                      setModalData(null);
+                      if (modalData.orderId) {
+                        router.push({ pathname: '/(admin)/order-detail', params: { id: modalData.orderId } } as any);
+                      }
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <PauseCircle size={14} color={Colors.warning} strokeWidth={1.8} />
+                    <Text style={styles.pausedBadgeText}>Paused this month — View Order</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             )}
             <TouchableOpacity style={styles.modalDoneBtn} onPress={() => setModalData(null)}>
@@ -432,4 +527,6 @@ const styles = StyleSheet.create({
   modalAddressValue: { lineHeight: 20 },
   modalDoneBtn: { marginHorizontal: Spacing[5], marginBottom: Spacing[5], paddingVertical: Spacing[3], borderRadius: Radius.md, backgroundColor: Colors.primary, alignItems: 'center' },
   modalDoneBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white },
+  pausedBadge: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], paddingHorizontal: Spacing[3], paddingVertical: Spacing[2], borderRadius: Radius.md, backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#F59E0B', alignSelf: 'flex-start' },
+  pausedBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: '#92400E' },
 });

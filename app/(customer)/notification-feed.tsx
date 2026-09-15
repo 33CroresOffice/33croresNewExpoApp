@@ -25,6 +25,19 @@ const EVENT_ICONS: Record<string, { emoji: string; color: string; bg: string }> 
   order_dispatched:            { emoji: '🚴', color: Colors.primary, bg: Colors.primarySurface },
   order_delivered:             { emoji: '🌸', color: Colors.success, bg: Colors.successSurface },
   custom:                      { emoji: '💬', color: Colors.textSecondary, bg: Colors.neutral[100] },
+  booking_request_sent:        { emoji: '🔔', color: Colors.primary, bg: Colors.primarySurface },
+  booking_pandit_accepted:     { emoji: '✅', color: Colors.success, bg: Colors.successSurface },
+  booking_awaiting_advance:    { emoji: '💳', color: Colors.warning, bg: Colors.warningSurface },
+  booking_confirmed_customer:  { emoji: '🎉', color: Colors.success, bg: Colors.successSurface },
+  booking_confirmed_pandit:    { emoji: '💰', color: Colors.success, bg: Colors.successSurface },
+  booking_pandit_on_the_way:   { emoji: '🚗', color: Colors.accent, bg: Colors.accentSurface },
+  booking_pandit_arrived:      { emoji: '📍', color: Colors.accent, bg: Colors.accentSurface },
+  booking_pooja_started:        { emoji: '🔥', color: Colors.primary, bg: Colors.primarySurface },
+  booking_pooja_completed:     { emoji: '🙏', color: Colors.success, bg: Colors.successSurface },
+  booking_payment_completed_pandit:  { emoji: '💸', color: Colors.success, bg: Colors.successSurface },
+  booking_payment_completed_customer: { emoji: '✅', color: Colors.success, bg: Colors.successSurface },
+  booking_settled:             { emoji: '🤝', color: Colors.neutral[500], bg: Colors.neutral[100] },
+  pooja_list_shared:           { emoji: '📋', color: Colors.accent, bg: Colors.accentSurface },
 };
 
 function getIconConfig(eventType: string) {
@@ -118,6 +131,10 @@ export default function NotificationFeedScreen() {
       router.push({ pathname: '/(customer)/subscription-detail', params: { id: notif.related_subscription_id } });
     } else if (notif.related_order_id) {
       router.push({ pathname: '/(customer)/order-detail', params: { id: notif.related_order_id } });
+    } else if (notif.related_booking_id) {
+      router.push({ pathname: '/(customer)/service-order-details' as any, params: { id: notif.related_booking_id } });
+    } else if (notif.event_type === 'pooja_list_shared' && (notif as any).metadata?.share_token) {
+      router.push({ pathname: '/(customer)/pooja-list-view', params: { token: (notif as any).metadata.share_token } });
     }
   };
 
@@ -167,7 +184,7 @@ export default function NotificationFeedScreen() {
         >
           {notifications.map((notif) => {
             const cfg = getIconConfig(notif.event_type);
-            const isActionable = !!(notif.related_subscription_id || notif.related_order_id);
+            const isActionable = !!(notif.related_subscription_id || notif.related_order_id || notif.related_booking_id || (notif.event_type === 'pooja_list_shared' && (notif as any).metadata?.share_token));
             return (
               <TouchableOpacity
                 key={notif.id}

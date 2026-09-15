@@ -14,7 +14,6 @@ import { Stack, router, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
-import { DEFAULT_AUTH_ROUTE } from '@/constants/appRole';
 import { useFonts } from 'expo-font';
 import {
   DMSerifDisplay_400Regular,
@@ -115,7 +114,7 @@ const isStoreVersionGreaterThanCurrent = (
 export default function RootLayout() {
   useFrameworkReady();
 
-  const { setSession, loadProfile, setLoading, isLoading } = useAuthStore();
+  const { setSession, loadProfile, setLoading, isLoading, loadActivePanel } = useAuthStore();
   const pathname = usePathname();
   const pathnameRef = React.useRef(pathname);
   pathnameRef.current = pathname;
@@ -190,9 +189,9 @@ export default function RootLayout() {
 
     let initDone = false;
 
-    const navigateForProfile = (profile: Awaited<ReturnType<typeof loadProfile>>) => {
+    const navigateForProfile = async (profile: Awaited<ReturnType<typeof loadProfile>>) => {
       if (!profile) {
-        router.replace(DEFAULT_AUTH_ROUTE as any);
+        router.replace('/auth/welcome');
       } else if (profile.role === 'admin') {
         router.replace('/(admin)');
       } else if (profile.role === 'vendor') {
@@ -200,7 +199,12 @@ export default function RootLayout() {
       } else if (!profile.full_name) {
         router.replace('/auth/profile-setup');
       } else {
-        router.replace('/(customer)');
+        const savedPanel = await loadActivePanel();
+        if (savedPanel === 'pandit') {
+          router.replace('/(provider)');
+        } else {
+          router.replace('/(customer)');
+        }
       }
     };
 
@@ -211,7 +215,7 @@ export default function RootLayout() {
         setSession(null);
         hasNavigatedRef.current = false;
         initDone = false;
-        router.replace(DEFAULT_AUTH_ROUTE as any);
+        router.replace('/auth/welcome');
         return;
       }
       // SIGNED_IN events are handled by the login screens themselves;
@@ -231,23 +235,23 @@ export default function RootLayout() {
           setSession(session);
           initDone = true;
           const profile = await loadProfile(session.user.id);
-          setLoading(false);
           hasNavigatedRef.current = true;
-          navigateForProfile(profile);
+          await navigateForProfile(profile);
+          setLoading(false);
         } else {
           setLoading(false);
           initDone = true;
           const portalPaths = ['/admin/login', '/vendor/login', '/rider/login', '/auth/'];
           const isOnPortal = portalPaths.some((p) => pathnameRef.current.startsWith(p));
           if (!isOnPortal) {
-            router.replace(DEFAULT_AUTH_ROUTE as any);
+            router.replace('/auth/welcome');
           }
         }
       } catch (error) {
         console.log('Init session error:', error);
         setLoading(false);
         initDone = true;
-        router.replace(DEFAULT_AUTH_ROUTE as any);
+        router.replace('/auth/welcome');
       }
     };
 

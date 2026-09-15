@@ -7,7 +7,7 @@ import {
   Receipt, CreditCard, ChartPie as PieChart, Tag, MessageSquare, Bike,
   MapPin, ShieldCheck, Activity, CirclePlus as PlusCircle, Smartphone, Building2,
   Bell, Send, FileText, UserCog, Shield, CalendarDays, ShieldCheck as LoginLogIcon,
-  KeyRound,
+  KeyRound, Truck, CircleDollarSign, Zap, SlidersHorizontal, Wallet, Clock, Sparkles, Flame, Inbox,
 } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius } from '@/constants/theme';
 import { useAuthStore } from '@/store/authStore';
@@ -29,7 +29,7 @@ const ROLE_COLOR: Record<AdminRole, string> = {
   catalog:     Colors.warning,
 };
 
-type NavItem = { label: string; icon: any; href: string };
+type NavItem = { label: string; icon: any; href: string; superAdminOnly?: boolean };
 type NavSection = { title: string; module: string; items: NavItem[] };
 
 const NAV_SECTIONS: NavSection[] = [
@@ -38,7 +38,10 @@ const NAV_SECTIONS: NavSection[] = [
     module: 'orders',
     items: [
       { label: 'Dashboard',        icon: LayoutDashboard, href: '/(admin)' },
+      { label: 'Automation',       icon: Activity,       href: '/(admin)/automation-dashboard' },
+      { label: 'Feature Management', icon: SlidersHorizontal, href: '/(admin)/feature-management', superAdminOnly: true },
       { label: 'Orders',           icon: ClipboardList,   href: '/(admin)/orders' },
+      { label: 'Tomorrow Delivery', icon: Truck,          href: '/(admin)/delivery-tomorrow' },
       { label: 'New Subscription', icon: PlusCircle,      href: '/(admin)/create-subscription' },
       { label: 'Customers',        icon: Users,           href: '/(admin)/operations-customers' },
       { label: 'Payment History',  icon: CreditCard,     href: '/(admin)/payment-history' },
@@ -59,7 +62,11 @@ const NAV_SECTIONS: NavSection[] = [
     module: 'catalog',
     items: [
       { label: 'Plans',        icon: Flower2,    href: '/(admin)/plans' },
+      { label: 'Puja Manage',  icon: Flame,      href: '/(admin)/pooja-manage' },
+      { label: 'Puja Item Categories', icon: Tag, href: '/(admin)/pooja-item-categories' },
+      { label: 'Pooja Items',  icon: Flame,      href: '/(admin)/pooja-items' },
       { label: 'Flower Types', icon: Sprout,     href: '/(admin)/flower-types' },
+      { label: 'Flower Availability', icon: CalendarDays, href: '/(admin)/flower-availability' },
       { label: 'Add Flower',   icon: PlusCircle, href: '/(admin)/flower-types?action=add' },
       { label: 'Localities',   icon: MapPin,     href: '/(admin)/localities' },
       { label: 'Apartments',   icon: Building2,  href: '/(admin)/apartments' },
@@ -71,6 +78,8 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: 'Overview', icon: BarChart3,  href: '/(admin)/finance' },
       { label: 'Payments', icon: CreditCard, href: '/(admin)/finance-payments' },
+      { label: 'Vendor Payments', icon: CircleDollarSign, href: '/(admin)/vendor-payments' },
+      { label: 'Rider Payouts', icon: Wallet,     href: '/(admin)/rider-payouts' },
       { label: 'Expenses', icon: Receipt,    href: '/(admin)/expenses' },
       { label: 'Ledger',   icon: PieChart,   href: '/(admin)/ledger' },
     ],
@@ -80,7 +89,7 @@ const NAV_SECTIONS: NavSection[] = [
     module: 'crm',
     items: [
       { label: 'CRM Overview',    icon: MessageSquare, href: '/(admin)/crm' },
-      { label: 'Users',           icon: Users,         href: '/(admin)/customers' },
+      { label: 'User',             icon: Users,         href: '/(admin)/customers' },
       { label: 'Segments',        icon: Tag,           href: '/(admin)/crm-segments' },
       { label: 'Tasks',           icon: ClipboardList, href: '/(admin)/crm-tasks' },
       { label: 'Customer Logins', icon: Smartphone,    href: '/(admin)/customer-logins' },
@@ -91,9 +100,20 @@ const NAV_SECTIONS: NavSection[] = [
     module: 'riders',
     items: [
       { label: 'Riders',               icon: Bike,        href: '/(admin)/riders' },
+      { label: 'Assignment System',    icon: Zap,         href: '/(admin)/rider-assignment-system' },
       { label: 'Assigned Riders',      icon: ClipboardList, href: '/(admin)/assigned-riders' },
       { label: 'Assignments',          icon: MapPin,      href: '/(admin)/rider-assignments' },
       { label: 'Attendance Locations', icon: ShieldCheck, href: '/(admin)/attendance-locations' },
+      { label: 'Delivery Time',       icon: Clock,       href: '/(admin)/rider-delivery-time' },
+    ],
+  },
+  {
+    title: 'Service Providers',
+    module: 'service_providers',
+    items: [
+      { label: 'Providers', icon: Sparkles, href: '/(admin)/service-providers' },
+      { label: 'Service Orders', icon: ClipboardList, href: '/(admin)/service-orders' },
+      { label: 'Package Management', icon: Package, href: '/(admin)/package-management' },
     ],
   },
   {
@@ -167,7 +187,7 @@ export default function AdminSidebar() {
         {visibleSections.map((section) => (
           <View key={section.title} style={styles.section}>
             <Text style={styles.sectionLabel}>{section.title.toUpperCase()}</Text>
-            {section.items.map(renderNavItem)}
+            {section.items.filter((item) => !item.superAdminOnly || isSuperAdmin).map(renderNavItem)}
           </View>
         ))}
 

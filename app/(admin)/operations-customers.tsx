@@ -14,20 +14,22 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Search, ChevronRight, Users, ChevronLeft } from 'lucide-react-native';
+import { Search, ChevronRight, Users, ChevronLeft, CreditCard, Package, ShoppingBag } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import EmptyState from '@/components/ui/EmptyState';
 import { format } from 'date-fns';
 
-type CustomerFilter = 'all' | 'today_payment';
+type CustomerFilter = 'all' | 'today_payment' | 'subscription_orders' | 'custom_orders';
 
 const FILTER_LABELS: Record<CustomerFilter, string> = {
   all: 'All',
   today_payment: 'Today Payment',
+  subscription_orders: 'Subscription Orders',
+  custom_orders: 'Custom Orders',
 };
 
-const FILTER_ORDER: CustomerFilter[] = ['all', 'today_payment'];
+const FILTER_ORDER: CustomerFilter[] = ['all', 'today_payment', 'subscription_orders', 'custom_orders'];
 
 type OpsCustomer = {
   id: string;
@@ -101,6 +103,7 @@ function OperationsCustomersScreenContent() {
         .select('id, full_name, mobile, avatar_url, created_at, is_verified')
         .in('id', Array.from(relevantIds))
         .order('created_at', { ascending: false });
+      const allUserIds = Array.from(relevantIds);
 
       if (!profiles) {
         setCustomers([]);
@@ -110,7 +113,7 @@ function OperationsCustomersScreenContent() {
       const { data: addressData } = await supabase
         .from('addresses')
         .select('user_id, apartment_name, street, landmark, locality_id, is_default')
-        .in('user_id', Array.from(relevantIds))
+        .in('user_id', allUserIds)
         .order('is_default', { ascending: false });
 
       const addressMap = new Map<string, string>();
@@ -158,13 +161,61 @@ function OperationsCustomersScreenContent() {
   usePageVisibility(load);
 
   const applyFilter = (c: OpsCustomer): boolean => {
-    if (c.is_expired_or_paused) return false;
     switch (activeFilter) {
       case 'all':
         return true;
       case 'today_payment':
         return c.has_today_payment;
+      case 'subscription_orders':
+        return c.subscription_count > 0;
+      case 'custom_orders':
+        return c.custom_order_count > 0;
     }
+  };
+
+  const getFilterCount = (filter: CustomerFilter): number => {
+    switch (filter) {
+      case 'today_payment':
+        return customers.filter((customer) => customer.has_today_payment).length;
+      case 'subscription_orders':
+        return customers.filter((customer) => customer.subscription_count > 0).length;
+      case 'custom_orders':
+        return customers.filter((customer) => customer.custom_order_count > 0).length;
+      default:
+        return customers.length;
+    }
+  };
+
+  const renderFilterIcon = (filter: CustomerFilter, color: string) => {
+    if (filter === 'today_payment') return <CreditCard size={18} color={color} strokeWidth={1.8} />;
+    if (filter === 'subscription_orders') return <Package size={18} color={color} strokeWidth={1.8} />;
+    if (filter === 'custom_orders') return <ShoppingBag size={18} color={color} strokeWidth={1.8} />;
+    return <Users size={18} color={color} strokeWidth={1.8} />;
+  };
+
+  const renderFilterCard = (filter: CustomerFilter, mobile = false) => {
+    const active = activeFilter === filter;
+    const color = active ? Colors.primary : Colors.textTertiary;
+    return (
+      <TouchableOpacity
+        key={filter}
+        style={[mobile ? styles.filterCard : webStyles.filterCard, active && (mobile ? styles.filterCardActive : webStyles.filterCardActive)]}
+        onPress={() => setActiveFilter(filter)}
+        activeOpacity={0.82}
+      >
+        <View style={[mobile ? styles.filterIcon : webStyles.filterIcon, active && (mobile ? styles.filterIconActive : webStyles.filterIconActive)]}>
+          {renderFilterIcon(filter, color)}
+        </View>
+        <View style={mobile ? styles.filterCardContent : webStyles.filterCardContent}>
+          <Text style={[mobile ? styles.filterCardLabel : webStyles.filterCardLabel, active && (mobile ? styles.filterCardLabelActive : webStyles.filterCardLabelActive)]}>
+            {FILTER_LABELS[filter]}
+          </Text>
+          <Text style={[mobile ? styles.filterCardCount : webStyles.filterCardCount, active && (mobile ? styles.filterCardCountActive : webStyles.filterCardCountActive)]}>
+            {getFilterCount(filter)}
+          </Text>
+        </View>
+      </TouchableOpacity>
+    );
   };
 
   const filtered = customers.filter((c) => {
@@ -210,12 +261,8 @@ function OperationsCustomersScreenContent() {
           </View>
         </View>
 
-        <View style={webStyles.filterTabs}>
-          {FILTER_ORDER.map((filter) => (
-            <TouchableOpacity key={filter} style={[webStyles.filterTab, activeFilter === filter && webStyles.filterTabActive]} onPress={() => setActiveFilter(filter)} activeOpacity={0.8}>
-              <Text style={[webStyles.filterTabText, activeFilter === filter && webStyles.filterTabTextActive]}>{FILTER_LABELS[filter]}</Text>
-            </TouchableOpacity>
-          ))}
+        <View style={webStyles.filterCards}>
+          {FILTER_ORDER.map((filter) => renderFilterCard(filter))}
         </View>
 
         <View style={webStyles.tableCard}>
@@ -313,13 +360,9 @@ function OperationsCustomersScreenContent() {
         <Text style={styles.count}>{filtered.length} shown</Text>
       </View>
 
-      <View style={styles.filterTabs}>
-        {FILTER_ORDER.map((filter) => (
-          <TouchableOpacity key={filter} style={[styles.filterTab, activeFilter === filter && styles.filterTabActive]} onPress={() => setActiveFilter(filter)} activeOpacity={0.8}>
-            <Text style={[styles.filterTabText, activeFilter === filter && styles.filterTabTextActive]}>{FILTER_LABELS[filter]}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterCards}>
+        {FILTER_ORDER.map((filter) => renderFilterCard(filter, true))}
+      </ScrollView>
 
       <View style={styles.searchBar}>
         <Search size={16} color={Colors.textTertiary} />
@@ -341,7 +384,7 @@ function OperationsCustomersScreenContent() {
           <EmptyState
             icon={<Users size={48} color={Colors.neutral[400]} />}
             title="No customers found"
-            description={search ? 'Try a different search term' : 'No customers with subscriptions or custom orders yet'}
+            description={search ? 'Try a different search term' : 'No customers yet'}
           />
         ) : (
           <View style={styles.list}>
@@ -442,11 +485,16 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     height: 36,
   },
-  filterTabs: { flexDirection: 'row', marginHorizontal: Spacing[5], marginTop: Spacing[3], backgroundColor: Colors.neutral[100], borderRadius: Radius.md, padding: 3, gap: 3 },
-  filterTab: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 40, paddingHorizontal: Spacing[2], borderRadius: Radius.sm },
-  filterTabActive: { backgroundColor: Colors.white, ...Shadow.sm },
-  filterTabText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.textSecondary, textAlign: 'center' },
-  filterTabTextActive: { fontFamily: Typography.fontFamily.sansSemiBold, color: Colors.primary },
+  filterCards: { paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], gap: Spacing[3] },
+  filterCard: { width: 172, minHeight: 88, flexDirection: 'row', alignItems: 'center', gap: Spacing[3], padding: Spacing[3], backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.lg, ...Shadow.sm },
+  filterCardActive: { borderColor: Colors.primary, backgroundColor: Colors.primarySurface },
+  filterIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: Radius.md, backgroundColor: Colors.neutral[100] },
+  filterIconActive: { backgroundColor: Colors.white },
+  filterCardContent: { flex: 1, gap: 2 },
+  filterCardLabel: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.textSecondary },
+  filterCardLabelActive: { color: Colors.primary },
+  filterCardCount: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.xl, color: Colors.textPrimary },
+  filterCardCountActive: { color: Colors.primary },
   content: { padding: Spacing[5], gap: Spacing[3] },
   list: { gap: Spacing[3] },
   customerCard: {
@@ -489,11 +537,16 @@ const styles = StyleSheet.create({
 const webStyles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: '#F7F7F4' },
   content: { padding: 32, paddingBottom: 64, gap: 24 },
-  filterTabs: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.neutral[100], borderRadius: 10, padding: 4, gap: 4 },
-  filterTab: { minWidth: 150, alignItems: 'center', justifyContent: 'center', minHeight: 40, paddingHorizontal: 16, borderRadius: 8 },
-  filterTabActive: { backgroundColor: '#FFFFFF', ...Shadow.sm },
-  filterTabText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: '#64748B' },
-  filterTabTextActive: { fontFamily: Typography.fontFamily.sansSemiBold, color: Colors.primary },
+  filterCards: { flexDirection: 'row', gap: 12 },
+  filterCard: { flex: 1, minHeight: 96, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 14, backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.lg, ...Shadow.sm },
+  filterCardActive: { borderColor: Colors.primary, backgroundColor: Colors.primarySurface },
+  filterIcon: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: Radius.md, backgroundColor: Colors.neutral[100] },
+  filterIconActive: { backgroundColor: Colors.white },
+  filterCardContent: { flex: 1, gap: 2 },
+  filterCardLabel: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
+  filterCardLabelActive: { color: Colors.primary },
+  filterCardCount: { fontFamily: Typography.fontFamily.bold, fontSize: 24, color: Colors.textPrimary },
+  filterCardCountActive: { color: Colors.primary },
   pageHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',

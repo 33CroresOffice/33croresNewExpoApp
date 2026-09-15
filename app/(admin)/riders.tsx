@@ -13,6 +13,7 @@ import { format } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
+import AppModal from '@/components/ui/Modal';
 
 type VehicleType = 'bike' | 'scooter' | 'bicycle' | 'foot';
 
@@ -62,6 +63,7 @@ function RidersScreenContent() {
   const [metrics, setMetrics] = useState({ total: 0, active: 0, todayDeliveries: 0, pendingAssignments: 0 });
   const [onLeaveToday, setOnLeaveToday] = useState<Set<string>>(new Set());
   const [busyRiderIds, setBusyRiderIds] = useState<Set<string>>(new Set());
+  const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -115,15 +117,20 @@ function RidersScreenContent() {
 
 
 
-  const deleteRider = async (id: string) => {
+  const confirmDeleteRider = async (id: string) => {
+    setDeleteTarget(null);
+    await supabase.from('riders').delete().eq('id', id);
+    load();
+  };
+
+  const deleteRider = (rider: any) => {
     if (Platform.OS !== 'web') {
-      Alert.alert('Delete Rider', 'This will remove the rider and all their assignments.', [
+      Alert.alert('Delete Rider', `Delete ${rider.full_name}? This will remove the rider and all their assignments.`, [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: async () => { await supabase.from('riders').delete().eq('id', id); load(); } },
+        { text: 'Delete', style: 'destructive', onPress: () => confirmDeleteRider(rider.id) },
       ]);
     } else {
-      await supabase.from('riders').delete().eq('id', id);
-      load();
+      setDeleteTarget(rider);
     }
   };
 
@@ -315,7 +322,7 @@ function RidersScreenContent() {
                   <TouchableOpacity onPress={(e) => { e.stopPropagation?.(); openEdit(rider); }} style={s.iconBtn}>
                     <Pencil size={14} color={Colors.textTertiary} strokeWidth={1.8} />
                   </TouchableOpacity>
-                  <TouchableOpacity onPress={(e) => { e.stopPropagation?.(); deleteRider(rider.id); }} style={s.iconBtn}>
+                  <TouchableOpacity onPress={(e) => { e.stopPropagation?.(); deleteRider(rider); }} style={s.iconBtn}>
                     <Trash2 size={14} color={Colors.error} strokeWidth={1.8} />
                   </TouchableOpacity>
                 </View>
@@ -356,7 +363,20 @@ function RidersScreenContent() {
         </ScrollView>
       )}
 
-
+      <AppModal visible={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} title="Delete Rider">
+        <Text style={s.deleteMessage}>
+          Delete {deleteTarget?.full_name}? This will remove the rider and all their assignments.
+        </Text>
+        <View style={s.deleteActions}>
+          <TouchableOpacity style={s.cancelDeleteBtn} onPress={() => setDeleteTarget(null)} activeOpacity={0.8}>
+            <Text style={s.cancelDeleteText}>Cancel</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={s.confirmDeleteBtn} onPress={() => deleteTarget && confirmDeleteRider(deleteTarget.id)} activeOpacity={0.8}>
+            <Trash2 size={15} color={Colors.white} strokeWidth={2} />
+            <Text style={s.confirmDeleteText}>Delete Rider</Text>
+          </TouchableOpacity>
+        </View>
+      </AppModal>
     </View>
   );
 }
@@ -476,5 +496,11 @@ const s = StyleSheet.create({
   zoneText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textSecondary },
   statusDot: { width: 10, height: 10, borderRadius: 5 },
   iconBtn: { padding: Spacing[1] },
+  deleteMessage: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.base, color: Colors.textSecondary, lineHeight: 22, marginBottom: Spacing[5] },
+  deleteActions: { flexDirection: 'row', gap: Spacing[3], justifyContent: 'flex-end' },
+  cancelDeleteBtn: { paddingVertical: Spacing[3], paddingHorizontal: Spacing[5], borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.border, backgroundColor: Colors.white },
+  cancelDeleteText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textSecondary },
+  confirmDeleteBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], paddingVertical: Spacing[3], paddingHorizontal: Spacing[5], borderRadius: Radius.md, backgroundColor: Colors.error },
+  confirmDeleteText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white },
 
 });

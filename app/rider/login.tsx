@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -20,6 +20,36 @@ import Input from '@/components/ui/Input';
 
 const { width } = Dimensions.get('window');
 const ACCENT = '#3AAFE4';
+
+type RiderMobileInputProps = {
+  mobile: string;
+  onChangeMobile: (text: string) => void;
+  onSubmitEditing: () => void;
+};
+
+function RiderMobileInput({ mobile, onChangeMobile, onSubmitEditing }: RiderMobileInputProps) {
+  const prefixEl = useMemo(() => (
+    <View style={s.countryCode}>
+      <Text style={s.flag}>🇮🇳</Text>
+      <Text style={s.code}>+91</Text>
+    </View>
+  ), []);
+
+  return (
+    <Input
+      label="Mobile Number"
+      value={mobile}
+      onChangeText={onChangeMobile}
+      keyboardType="phone-pad"
+      maxLength={10}
+      placeholder="98765 43210"
+      prefix={prefixEl}
+      autoFocus
+      returnKeyType="done"
+      onSubmitEditing={onSubmitEditing}
+    />
+  );
+}
 
 export default function RiderLoginScreen() {
   const insets = useSafeAreaInsets();
@@ -85,25 +115,10 @@ export default function RiderLoginScreen() {
     }
   };
 
-  const MobileInput = () => (
-    <Input
-      label="Mobile Number"
-      value={mobile}
-      onChangeText={(t) => { setMobile(t.replace(/[^0-9]/g, '').slice(0, 10)); setError(''); }}
-      keyboardType="phone-pad"
-      maxLength={10}
-      placeholder="98765 43210"
-      prefix={
-        <View style={s.countryCode}>
-          <Text style={s.flag}>🇮🇳</Text>
-          <Text style={s.code}>+91</Text>
-        </View>
-      }
-      autoFocus
-      returnKeyType="done"
-      onSubmitEditing={handleContinue}
-    />
-  );
+  const handleMobileChange = useCallback((text: string) => {
+    setMobile(text.replace(/[^0-9]/g, '').slice(0, 10));
+    setError('');
+  }, []);
 
   const SendOtpBtn = () => (
     <TouchableOpacity
@@ -154,7 +169,11 @@ export default function RiderLoginScreen() {
             <Text style={s.subheading}>Enter your registered mobile to receive an OTP</Text>
 
             <View style={s.formGroup}>
-              <MobileInput />
+              <RiderMobileInput
+                mobile={mobile}
+                onChangeMobile={handleMobileChange}
+                onSubmitEditing={handleContinue}
+              />
               {error ? <View style={s.errorBox}><Text style={s.errorText}>{error}</Text></View> : null}
               <SendOtpBtn />
             </View>
@@ -221,7 +240,11 @@ export default function RiderLoginScreen() {
             <Text style={w.formSub}>Enter your registered mobile to receive an OTP</Text>
           </View>
 
-          <MobileInput />
+          <RiderMobileInput
+            mobile={mobile}
+            onChangeMobile={handleMobileChange}
+            onSubmitEditing={handleContinue}
+          />
           {error ? <View style={s.errorBox}><Text style={s.errorText}>{error}</Text></View> : null}
           <SendOtpBtn />
 

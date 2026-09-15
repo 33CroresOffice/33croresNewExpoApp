@@ -1,9 +1,13 @@
 import { create } from 'zustand';
 import { Session } from '@supabase/supabase-js';
 import { router } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Profile, AdminRole } from '@/types/database';
 import { supabase } from '@/lib/supabase';
-import { DEFAULT_AUTH_ROUTE } from '@/constants/appRole';
+
+export type ActivePanel = 'pandit' | 'customer' | null;
+
+const ACTIVE_PANEL_KEY = 'active_panel';
 
 interface AuthState {
   session: Session | null;
@@ -17,12 +21,15 @@ interface AuthState {
   modules: string[];
   customRoleName: string | null;
   customRoleColor: string | null;
+  activePanel: ActivePanel;
   setSession: (session: Session | null) => void;
   setProfile: (profile: Profile | null) => void;
   setLoading: (loading: boolean) => void;
   loadProfile: (userId: string) => Promise<Profile | null>;
   hasModule: (module: string) => boolean;
   refreshModules: () => Promise<void>;
+  setActivePanel: (panel: ActivePanel) => Promise<void>;
+  loadActivePanel: () => Promise<ActivePanel>;
   signOut: () => Promise<void>;
   reset: () => void;
 }
@@ -39,6 +46,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   modules: [],
   customRoleName: null,
   customRoleColor: null,
+  activePanel: null,
 
   setSession: (session) => {
     const modules = (session?.user?.app_metadata?.modules as string[]) ?? [];
@@ -68,6 +76,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   setLoading: (isLoading) => set({ isLoading }),
+
+  setActivePanel: async (panel) => {
+    set({ activePanel: panel });
+    if (panel) await AsyncStorage.setItem(ACTIVE_PANEL_KEY, panel).catch(() => {});
+    else await AsyncStorage.removeItem(ACTIVE_PANEL_KEY).catch(() => {});
+  },
+
+  loadActivePanel: async () => {
+    const stored = await AsyncStorage.getItem(ACTIVE_PANEL_KEY).catch(() => null);
+    if (stored === 'pandit' || stored === 'customer') {
+      set({ activePanel: stored });
+      return stored;
+    }
+    return null;
+  },
 
   loadProfile: async (userId: string) => {
     const { data, error } = await supabase
@@ -113,6 +136,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       } catch {}
     }
     await supabase.auth.signOut();
+    await AsyncStorage.removeItem(ACTIVE_PANEL_KEY).catch(() => {});
     set({
       session: null,
       profile: null,
@@ -124,11 +148,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       modules: [],
       customRoleName: null,
       customRoleColor: null,
+      activePanel: null,
     });
-    router.replace(DEFAULT_AUTH_ROUTE as any);
+    router.replace('/auth/welcome');
   },
 
   reset: () => {
+    AsyncStorage.removeItem(ACTIVE_PANEL_KEY).catch(() => {});
     set({
       session: null,
       profile: null,
@@ -141,6 +167,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       modules: [],
       customRoleName: null,
       customRoleColor: null,
+      activePanel: null,
     });
   },
 }));

@@ -20,6 +20,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, parseISO } from 'date-fns';
 import { resolveRider } from '@/utils/riderLookup';
+import { todayISTString, performAttendanceCheckIn, getCheckInErrorMessage } from '@/utils/attendanceCheckIn';
 
 const GRADIENT_TOP = '#1A2E3A';
 const GRADIENT_MID = '#1E3D50';
@@ -45,13 +46,18 @@ interface AttendanceLocation {
 
 interface DayOrder {
   id: string;
-  order_id: string;
+  order_id: string | null;
+  custom_order_id: string | null;
   status: string;
   customer_name: string | null;
   addr_street: string | null;
   addr_city: string | null;
   plan_name: string | null;
+  delivery_time: string | null;
   delivered_at: string | null;
+  delivery_latitude: number | null;
+  delivery_longitude: number | null;
+  order_type: 'subscription' | 'custom';
 }
 
 const STATUS_CONFIG = {
@@ -68,31 +74,6 @@ const ORDER_STATUS_META: Record<string, { color: string; bg: string; label: stri
   reassigned:{ color: Colors.textTertiary, bg: Colors.neutral[100], label: 'Reassigned' },
 };
 
-function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function getCurrentPosition(): Promise<GeolocationPosition> {
-  return new Promise((resolve, reject) => {
-    if (!navigator?.geolocation) { reject(new Error('Geolocation not supported')); return; }
-    navigator.geolocation.getCurrentPosition(resolve, reject, {
-      enableHighAccuracy: true, timeout: 10000, maximumAge: 0,
-    });
-  });
-}
-
-const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-function todayISTString(): string {
-  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
-}
 
 export default function RiderAttendance() {
   const insets = useSafeAreaInsets();
@@ -158,47 +139,65 @@ export default function RiderAttendance() {
 
     const { data: assignData } = await supabase
       .from('rider_order_assignments')
-      .select('id, order_id, status, delivered_at')
-      .eq('rider_id', riderId);
+      .select('id, order_id, custom_order_id, status, delivered_at, delivery_latitude, delivery_longitude')
+      .eq('rider_id', riderId)
+      .neq('status', 'reassigned');
 
     if (!assignData || assignData.length === 0) {
       setDayOrdersLoading(false);
       return;
     }
 
-    const orderIds = assignData.map((a: any) => a.order_id).filter(Boolean);
-    const { data: ordersData } = await supabase
-      .from('orders')
-      .select('id, scheduled_date, user_id, subscription_id')
-      .in('id', orderIds)
-      .eq('scheduled_date', dateStr);
+    const subAssignments = assignData.filter((a: any) => a.order_id && !a.custom_order_id);
+    const customAssignments = assignData.filter((a: any) => a.custom_order_id);
 
-    if (!ordersData || ordersData.length === 0) {
+    const orderIds = subAssignments.map((a: any) => a.order_id).filter(Boolean);
+    const customOrderIds = customAssignments.map((a: any) => a.custom_order_id).filter(Boolean);
+
+    const [ordersRes, customOrdersRes] = await Promise.all([
+      orderIds.length > 0
+        ? supabase.from('orders').select('id, scheduled_date, user_id, subscription_id').in('id', orderIds)
+        : Promise.resolve({ data: [] }),
+      customOrderIds.length > 0
+        ? supabase.from('custom_orders').select('id, delivery_date, delivery_time, user_id, address_id').in('id', customOrderIds)
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const ordersData = (ordersRes.data ?? []) as any[];
+    const customOrdersData = (customOrdersRes.data ?? []) as any[];
+
+    if (ordersData.length === 0 && customOrdersData.length === 0) {
       setDayOrdersLoading(false);
       return;
     }
 
-    const userIds = ordersData.map((o: any) => o.user_id).filter(Boolean);
+    const subUserIds = ordersData.map((o: any) => o.user_id).filter(Boolean);
+    const customUserIds = customOrdersData.map((o: any) => o.user_id).filter(Boolean);
+    const allUserIds = [...new Set([...subUserIds, ...customUserIds])];
+
     const subIds = ordersData.map((o: any) => o.subscription_id).filter(Boolean);
+    const customAddrIds = customOrdersData.map((o: any) => o.address_id).filter(Boolean);
 
     const [profilesRes, subsRes] = await Promise.all([
-      userIds.length > 0
-        ? supabase.from('profiles').select('id, full_name').in('id', userIds)
+      allUserIds.length > 0
+        ? supabase.from('profiles').select('id, full_name').in('id', allUserIds)
         : Promise.resolve({ data: [] }),
       subIds.length > 0
         ? supabase.from('subscriptions').select('id, plan_id, delivery_address_id').in('id', subIds)
         : Promise.resolve({ data: [] }),
     ]);
 
+    const subAddrIds = (subsRes.data ?? []).map((s: any) => s.delivery_address_id).filter(Boolean);
+    const allAddrIds = [...new Set([...subAddrIds, ...customAddrIds])];
+
     const planIds = (subsRes.data ?? []).map((s: any) => s.plan_id).filter(Boolean);
-    const addrIds = (subsRes.data ?? []).map((s: any) => s.delivery_address_id).filter(Boolean);
 
     const [plansRes, addrsRes] = await Promise.all([
       planIds.length > 0
         ? supabase.from('subscription_plans').select('id, name').in('id', planIds)
         : Promise.resolve({ data: [] }),
-      addrIds.length > 0
-        ? supabase.from('addresses').select('id, street, city').in('id', addrIds)
+      allAddrIds.length > 0
+        ? supabase.from('addresses').select('id, street, city').in('id', allAddrIds)
         : Promise.resolve({ data: [] }),
     ]);
 
@@ -210,13 +209,14 @@ export default function RiderAttendance() {
     (addrsRes.data ?? []).forEach((a: any) => { addrMap[a.id] = a; });
     const subMap: Record<string, any> = {};
     (subsRes.data ?? []).forEach((s: any) => { subMap[s.id] = s; });
-    const orderMap: Record<string, any> = {};
+
+    const subOrderMap: Record<string, any> = {};
     ordersData.forEach((o: any) => {
       const prof = profileMap[o.user_id];
       const sub = subMap[o.subscription_id];
       const plan = sub ? planMap[sub.plan_id] : null;
       const addr = sub ? addrMap[sub.delivery_address_id] : null;
-      orderMap[o.id] = {
+      subOrderMap[o.id] = {
         customer_name: prof?.full_name ?? null,
         addr_street: addr?.street ?? null,
         addr_city: addr?.city ?? null,
@@ -224,15 +224,62 @@ export default function RiderAttendance() {
       };
     });
 
-    const enriched: DayOrder[] = assignData
-      .filter((a: any) => orderMap[a.order_id])
-      .map((a: any) => ({
-        id: a.id,
-        order_id: a.order_id,
-        status: a.status,
-        delivered_at: a.delivered_at ?? null,
-        ...(orderMap[a.order_id] ?? {}),
-      }));
+    const customOrderMap: Record<string, any> = {};
+    customOrdersData.forEach((o: any) => {
+      const prof = profileMap[o.user_id];
+      const addr = o.address_id ? addrMap[o.address_id] : null;
+      customOrderMap[o.id] = {
+        customer_name: prof?.full_name ?? null,
+        addr_street: addr?.street ?? null,
+        addr_city: addr?.city ?? null,
+        delivery_time: o.delivery_time ?? null,
+      };
+    });
+
+    const completedOnDate = (deliveredAt: string | null): boolean => {
+      if (!deliveredAt) return false;
+      const istDate = new Date(new Date(deliveredAt).getTime() + 5.5 * 60 * 60 * 1000);
+      return istDate.toISOString().slice(0, 10) === dateStr;
+    };
+
+    const enriched: DayOrder[] = [];
+
+    subAssignments.forEach((a: any) => {
+      const order = subOrderMap[a.order_id];
+      const scheduledDate = ordersData.find((o: any) => o.id === a.order_id)?.scheduled_date;
+      if (order && (scheduledDate === dateStr || (a.status === 'delivered' && completedOnDate(a.delivered_at)))) {
+        enriched.push({
+          id: a.id,
+          order_id: a.order_id,
+          custom_order_id: null,
+          status: a.status,
+          delivered_at: a.delivered_at ?? null,
+          delivery_time: null,
+          delivery_latitude: a.delivery_latitude ?? null,
+          delivery_longitude: a.delivery_longitude ?? null,
+          order_type: 'subscription',
+          ...order,
+        });
+      }
+    });
+
+    customAssignments.forEach((a: any) => {
+      const customOrder = customOrderMap[a.custom_order_id];
+      const deliveryDate = customOrdersData.find((o: any) => o.id === a.custom_order_id)?.delivery_date;
+      if (customOrder && (deliveryDate === dateStr || (a.status === 'delivered' && completedOnDate(a.delivered_at)))) {
+        enriched.push({
+          id: a.id,
+          order_id: null,
+          custom_order_id: a.custom_order_id,
+          status: a.status,
+          delivered_at: a.delivered_at ?? null,
+          delivery_latitude: a.delivery_latitude ?? null,
+          delivery_longitude: a.delivery_longitude ?? null,
+          order_type: 'custom',
+          ...customOrder,
+        });
+      }
+    });
 
     setDayOrders(enriched);
     setDayOrdersLoading(false);
@@ -246,42 +293,13 @@ export default function RiderAttendance() {
   // ── Check-in ───────────────────────────────────────────────────────────────
   const handleCheckIn = async () => {
     setGeoError('');
-    if (locations.length === 0) {
-      setGeoError('No attendance locations configured. Contact admin.');
+    if (!riderId) {
+      setGeoError('Could not verify your rider profile. Please reopen the app and try again.');
       return;
     }
     setCheckingIn(true);
     try {
-      let pos: GeolocationPosition;
-      try {
-        pos = await getCurrentPosition();
-      } catch {
-        setGeoError('Unable to get your location. Please allow location access and try again.');
-        setCheckingIn(false);
-        return;
-      }
-
-      const { latitude: userLat, longitude: userLng } = pos.coords;
-      let matchedLocation: AttendanceLocation | null = null;
-      let minDist = Infinity;
-      for (const loc of locations) {
-        const dist = haversineMeters(userLat, userLng, loc.latitude, loc.longitude);
-        if (dist <= loc.radius_meters && dist < minDist) {
-          minDist = dist;
-          matchedLocation = loc;
-        }
-      }
-
-      if (!matchedLocation) {
-        const nearest = locations.reduce((best, loc) => {
-          const d = haversineMeters(userLat, userLng, loc.latitude, loc.longitude);
-          return d < haversineMeters(userLat, userLng, best.latitude, best.longitude) ? loc : best;
-        }, locations[0]);
-        const nearestDist = Math.round(haversineMeters(userLat, userLng, nearest.latitude, nearest.longitude));
-        setGeoError(`You are ${nearestDist}m from "${nearest.name}" (radius: ${nearest.radius_meters}m). Move closer to check in.`);
-        setCheckingIn(false);
-        return;
-      }
+      const { coordinates, matchedLocation } = await performAttendanceCheckIn(locations);
 
       const todayStr = todayISTString();
       const { error } = await supabase
@@ -292,15 +310,17 @@ export default function RiderAttendance() {
           status: 'present' as const,
           check_in_time: new Date().toISOString(),
           check_in_location_id: matchedLocation.id,
-          check_in_latitude: userLat,
-          check_in_longitude: userLng,
+          check_in_latitude: coordinates.latitude,
+          check_in_longitude: coordinates.longitude,
         }, { onConflict: 'rider_id,date' });
 
       if (error) {
-        setGeoError(error.message || 'Failed to mark attendance. Please try again.');
+        setGeoError('Could not save your attendance. Please check your connection and try again.');
       } else {
         await load();
       }
+    } catch (err) {
+      setGeoError(getCheckInErrorMessage(err));
     } finally {
       setCheckingIn(false);
     }
@@ -445,7 +465,7 @@ export default function RiderAttendance() {
               ? <ActivityIndicator size="small" color={Colors.white} />
               : <Navigation size={16} color={Colors.white} strokeWidth={2} />}
             <Text style={styles.checkInBtnText}>
-              {checkingIn ? 'Getting Location...' : 'Mark Attendance'}
+              {checkingIn ? 'Verifying Location...' : 'Mark Attendance'}
             </Text>
           </TouchableOpacity>
         )}
@@ -541,11 +561,16 @@ export default function RiderAttendance() {
             </View>
           ) : (
             <View style={styles.deliveryList}>
-              {dayOrders.map((order) => {
+              {dayOrders.map((order, idx) => {
                 const sm = ORDER_STATUS_META[order.status] ?? ORDER_STATUS_META.assigned;
                 const addrText = [order.addr_street, order.addr_city].filter(Boolean).join(', ') || '—';
+                const timeLabel = order.delivered_at
+                  ? format(new Date(order.delivered_at), 'hh:mm a')
+                  : order.delivery_time
+                    ? order.delivery_time
+                    : null;
                 return (
-                  <View key={order.id} style={styles.deliveryItem}>
+                  <View key={order.id} style={[styles.deliveryItem, idx > 0 && { borderTopWidth: 1, borderTopColor: Colors.border }]}>
                     <View style={[styles.deliveryIconWrap, { backgroundColor: sm.bg }]}>
                       <PackageCheck size={16} color={sm.color} strokeWidth={1.8} />
                     </View>
@@ -555,16 +580,16 @@ export default function RiderAttendance() {
                       </Text>
                       <View style={styles.deliveryAddrRow}>
                         <MapPin size={10} color={Colors.textTertiary} strokeWidth={1.8} />
-                        <Text style={styles.deliveryAddr} numberOfLines={1}>{addrText}</Text>
+                        <Text style={styles.deliveryAddr} numberOfLines={2}>{addrText}</Text>
                       </View>
                       {order.plan_name && (
                         <Text style={styles.deliveryPlan} numberOfLines={1}>{order.plan_name}</Text>
                       )}
-                      {order.delivered_at && (
+                      {timeLabel && (
                         <View style={styles.deliveryTimeRow}>
-                          <CheckCircle2 size={10} color={Colors.success} strokeWidth={2} />
+                          <Clock size={10} color={order.delivered_at ? Colors.success : Colors.textTertiary} strokeWidth={2} />
                           <Text style={styles.deliveryTime}>
-                            {format(new Date(order.delivered_at), 'hh:mm a')}
+                            {order.delivered_at ? 'Delivered' : 'Slot'}: {timeLabel}
                           </Text>
                         </View>
                       )}

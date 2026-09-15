@@ -151,13 +151,12 @@ export default function AdminDashboard() {
       const next30 = next30Days.toISOString().split('T')[0];
       const todayStart = `${today}T00:00:00.000Z`;
       const todayEnd = `${today}T23:59:59.999Z`;
-      // IST-aware today window for delivered_at (IST = UTC+5:30)
-      const todayISTStart = new Date(`${today}T00:00:00+05:30`).toISOString();
-      const todayISTEnd = new Date(`${today}T23:59:59+05:30`).toISOString();
 
       const settled = await Promise.allSettled([
-        // Active subs (includes currently paused — they still have status='active')
-        supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active'),
+        // Active subs exclude subscriptions currently covered by a pause period
+        supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active').or(`pause_until.is.null,pause_until.lt.${today}`),
+        // Total subs (all statuses)
+        supabase.from('subscriptions').select('*', { count: 'exact', head: true }),
         // Pending subs (paid, future start_date)
         supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
         // Expired subs: status = 'expired'
@@ -180,10 +179,10 @@ export default function AdminDashboard() {
         supabase.from('custom_orders').select('*', { count: 'exact', head: true }).eq('delivery_date', today),
         supabase.from('custom_orders').select('*', { count: 'exact', head: true }).gt('delivery_date', today).lte('delivery_date', next5Str),
         supabase.from('custom_orders').select('*', { count: 'exact', head: true }).eq('status', 'confirmed').neq('payment_status', 'paid'),
-        supabase.from('custom_orders').select('*', { count: 'exact', head: true }).neq('status', 'delivered').neq('status', 'cancelled'),
-        // Today Delivery = orders delivered today by riders (delivered_at within today IST)
-        supabase.from('rider_order_assignments').select('*', { count: 'exact', head: true }).eq('status', 'delivered').gte('delivered_at', todayISTStart).lte('delivered_at', todayISTEnd),
-        // Tomorrow Delivery = active subscriptions that will be active tomorrow (not expired via effective end date, not paused on that day)
+        supabase.from('custom_orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+        // Today Delivered = orders scheduled for today with delivered status
+        supabase.from('orders').select('*', { count: 'exact', head: true }).eq('scheduled_date', today).eq('status', 'delivered'),
+        // Tomorrow Delivery = active subscriptions eligible for tomorrow's scheduled orders
         supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active').lte('start_date', tomorrowStr).or(`new_end_date.gte.${tomorrowStr},and(new_end_date.is.null,or(end_date.is.null,end_date.gte.${tomorrowStr}))`).or(`pause_until.is.null,pause_until.lt.${tomorrowStr}`),
         supabase.from('payments').select('amount').eq('status', 'success').gte('created_at', todayStart).lte('created_at', todayEnd),
         supabase.from('expenses').select('amount').eq('expense_date', today),
@@ -211,7 +210,7 @@ export default function AdminDashboard() {
       const fallbackData = { data: [], count: null, error: null };
 
       const [
-        activeSubsRes, pendingSubsRes, expiredSubsRaw, todaySubsRaw,
+        activeSubsRes, totalSubsRes, pendingSubsRes, expiredSubsRaw, todaySubsRaw,
         endingTodayRes, expiringTodayRes,
         totalPausedRes, todayPausedRes, tomorrowPausedRes, todayResumedRes, tomorrowResumedRes,
         customTodayRes, customNext5Res, unpaidCustomRes, pendingCustomCountRes,
@@ -227,9 +226,7 @@ export default function AdminDashboard() {
         if (r.status === 'rejected') console.warn(`Dashboard query [${i}] failed:`, r.reason);
       });
 
-      // Total = active (includes paused) + pending
       const pendingSubscriptions = pendingSubsRes.count ?? 0;
-      const totalSubscriptions = (activeSubsRes.count ?? 0) + pendingSubscriptions;
 
       // Expired = subscriptions with status = 'expired'
       const expiredSubscriptions = expiredSubsRaw.count ?? 0;
@@ -269,7 +266,7 @@ export default function AdminDashboard() {
       const inactiveCustomersCount = Math.max(0, totalCustomerProfiles - activeCustomersCount);
 
       setMetrics({
-        totalSubscriptions,
+        totalSubscriptions: totalSubsRes.count ?? 0,
         activeSubscriptions: activeSubsRes.count ?? 0,
         pendingSubscriptions,
         expiredSubscriptions,
@@ -331,7 +328,7 @@ export default function AdminDashboard() {
     { label: 'Paused Subs', value: metrics.pausedSubscriptions.toString(), icon: PauseCircle, color: '#B45309', bg: '#FEF3C7', onBg: '#78350F' },
     { label: "Today's Orders", value: metrics.todaysOrders.toString(), icon: Truck, color: MD3.tertiary, bg: MD3.tertiaryContainer, onBg: MD3.onTertiaryContainer },
     { label: 'Monthly Rev.', value: formatPrice(metrics.monthlyRevenue), icon: TrendingUp, color: MD3.secondary, bg: MD3.secondaryContainer, onBg: MD3.onSecondaryContainer },
-    { label: 'New Customers', value: metrics.newUsersThisMonth.toString(), icon: Users, color: MD3.primary, bg: MD3.primaryContainer, onBg: MD3.onPrimaryContainer },
+    { label: 'New Users', value: metrics.newUsersThisMonth.toString(), icon: Users, color: MD3.primary, bg: MD3.primaryContainer, onBg: MD3.onPrimaryContainer },
     { label: 'Custom Orders', value: metrics.pendingCustomOrders.toString(), icon: Flower2, color: '#92400E', bg: '#FEF3C7', onBg: '#78350F' },
   ];
 
@@ -599,7 +596,7 @@ function WebDashboard({ metrics, recentOrders, recentCustomers, upcomingPauses, 
           <Text style={wStyles.groupTitle}>DELIVERY DETAILS</Text>
         </View>
         <View style={wStyles.cardRow}>
-          <DashCard label="Today Delivery" value={val(metrics.deliveryToday)} icon={Truck} accent="#15803D" bg="#DCFCE7" href="/(admin)/orders?subFilter=delivery_today" highlight />
+          <DashCard label="Today Delivered" value={val(metrics.deliveryToday)} icon={Truck} accent="#15803D" bg="#DCFCE7" href="/(admin)/orders?subFilter=delivery_today" highlight />
           <DashCard label="Tomorrow Delivery" value={val(metrics.deliveryTomorrow)} icon={Truck} accent="#0369A1" bg="#E0F2FE" href="/(admin)/orders?subFilter=delivery_tomorrow" />
         </View>
       </View>
@@ -650,7 +647,7 @@ function WebDashboard({ metrics, recentOrders, recentCustomers, upcomingPauses, 
 
         <View style={[wStyles.tableCard, wStyles.tableCardNarrow]}>
           <View style={wStyles.tableHeader}>
-            <Text style={wStyles.tableTitle}>New Customers</Text>
+            <Text style={wStyles.tableTitle}>New Users</Text>
             <TouchableOpacity style={wStyles.viewAllBtn} onPress={() => router.push('/(admin)/customers')} activeOpacity={0.7}>
               <Text style={wStyles.viewAllText}>View all</Text>
               <ChevronRight size={14} color={MD3.primary} />

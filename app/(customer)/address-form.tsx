@@ -37,6 +37,16 @@ const ADDRESS_TYPES = [
   { label: 'Other', value: 'Other' },
 ];
 
+const INDIAN_STATES = [
+  'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh',
+  'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka',
+  'Kerala', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram',
+  'Nagaland', 'Odisha', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu',
+  'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
+  'Andaman and Nicobar Islands', 'Chandigarh', 'Dadra and Nagar Haveli and Daman and Diu',
+  'Delhi', 'Jammu and Kashmir', 'Ladakh', 'Lakshadweep', 'Puducherry',
+];
+
 interface Locality {
   id: number;
   locality_name: string;
@@ -64,7 +74,7 @@ export default function AddressFormScreen() {
   const [flatPlotNo, setFlatPlotNo] = useState('');
   const [landmark, setLandmark] = useState('');
   const [city, setCity] = useState('');
-  const [stateField, setStateField] = useState('');
+  const [stateField, setStateField] = useState('Odisha');
   const [pincode, setPincode] = useState('');
   const [label, setLabel] = useState('Home');
   const [isDefault, setIsDefault] = useState(false);
@@ -78,6 +88,7 @@ export default function AddressFormScreen() {
 
   const [localityDropdown, setLocalityDropdown] = useState(false);
   const [apartmentDropdown, setApartmentDropdown] = useState(false);
+  const [stateDropdown, setStateDropdown] = useState(false);
   const [localitySearch, setLocalitySearch] = useState('');
   const [apartmentSearch, setApartmentSearch] = useState('');
 
@@ -92,7 +103,7 @@ export default function AddressFormScreen() {
     setFlatPlotNo('');
     setLandmark('');
     setCity('');
-    setStateField('');
+    setStateField('Odisha');
     setPincode('');
     setLabel('Home');
     setIsDefault(false);
@@ -100,6 +111,7 @@ export default function AddressFormScreen() {
     setApartments([]);
     setLocalityDropdown(false);
     setApartmentDropdown(false);
+    setStateDropdown(false);
     setLocalitySearch('');
     setApartmentSearch('');
   }, []);
@@ -347,6 +359,7 @@ export default function AddressFormScreen() {
                   LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                   setLocalityDropdown(o => !o);
                   setApartmentDropdown(false);
+                  setStateDropdown(false);
                   if (!localityDropdown) setLocalitySearch('');
                 }}
                 activeOpacity={0.7}
@@ -472,6 +485,7 @@ export default function AddressFormScreen() {
                       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                       setApartmentDropdown(o => !o);
                       setLocalityDropdown(false);
+                      setStateDropdown(false);
                       if (!apartmentDropdown) setApartmentSearch('');
                     }}
                     activeOpacity={0.7}
@@ -604,13 +618,56 @@ export default function AddressFormScreen() {
           {/* State */}
           <View style={styles.inputGroup}>
             <Text style={styles.inputLabel}>State *</Text>
-            <TextInput
-              style={styles.textInput}
-              value={stateField}
-              onChangeText={setStateField}
-              placeholder="e.g. Odisha"
-              placeholderTextColor={Colors.textDisabled}
-            />
+            <View style={styles.dropdownContainer}>
+              <TouchableOpacity
+                style={[styles.dropdownBtn, stateDropdown && styles.dropdownBtnOpen, errors.state && styles.dropdownBtnError]}
+                onPress={() => {
+                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                  setStateDropdown((open) => !open);
+                  setLocalityDropdown(false);
+                  setApartmentDropdown(false);
+                }}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.dropdownBtnText, !stateField && styles.dropdownPlaceholder]}>
+                  {stateField || 'Select state'}
+                </Text>
+                <ChevronDown
+                  size={18}
+                  color={Colors.textTertiary}
+                  strokeWidth={2}
+                  style={{ transform: [{ rotate: stateDropdown ? '180deg' : '0deg' }] }}
+                />
+              </TouchableOpacity>
+
+              {stateDropdown && (
+                <View style={styles.dropdownList}>
+                  <ScrollView style={styles.dropdownScroll} showsVerticalScrollIndicator={false} nestedScrollEnabled>
+                    {INDIAN_STATES.map((state) => {
+                      const selected = stateField === state;
+                      return (
+                        <TouchableOpacity
+                          key={state}
+                          style={[styles.dropdownItem, selected && styles.dropdownItemActive]}
+                          onPress={() => {
+                            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                            setStateField(state);
+                            setStateDropdown(false);
+                            setErrors((current) => ({ ...current, state: '' }));
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.dropdownItemText, selected && styles.dropdownItemTextActive]}>
+                            {state}
+                          </Text>
+                          {selected && <Check size={14} color={Colors.primary} strokeWidth={2.5} />}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
             {errors.state ? <Text style={styles.errorText}>{errors.state}</Text> : null}
           </View>
 

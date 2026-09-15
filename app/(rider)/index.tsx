@@ -19,6 +19,7 @@ import { format } from 'date-fns';
 import StatusChip from '@/components/ui/StatusChip';
 import { useRouter } from 'expo-router';
 import { resolveRider } from '@/utils/riderLookup';
+import { todayISTString, performAttendanceCheckIn, getCheckInErrorMessage } from '@/utils/attendanceCheckIn';
 
 const GRADIENT_TOP = '#1A2E3A';
 const GRADIENT_MID = '#1E3D50';
@@ -77,8 +78,6 @@ export default function RiderDashboard() {
   const [pickingUpAll, setPickingUpAll] = useState(false);
 
   // Attendance state
-  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-  const todayIST = new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
   const [todayAttendance, setTodayAttendance] = useState<{ status: string; check_in_time: string | null } | null | undefined>(undefined);
   const [attendanceLocations, setAttendanceLocations] = useState<{ id: string; name: string; latitude: number; longitude: number; radius_meters: number }[]>([]);
   const [checkingIn, setCheckingIn] = useState(false);
@@ -102,19 +101,20 @@ export default function RiderDashboard() {
     setRider(riderData);
     setRiderId(riderData.id);
 
-    const todayIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const todayStr = todayISTString();
 
     const [totalRes, attendRes, locRes] = await Promise.all([
       supabase
         .from('rider_order_assignments')
-        .select('id, order_id, custom_order_id, status, picked_up_at')
+        .select('id, order_id, custom_order_id, status, assigned_at, delivered_at, picked_up_at')
         .eq('rider_id', riderData.id)
-        .neq('status', 'reassigned'),
+        .neq('status', 'reassigned')
+        .order('assigned_at', { ascending: false }),
       supabase
         .from('rider_attendance')
         .select('status, check_in_time')
         .eq('rider_id', riderData.id)
-        .eq('date', todayIST)
+        .eq('date', todayStr)
         .maybeSingle(),
       supabase
         .from('attendance_locations')
@@ -139,12 +139,21 @@ export default function RiderDashboard() {
     ).length;
     const successRate = totalClosed > 0 ? Math.round((totalDelivered / totalClosed) * 100) : 0;
 
-    const todayAssigned = totalData.filter((a) => ['assigned', 'out_for_delivery'].includes(a.status)).length;
+    const seenAssignmentKeys = new Set<string>();
+    const todayAssignments = totalData.filter((assignment: any) => {
+      const key = assignment.custom_order_id ?? assignment.order_id;
+      if (!key || seenAssignmentKeys.has(key)) return false;
+      seenAssignmentKeys.add(key);
+      return true;
+    });
+    const todayTotal = todayAssignments.length;
+    const todayDelivered = todayAssignments.filter((a: any) => a.status === 'delivered').length;
+    const todayPending = todayTotal - todayDelivered;
 
     setMetrics({
-      todayAssigned,
-      todayDelivered: totalDelivered,
-      todayPending: todayAssigned,
+      todayAssigned: todayTotal,
+      todayDelivered,
+      todayPending,
       totalDeliveries: totalDelivered,
       successRate,
     });
@@ -157,66 +166,28 @@ export default function RiderDashboard() {
 
   const onRefresh = () => { setRefreshing(true); load(); };
 
-  function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-    const R = 6371000;
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLng = ((lng2 - lng1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
-
   const handleCheckIn = async () => {
     if (!riderId) return;
     setGeoError('');
-    if (attendanceLocations.length === 0) {
-      setGeoError('No attendance locations configured. Contact admin.');
-      return;
-    }
-    if (!navigator?.geolocation) {
-      setGeoError('Geolocation is not supported by your browser.');
-      return;
-    }
     setCheckingIn(true);
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const { latitude: userLat, longitude: userLng } = pos.coords;
-        let matched: (typeof attendanceLocations)[0] | null = null;
-        let minDist = Infinity;
-        for (const loc of attendanceLocations) {
-          const d = haversineMeters(userLat, userLng, loc.latitude, loc.longitude);
-          if (d <= loc.radius_meters && d < minDist) { minDist = d; matched = loc; }
-        }
-        if (!matched) {
-          const nearest = attendanceLocations.reduce((b, l) =>
-            haversineMeters(userLat, userLng, l.latitude, l.longitude) <
-            haversineMeters(userLat, userLng, b.latitude, b.longitude) ? l : b,
-            attendanceLocations[0]
-          );
-          const dist = Math.round(haversineMeters(userLat, userLng, nearest.latitude, nearest.longitude));
-          setGeoError(`You are ${dist}m from "${nearest.name}" (radius: ${nearest.radius_meters}m). Move closer to check in.`);
-          setCheckingIn(false);
-          return;
-        }
-        const now = new Date().toISOString();
-        const { error } = await supabase.from('rider_attendance').upsert(
-          { rider_id: riderId, date: todayIST, status: 'present', check_in_time: now, check_in_location_id: matched.id, check_in_latitude: userLat, check_in_longitude: userLng },
-          { onConflict: 'rider_id,date' }
-        );
-        if (error) {
-          setGeoError(error.message || 'Failed to mark attendance. Please try again.');
-        } else {
-          setTodayAttendance({ status: 'present', check_in_time: now });
-        }
-        setCheckingIn(false);
-      },
-      () => {
-        setGeoError('Unable to get your location. Please allow location access and try again.');
-        setCheckingIn(false);
-      },
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
+    try {
+      const { coordinates, matchedLocation } = await performAttendanceCheckIn(attendanceLocations);
+
+      const now = new Date().toISOString();
+      const { error } = await supabase.from('rider_attendance').upsert(
+        { rider_id: riderId, date: todayISTString(), status: 'present', check_in_time: now, check_in_location_id: matchedLocation.id, check_in_latitude: coordinates.latitude, check_in_longitude: coordinates.longitude },
+        { onConflict: 'rider_id,date' }
+      );
+      if (error) {
+        setGeoError('Could not save your attendance. Please check your connection and try again.');
+      } else {
+        setTodayAttendance({ status: 'present', check_in_time: now });
+      }
+    } catch (err) {
+      setGeoError(getCheckInErrorMessage(err));
+    } finally {
+      setCheckingIn(false);
+    }
   };
 
 
@@ -563,23 +534,6 @@ export default function RiderDashboard() {
           </View>
         )}
 
-        <View style={mStyles.statsRow}>
-          <View style={mStyles.statItem}>
-            <Text style={mStyles.statValue}>{loading ? '—' : metrics.totalDeliveries}</Text>
-            <Text style={mStyles.statLabel}>Total Deliveries</Text>
-          </View>
-          <View style={mStyles.statDivider} />
-          <View style={mStyles.statItem}>
-            <Text style={mStyles.statValue}>{loading ? '—' : `${metrics.successRate}%`}</Text>
-            <Text style={mStyles.statLabel}>Success Rate</Text>
-          </View>
-          <View style={mStyles.statDivider} />
-          <View style={mStyles.statItem}>
-            <Text style={mStyles.statValue}>{loading ? '—' : metrics.todayAssigned}</Text>
-            <Text style={mStyles.statLabel}>Today</Text>
-          </View>
-        </View>
-
         <Text style={mStyles.dateText}>{format(new Date(), 'EEEE, dd MMMM yyyy')}</Text>
       </LinearGradient>
 
@@ -690,22 +644,6 @@ const mStyles = StyleSheet.create({
   },
   activePillText: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11,
-  },
-  statsRow: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: Radius.lg, paddingVertical: Spacing[3],
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
-  },
-  statItem: { flex: 1, alignItems: 'center', gap: 2 },
-  statDivider: { width: 1, height: 32, backgroundColor: 'rgba(255,255,255,0.15)' },
-  statValue: {
-    fontFamily: Typography.fontFamily.bold,
-    fontSize: Typography.size['2xl'], color: '#FFFFFF', letterSpacing: -0.5,
-  },
-  statLabel: {
-    fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.xs, color: 'rgba(255,255,255,0.55)',
   },
   dateText: {
     fontFamily: Typography.fontFamily.sansRegular,

@@ -250,15 +250,23 @@ Deno.serve(async (req: Request) => {
     const globalWaTemplateId = (await getSecret(supabase, "MSG91_WHATSAPP_TEMPLATE_ID")) ?? "";
     const globalWaNamespace = (await getSecret(supabase, "MSG91_WHATSAPP_NAMESPACE")) ?? "";
 
-    // Heavy rainfall specific WhatsApp template override
+    // Event-specific WhatsApp template overrides
     const heavyRainfallTemplateName = (await getSecret(supabase, "MSG91_WHATSAPP_HEAVY_RAINFALL_TEMPLATE_NAME")) ?? "";
     const heavyRainfallLanguage = (await getSecret(supabase, "MSG91_WHATSAPP_HEAVY_RAINFALL_LANGUAGE")) ?? "en";
+    const earlyDeliveryTemplateName = (await getSecret(supabase, "MSG91_WHATSAPP_EARLY_DELIVERY_TEMPLATE_NAME")) ?? "";
+    const earlyDeliveryLanguage = (await getSecret(supabase, "MSG91_WHATSAPP_EARLY_DELIVERY_LANGUAGE")) ?? "en";
 
     const isHeavyRainfall = event_type === "heavy_rainfall";
-    const waTemplateIdForSend = isHeavyRainfall && heavyRainfallTemplateName
-      ? heavyRainfallTemplateName
-      : template.msg91_whatsapp_template_id;
-    const waLanguageForSend = isHeavyRainfall ? heavyRainfallLanguage : "en";
+    const isEarlyDelivery = event_type === "early_delivery";
+    let waTemplateIdForSend = template.msg91_whatsapp_template_id;
+    let waLanguageForSend = "en";
+    if (isHeavyRainfall && heavyRainfallTemplateName) {
+      waTemplateIdForSend = heavyRainfallTemplateName;
+      waLanguageForSend = heavyRainfallLanguage;
+    } else if (isEarlyDelivery && earlyDeliveryTemplateName) {
+      waTemplateIdForSend = earlyDeliveryTemplateName;
+      waLanguageForSend = earlyDeliveryLanguage;
+    }
 
     const results: Array<{ user_id: string; status: string; error?: string }> = [];
 

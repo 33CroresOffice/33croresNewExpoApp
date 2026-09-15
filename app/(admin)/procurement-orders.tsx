@@ -6,7 +6,7 @@ import {
   Modal, TextInput, Platform, ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Package, Plus, X, ArrowLeft, Store, Clock, CircleCheck as CheckCircle, Circle as XCircle, Truck, ChevronDown, User, Search } from 'lucide-react-native';
+import { Package, Plus, X, ArrowLeft, Store, Clock, CircleCheck as CheckCircle, Circle as XCircle, Truck, ChevronDown, User, Search, CircleDollarSign } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { format, parseISO } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
@@ -19,17 +19,19 @@ const STATUS_CONFIG: Record<string, { bg: string; text: string; border: string; 
   sent:      { bg: '#E3F2FD',             text: '#1565C0',             border: '#90CAF9',            icon: Truck,        label: 'Sent' },
   accepted:  { bg: Colors.successSurface, text: Colors.success,        border: '#A5D6A7',            icon: CheckCircle,  label: 'Accepted' },
   fulfilled: { bg: '#E8F5E9',             text: '#1B5E20',             border: '#81C784',            icon: CheckCircle,  label: 'Fulfilled' },
+  paid:      { bg: Colors.successSurface, text: Colors.success,        border: '#A5D6A7',            icon: CircleDollarSign, label: 'Paid' },
   cancelled: { bg: Colors.errorSurface,   text: Colors.error,          border: '#EF9A9A',            icon: XCircle,      label: 'Cancelled' },
 };
 
-const STATUS_OPTIONS: ProcurementOrderStatus[] = ['draft', 'sent', 'accepted', 'fulfilled', 'cancelled'];
+const STATUS_OPTIONS: ProcurementOrderStatus[] = ['draft', 'sent', 'accepted', 'fulfilled', 'paid', 'cancelled'];
 const TABS = ['all', ...STATUS_OPTIONS];
 
 const NEXT_STATUSES: Record<string, ProcurementOrderStatus[]> = {
   draft: ['sent', 'cancelled'],
   sent: ['accepted', 'cancelled'],
   accepted: ['fulfilled', 'cancelled'],
-  fulfilled: [],
+  fulfilled: ['paid'],
+  paid: [],
   cancelled: [],
 };
 const getNextStatuses = (status: string): ProcurementOrderStatus[] => NEXT_STATUSES[status] ?? [];
@@ -318,7 +320,7 @@ function ProcurementOrdersScreenContent() {
                     )}
                   </View>
                   <View style={[{ flex: 1.5 }, s.actionsCell]}>
-                    {(
+                    {order.status !== 'paid' && (
                       <TouchableOpacity
                         style={[s.actionBtn, s.assignRiderBtn]}
                         onPress={(e) => { e.stopPropagation?.(); openAssignRider(order); }}
@@ -381,7 +383,7 @@ function ProcurementOrdersScreenContent() {
                 )}
                 <View style={s.divider} />
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.mobileActions}>
-                  {(
+                  {order.status !== 'paid' && (
                     <TouchableOpacity
                       style={[s.mobileActionBtn, s.assignRiderBtn]}
                       onPress={() => openAssignRider(order)}

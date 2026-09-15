@@ -20,51 +20,118 @@ Deno.serve(async (req: Request) => {
     const body = await req.json().catch(() => ({}));
     const targetDate: string = body.date ?? new Date().toISOString().split("T")[0];
 
-    const dateObj = new Date(targetDate + "T00:00:00Z");
-    const dayOfWeek = dateObj.getUTCDay();
+    // --- 0. Load flower availability rules for this date ---
+    const { data: availabilityRules, error: availErr } = await supabase
+      .from("flower_availability")
+      .select(`
+        flower_type_id,
+        alternate_flower_type_id,
+        alternate_quantity,
+        alternate_unit_type
+      `)
+      .lte("unavailable_from", targetDate)
+      .gte("unavailable_to", targetDate);
 
-    // --- 1. Subscription-based requirements ---
-    const { data: activeSubs, error: subsErr } = await supabase
-      .from("subscriptions")
+    if (availErr) throw new Error("Failed to fetch availability: " + availErr.message);
+
+    const substitutionMap: Record<string, {
+      alternate_flower_type_id: string | null;
+      alternate_quantity: number | null;
+      alternate_unit_type: string | null;
+    }> = {};
+    for (const rule of availabilityRules ?? []) {
+      substitutionMap[rule.flower_type_id] = {
+        alternate_flower_type_id: rule.alternate_flower_type_id,
+        alternate_quantity: rule.alternate_quantity,
+        alternate_unit_type: rule.alternate_unit_type,
+      };
+    }
+
+    // --- 1. Fetch scheduled orders for the target date ---
+    // These are the actual delivery orders created by the generate-orders cron.
+    // We join through subscription -> plan -> plan_flower_requirements to get
+    // the exact flower breakup per package.
+    const { data: orders, error: ordersErr } = await supabase
+      .from("orders")
       .select(`
         id,
-        plan:subscription_plans(
+        subscription_id,
+        scheduled_date,
+        status,
+        subscription:subscriptions(
           id,
-          frequency,
-          deliveries_per_month,
-          flower_requirements:plan_flower_requirements(
-            flower_type_id,
-            quantity_per_delivery,
-            unit_type
+          status,
+          plan:subscription_plans(
+            id,
+            frequency,
+            flower_requirements:plan_flower_requirements(
+              flower_type_id,
+              quantity_per_delivery,
+              unit_type
+            )
           )
         )
       `)
-      .eq("status", "active");
+      .eq("scheduled_date", targetDate)
+      .in("status", ["scheduled", "out_for_delivery"]);
 
-    if (subsErr) throw new Error("Failed to fetch subscriptions: " + subsErr.message);
+    if (ordersErr) throw new Error("Failed to fetch orders: " + ordersErr.message);
 
-    // flower_type_id -> { total_quantity, unit_type, sub_count, custom_count }
+    // flower_type_id -> { total_quantity, unit_type, sub_count, custom_count, original_flower_type_id }
     const flowerTotals: Record<string, {
       total_quantity: number;
       unit_type: string;
       sub_count: number;
       custom_count: number;
+      original_flower_type_id: string | null;
     }> = {};
 
-    for (const sub of activeSubs ?? []) {
+    let orderCount = 0;
+
+    for (const order of orders ?? []) {
+      const sub = order.subscription as any;
+      if (!sub) continue;
+      // Skip paused or expired subscriptions
+      if (sub.status === "paused" || sub.status === "expired") continue;
+
       const plan = sub.plan as any;
       if (!plan) continue;
 
-      const shouldDeliver = shouldDeliverOnDate(plan.frequency, dayOfWeek, dateObj);
-      if (!shouldDeliver) continue;
+      orderCount++;
 
       for (const req of (plan.flower_requirements ?? [])) {
-        const key = req.flower_type_id;
-        if (!flowerTotals[key]) {
-          flowerTotals[key] = { total_quantity: 0, unit_type: req.unit_type, sub_count: 0, custom_count: 0 };
+        const originalFlowerId = req.flower_type_id;
+        const subRule = substitutionMap[originalFlowerId];
+
+        let effectiveFlowerId = originalFlowerId;
+        let effectiveQty = Number(req.quantity_per_delivery);
+        let effectiveUnit = req.unit_type;
+        let originalId: string | null = null;
+
+        if (subRule) {
+          if (subRule.alternate_flower_type_id) {
+            effectiveFlowerId = subRule.alternate_flower_type_id;
+            originalId = originalFlowerId;
+            if (subRule.alternate_quantity && subRule.alternate_quantity > 0) {
+              effectiveQty = Number(subRule.alternate_quantity);
+            }
+            if (subRule.alternate_unit_type) {
+              effectiveUnit = subRule.alternate_unit_type;
+            }
+          } else {
+            originalId = originalFlowerId;
+          }
         }
-        flowerTotals[key].total_quantity += Number(req.quantity_per_delivery);
+
+        const key = effectiveFlowerId;
+        if (!flowerTotals[key]) {
+          flowerTotals[key] = { total_quantity: 0, unit_type: effectiveUnit, sub_count: 0, custom_count: 0, original_flower_type_id: originalId };
+        }
+        flowerTotals[key].total_quantity += effectiveQty;
         flowerTotals[key].sub_count += 1;
+        if (!flowerTotals[key].original_flower_type_id && originalId) {
+          flowerTotals[key].original_flower_type_id = originalId;
+        }
       }
     }
 
@@ -102,33 +169,70 @@ Deno.serve(async (req: Request) => {
 
         const match = nameToFlowerType[flowerName];
         if (match) {
-          const key = match.id;
+          const originalFlowerId = match.id;
+          const subRule = substitutionMap[originalFlowerId];
+
+          let effectiveFlowerId = originalFlowerId;
+          let effectiveQty = qty;
+          let effectiveUnit = unit || match.unit_type;
+          let originalId: string | null = null;
+
+          if (subRule) {
+            if (subRule.alternate_flower_type_id) {
+              effectiveFlowerId = subRule.alternate_flower_type_id;
+              originalId = originalFlowerId;
+              if (subRule.alternate_quantity && subRule.alternate_quantity > 0) {
+                effectiveQty = Number(subRule.alternate_quantity);
+              }
+              if (subRule.alternate_unit_type) {
+                effectiveUnit = subRule.alternate_unit_type;
+              }
+            } else {
+              originalId = originalFlowerId;
+            }
+          }
+
+          const key = effectiveFlowerId;
           if (!flowerTotals[key]) {
-            flowerTotals[key] = { total_quantity: 0, unit_type: unit || match.unit_type, sub_count: 0, custom_count: 0 };
+            flowerTotals[key] = { total_quantity: 0, unit_type: effectiveUnit, sub_count: 0, custom_count: 0, original_flower_type_id: originalId };
           }
-          flowerTotals[key].total_quantity += qty;
+          flowerTotals[key].total_quantity += effectiveQty;
           flowerTotals[key].custom_count += 1;
-        } else {
-          // Unmatched flower name: use a synthetic key so it still appears
-          const syntheticKey = `__custom__${flowerName}`;
-          if (!flowerTotals[syntheticKey]) {
-            flowerTotals[syntheticKey] = { total_quantity: 0, unit_type: unit || "pieces", sub_count: 0, custom_count: 0 };
+          if (!flowerTotals[key].original_flower_type_id && originalId) {
+            flowerTotals[key].original_flower_type_id = originalId;
           }
-          flowerTotals[syntheticKey].total_quantity += qty;
-          flowerTotals[syntheticKey].custom_count += 1;
         }
       }
     }
 
-    // Filter out synthetic keys (unmatched custom order flowers have no flower_type_id, skip upsert)
-    const matchedEntries = Object.entries(flowerTotals).filter(([k]) => !k.startsWith("__custom__"));
+    // --- 3. Upsert daily requirements ---
+    const matchedEntries = Object.entries(flowerTotals);
 
     if (matchedEntries.length === 0) {
+      // Clear any stale requirements for this date
+      await supabase
+        .from("daily_requirements")
+        .delete()
+        .eq("requirement_date", targetDate);
+
       return new Response(
-        JSON.stringify({ message: "No deliveries scheduled for this date", date: targetDate, requirements: [] }),
+        JSON.stringify({
+          message: "No scheduled deliveries for this date",
+          date: targetDate,
+          requirements: [],
+          order_count: 0,
+          custom_order_count: customOrders?.length ?? 0,
+        }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    // Delete existing requirements for this date first (to remove stale entries)
+    await supabase
+      .from("daily_requirements")
+      .delete()
+      .eq("requirement_date", targetDate)
+      .is("batch_id", null);
 
     const upserts = matchedEntries.map(([flower_type_id, data]) => ({
       requirement_date: targetDate,
@@ -137,16 +241,18 @@ Deno.serve(async (req: Request) => {
       unit_type: data.unit_type,
       active_subscriptions_count: data.sub_count,
       custom_orders_count: data.custom_count,
-      status: "pending",
+      original_flower_type_id: data.original_flower_type_id,
+      substituted: data.original_flower_type_id !== null,
+      status: "pending" as const,
       updated_at: new Date().toISOString(),
     }));
 
     const { data: inserted, error: upsertErr } = await supabase
       .from("daily_requirements")
-      .upsert(upserts, { onConflict: "requirement_date,flower_type_id", ignoreDuplicates: false })
+      .insert(upserts)
       .select();
 
-    if (upsertErr) throw new Error("Failed to upsert requirements: " + upsertErr.message);
+    if (upsertErr) throw new Error("Failed to insert requirements: " + upsertErr.message);
 
     return new Response(
       JSON.stringify({
@@ -154,8 +260,9 @@ Deno.serve(async (req: Request) => {
         date: targetDate,
         requirements: inserted ?? [],
         count: (inserted ?? []).length,
-        subscription_deliveries: matchedEntries.reduce((s, [, d]) => s + d.sub_count, 0),
-        custom_order_items: matchedEntries.reduce((s, [, d]) => s + d.custom_count, 0),
+        order_count: orderCount,
+        custom_order_count: customOrders?.length ?? 0,
+        substitutions_applied: matchedEntries.filter(([, d]) => d.original_flower_type_id !== null).length,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
@@ -166,19 +273,3 @@ Deno.serve(async (req: Request) => {
     );
   }
 });
-
-function shouldDeliverOnDate(frequency: string, dayOfWeek: number, date: Date): boolean {
-  const dayNum = date.getUTCDate();
-  switch (frequency) {
-    case "daily":
-      return true;
-    case "weekly":
-      return dayOfWeek === 1;
-    case "biweekly":
-      return dayOfWeek === 1 || dayOfWeek === 4;
-    case "monthly":
-      return dayNum === 1;
-    default:
-      return dayOfWeek === 1;
-  }
-}

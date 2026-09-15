@@ -30,6 +30,7 @@ const ACCENT_GOLD = '#C8962A';
 const GRADIENT_TOP = '#1B3A18';
 const GRADIENT_MID = '#2D5A27';
 const GRADIENT_BOT = '#3D7A35';
+const COMPLETED_STATUSES = ['fulfilled', 'completed', 'paid'];
 
 export default function VendorDashboard() {
   const insets = useSafeAreaInsets();
@@ -57,7 +58,13 @@ export default function VendorDashboard() {
       supabase.from('procurement_orders').select('status', { count: 'exact' }).eq('vendor_id', vendorData.id),
       supabase.from('vendor_payments').select('amount, status').eq('vendor_id', vendorData.id),
       supabase.from('procurement_orders')
-        .select('id, status, required_date, created_at, notes')
+        .select(`
+          id, status, requirement_date, created_at, notes,
+          items:procurement_order_items(
+            id, quantity, unit_type,
+            flower_type:flower_types(display_name)
+          )
+        `)
         .eq('vendor_id', vendorData.id).order('created_at', { ascending: false }).limit(5),
       supabase.from('vendor_payments')
         .select('id, amount, status, payment_date, payment_method, notes')
@@ -72,7 +79,7 @@ export default function VendorDashboard() {
     setMetrics({
       totalOrders: ordersRes.count ?? 0,
       pendingOrders: allOrders.filter((o: any) => ['draft', 'sent', 'accepted'].includes(o.status)).length,
-      completedOrders: allOrders.filter((o: any) => o.status === 'completed').length,
+      completedOrders: allOrders.filter((o: any) => COMPLETED_STATUSES.includes(o.status)).length,
       totalPayments: totalPaid,
       pendingPayments: pendingPay,
     });
@@ -200,17 +207,40 @@ export default function VendorDashboard() {
                 <View style={wStyles.tableHead}>
                   <Text style={[wStyles.thCell, { flex: 1 }]}>Date</Text>
                   <Text style={[wStyles.thCell, { flex: 1 }]}>Required By</Text>
+                  <Text style={[wStyles.thCell, { flex: 1.5 }]}>Items</Text>
                   <Text style={[wStyles.thCell, { flex: 1 }]}>Status</Text>
                 </View>
                 {recentOrders.length === 0 ? (
                   <View style={wStyles.emptyState}><Text style={wStyles.emptyText}>No procurement orders yet</Text></View>
                 ) : (
                   recentOrders.map((order: any, i: number) => (
-                    <View key={order.id} style={[wStyles.tableRow, i % 2 === 1 && wStyles.tableRowAlt]}>
+                    <TouchableOpacity
+                      key={order.id}
+                      style={[wStyles.tableRow, i % 2 === 1 && wStyles.tableRowAlt]}
+                      onPress={() => router.push({ pathname: '/(vendor)/procurement-order-detail', params: { id: order.id } })}
+                      activeOpacity={0.7}
+                    >
                       <Text style={[wStyles.tdCell, { flex: 1 }]}>{order.created_at ? format(new Date(order.created_at), 'dd MMM yyyy') : '—'}</Text>
-                      <Text style={[wStyles.tdCell, { flex: 1 }]}>{order.required_date ? format(new Date(order.required_date), 'dd MMM yyyy') : '—'}</Text>
+                      <Text style={[wStyles.tdCell, { flex: 1 }]}>{order.requirement_date ? format(new Date(order.requirement_date), 'dd MMM yyyy') : '—'}</Text>
+                      <View style={{ flex: 1.5, flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>
+                        {(order.items ?? []).slice(0, 2).map((item: any, idx: number) => (
+                          <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: Colors.primarySurface, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 }}>
+                            <Text style={{ fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.primary }}>
+                              {item.flower_type?.display_name ?? 'Unknown'} · {item.quantity} {item.unit_type ?? ''}
+                            </Text>
+                          </View>
+                        ))}
+                        {(order.items ?? []).length > 2 && (
+                          <Text style={{ fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.textTertiary, alignSelf: 'center' }}>
+                            +{(order.items ?? []).length - 2} more
+                          </Text>
+                        )}
+                        {(order.items ?? []).length === 0 && (
+                          <Text style={wStyles.tdCell}>—</Text>
+                        )}
+                      </View>
                       <View style={{ flex: 1 }}><StatusChip status={order.status} /></View>
-                    </View>
+                    </TouchableOpacity>
                   ))
                 )}
               </View>
@@ -350,8 +380,24 @@ export default function VendorDashboard() {
                           {order.created_at ? format(new Date(order.created_at), 'dd MMM yyyy') : '—'}
                         </Text>
                         <Text style={mStyles.listSecondary}>
-                          {order.required_date ? `Required: ${format(new Date(order.required_date), 'dd MMM')}` : ''}
+                          {order.requirement_date ? `Required: ${format(new Date(order.requirement_date), 'dd MMM')}` : ''}
                         </Text>
+                        {order.items && order.items.length > 0 && (
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                            {order.items.slice(0, 2).map((item: any, idx: number) => (
+                              <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: Colors.primarySurface, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 }}>
+                                <Text style={{ fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.primary }}>
+                                  {item.flower_type?.display_name ?? 'Unknown'} · {item.quantity} {item.unit_type ?? ''}
+                                </Text>
+                              </View>
+                            ))}
+                            {order.items.length > 2 && (
+                              <Text style={{ fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.textTertiary, alignSelf: 'center' }}>
+                                +{order.items.length - 2} more
+                              </Text>
+                            )}
+                          </View>
+                        )}
                       </View>
                       <StatusChip status={order.status} />
                       <ChevronRight size={14} color={Colors.neutral[300]} />

@@ -44,7 +44,7 @@ const ACTIVITY_ICONS: Record<string, React.ReactNode> = {
   address_added:         <MapPin size={13} color={Colors.primary} strokeWidth={2} />,
 };
 
-type Tab = 'overview' | 'orders' | 'deliveries' | 'logins' | 'notes' | 'activity' | 'pauses' | 'profile';
+type Tab = 'overview' | 'orders' | 'deliveries' | 'logins' | 'notes' | 'activity' | 'pauses' | 'profile' | 'addresses';
 type OrderSubTab = 'subscription' | 'customize';
 
 export default function AdminCustomerDetailScreen() {
@@ -211,6 +211,12 @@ function AdminCustomerDetailScreenContent() {
     load();
   };
 
+  const openTagModal = async () => {
+    const { data, error } = await supabase.from('customer_tags').select('*').order('created_at', { ascending: true });
+    if (!error) setAllTags(data ?? []);
+    setShowTagModal(true);
+  };
+
   const toggleTag = async (tag: any) => {
     const assigned = tags.find(t => t.id === tag.id);
     if (assigned) {
@@ -258,6 +264,7 @@ function AdminCustomerDetailScreenContent() {
     { key: 'notes',      label: 'Notes',      count: notes.length },
     { key: 'activity',   label: 'Activity',   count: activity.length },
     { key: 'pauses',     label: 'Pauses',     count: pauseHistory.length },
+    { key: 'addresses', label: 'Addresses',  count: addresses.length },
     { key: 'overview',   label: 'Overview' },
   ];
 
@@ -297,7 +304,7 @@ function AdminCustomerDetailScreenContent() {
               <Text style={[s.tagText, { color: tag.color }]}>{tag.name}</Text>
             </View>
           ))}
-          <TouchableOpacity style={s.addTagBtn} onPress={() => setShowTagModal(true)}>
+          <TouchableOpacity style={s.addTagBtn} onPress={openTagModal}>
             <Plus size={12} color={Colors.textTertiary} strokeWidth={2} />
             <Text style={s.addTagText}>Tag</Text>
           </TouchableOpacity>
@@ -324,6 +331,34 @@ function AdminCustomerDetailScreenContent() {
               <MetricCard icon={<CheckCircle size={16} color={Colors.success} strokeWidth={1.8} />} bg="#E8F5E9" label="Delivered" value={String(deliveredOrders)} />
               <MetricCard icon={<ClipboardList size={16} color={Colors.warning} strokeWidth={1.8} />} bg="#FFF3E0" label="Open Tasks" value={String(tasks.filter(t => t.status === 'open' || t.status === 'in_progress').length)} />
             </View>
+
+            {subscriptions.length === 1 && customOrders.length === 0 && (
+              <SectionBlock title="Subscription Type">
+                <View style={[s.listRow, { alignItems: 'center' }]}>
+                  <View style={[s.orderCardIconBox, { backgroundColor: Colors.primarySurface }]}>
+                    <Package size={15} color={Colors.primary} strokeWidth={2} />
+                  </View>
+                  <View style={s.subInfo}>
+                    <Text style={s.subPlan}>Standard Plan</Text>
+                    <Text style={s.subMeta}>From a subscription plan: {subscriptions[0].plan?.name ?? '—'}</Text>
+                  </View>
+                </View>
+              </SectionBlock>
+            )}
+
+            {subscriptions.length === 0 && customOrders.length === 1 && (
+              <SectionBlock title="Subscription Type">
+                <View style={[s.listRow, { alignItems: 'center' }]}>
+                  <View style={[s.orderCardIconBox, { backgroundColor: Colors.accentSurface }]}>
+                    <Flower2 size={15} color={Colors.accentDark} strokeWidth={2} />
+                  </View>
+                  <View style={s.subInfo}>
+                    <Text style={s.subPlan}>Customized Plan</Text>
+                    <Text style={s.subMeta}>From a custom order: {customOrders[0].description ?? customOrders[0].flower_type ?? '—'}</Text>
+                  </View>
+                </View>
+              </SectionBlock>
+            )}
 
             {subscriptions.length > 0 && (
               <SectionBlock title="Subscriptions">
@@ -1086,8 +1121,6 @@ function AdminCustomerDetailScreenContent() {
 
             <View style={s.profileDivider} />
 
-            <ProfileField label="Address" value={(() => { const a = addresses.slice().sort((x: any, y: any) => (y.is_default ? 1 : 0) - (x.is_default ? 1 : 0))[0]; if (!a) return '—'; const parts = [a.apartment_name, a.street, a.landmark].filter(Boolean); return parts.join(', ') || '—'; })()} />
-
             <ProfileField label="SMS Notifications" value={profile.notification_sms ? 'Enabled' : 'Disabled'} valueColor={profile.notification_sms ? Colors.success : Colors.textTertiary} />
             <ProfileField label="WhatsApp Notifications" value={profile.notification_whatsapp ? 'Enabled' : 'Disabled'} valueColor={profile.notification_whatsapp ? Colors.success : Colors.textTertiary} />
             <ProfileField label="Verified" value={profile.is_verified ? 'Yes' : 'No'} valueColor={profile.is_verified ? Colors.success : Colors.error} />
@@ -1098,6 +1131,31 @@ function AdminCustomerDetailScreenContent() {
             <ProfileField label="Last Updated" value={profile.updated_at ? format(new Date(profile.updated_at), 'dd MMM yyyy, HH:mm') : '—'} />
             <ProfileField label="User ID" value={profile.id} mono />
           </View>
+        )}
+
+        {/* ADDRESSES TAB */}
+        {activeTab === 'addresses' && (
+          addresses.length === 0 ? (
+            <View style={s.emptyState}>
+              <MapPin size={32} color={Colors.textDisabled} strokeWidth={1.2} />
+              <Text style={s.emptyTitle}>No addresses found</Text>
+              <Text style={s.emptySub}>This customer has not saved any addresses yet.</Text>
+            </View>
+          ) : (
+            <SectionBlock title="Saved Addresses">
+              {addresses.map((addr, i) => (
+                <View key={addr.id} style={[s.listRow, i > 0 && s.listRowBorder]}>
+                  <View style={s.addrIcon}>
+                    <MapPin size={14} color={Colors.primary} strokeWidth={1.8} />
+                  </View>
+                  <View style={s.addrInfo}>
+                    <Text style={s.addrLabel}>{addr.label}{addr.is_default ? ' · Default' : ''}</Text>
+                    <Text style={s.addrText}>{[addr.apartment_name, addr.street, addr.landmark, addr.city, addr.pincode].filter(Boolean).join(', ')}</Text>
+                  </View>
+                </View>
+              ))}
+            </SectionBlock>
+          )
         )}
 
       </ScrollView>
@@ -1153,17 +1211,31 @@ function AdminCustomerDetailScreenContent() {
               <TouchableOpacity onPress={() => { setShowTagModal(false); load(); }}><X size={18} color={Colors.textSecondary} /></TouchableOpacity>
             </View>
             <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={s.tagGrid}>
-                {allTags.map(tag => {
-                  const assigned = tags.some(t => t.id === tag.id);
-                  return (
-                    <TouchableOpacity key={tag.id} style={[s.tagToggle, { borderColor: tag.color, backgroundColor: assigned ? tag.color + '20' : Colors.neutral[50] }]} onPress={() => toggleTag(tag)} activeOpacity={0.8}>
-                      {assigned && <CheckCircle size={13} color={tag.color} strokeWidth={2} />}
-                      <Text style={[s.tagToggleText, { color: assigned ? tag.color : Colors.textSecondary }]}>{tag.name}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              {allTags.length === 0 ? (
+                <View style={{ alignItems: 'center', paddingVertical: Spacing[6], gap: Spacing[2] }}>
+                  <Tag size={32} color={Colors.textDisabled} strokeWidth={1.2} />
+                  <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textSecondary }}>No tags created yet</Text>
+                  <Text style={{ fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, textAlign: 'center' }}>
+                    Create tags in Segments & Tags to categorize customers.
+                  </Text>
+                  <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing[1], marginTop: Spacing[2], paddingHorizontal: Spacing[3], paddingVertical: Spacing[2], borderRadius: Radius.md, backgroundColor: Colors.primarySurface }} onPress={() => { setShowTagModal(false); router.push({ pathname: '/(admin)/crm-segments' as any, params: { tab: 'tags' } }); }}>
+                    <Plus size={14} color={Colors.primary} strokeWidth={2} />
+                    <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.primary }}>Create Tags</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={s.tagGrid}>
+                  {allTags.map(tag => {
+                    const assigned = tags.some(t => t.id === tag.id);
+                    return (
+                      <TouchableOpacity key={tag.id} style={[s.tagToggle, { borderColor: tag.color, backgroundColor: assigned ? tag.color + '20' : Colors.neutral[50] }]} onPress={() => toggleTag(tag)} activeOpacity={0.8}>
+                        {assigned && <CheckCircle size={13} color={tag.color} strokeWidth={2} />}
+                        <Text style={[s.tagToggleText, { color: assigned ? tag.color : Colors.textSecondary }]}>{tag.name}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
             </ScrollView>
             <TouchableOpacity style={s.saveBtn} onPress={() => { setShowTagModal(false); load(); }}>
               <Text style={s.saveBtnText}>Done</Text>

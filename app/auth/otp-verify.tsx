@@ -17,14 +17,13 @@ import OTPInput from '@/components/ui/OTPInput';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
-import { DEFAULT_AUTH_ROUTE } from '@/constants/appRole';
 
 const { width } = Dimensions.get('window');
 
 export default function OtpVerifyScreen() {
   const insets = useSafeAreaInsets();
   const { mobile, channel } = useLocalSearchParams<{ mobile: string; channel: string }>();
-  const { setSession, loadProfile } = useAuthStore();
+  const { setSession, loadProfile, setActivePanel } = useAuthStore();
 
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
@@ -102,7 +101,7 @@ export default function OtpVerifyScreen() {
       const profile = await loadProfile(authData.user.id);
 
       if (!profile) {
-        router.replace(DEFAULT_AUTH_ROUTE as any);
+        router.replace('/auth/welcome');
       } else if (profile.role === 'admin') {
         router.replace('/(admin)');
       } else if (profile.role === 'vendor') {
@@ -110,6 +109,7 @@ export default function OtpVerifyScreen() {
       } else if (!profile.full_name) {
         router.replace('/auth/profile-setup');
       } else {
+        await setActivePanel('customer');
         router.replace('/(customer)');
       }
     } catch (e: any) {
@@ -228,7 +228,7 @@ export default function OtpVerifyScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
-            <TouchableOpacity onPress={() => router.back()} activeOpacity={0.7} style={styles.changeRow}>
+            <TouchableOpacity onPress={() => router.replace('/auth/mobile')} activeOpacity={0.7} style={styles.changeRow}>
               <Text style={styles.changeText}>Change mobile number</Text>
             </TouchableOpacity>
           </View>

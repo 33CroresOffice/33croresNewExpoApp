@@ -19,15 +19,20 @@ import { supabase } from '@/lib/supabase';
 import EmptyState from '@/components/ui/EmptyState';
 import { format } from 'date-fns';
 
-type CustomerFilter = 'all' | 'new_today' | 'active' | 'inactive' | 'subscribed';
+type CustomerFilter = 'all' | 'new_today' | 'active' | 'inactive' | 'subscription_orders' | 'custom_orders';
 
 const FILTER_LABELS: Record<CustomerFilter, string> = {
   all: 'All Users',
   new_today: 'New Today',
   active: 'Active Users',
   inactive: 'Inactive Users',
-  subscribed: 'Subscribed Users',
+  subscription_orders: 'Subscription Orders',
+  custom_orders: 'Custom Orders',
 };
+
+function isCustomerFilter(value: string | undefined): value is CustomerFilter {
+  return value !== undefined && Object.prototype.hasOwnProperty.call(FILTER_LABELS, value);
+}
 
 export default function AdminCustomersScreen() {
   return (
@@ -41,10 +46,9 @@ function AdminCustomersScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const params = useLocalSearchParams<{ customerFilter?: string }>();
-  const [activeFilter, setActiveFilter] = useState<CustomerFilter>((params.customerFilter as CustomerFilter) ?? 'all');
+  const [activeFilter, setActiveFilter] = useState<CustomerFilter>(isCustomerFilter(params.customerFilter) ? params.customerFilter : 'all');
   const [customers, setCustomers] = useState<any[]>([]);
   const [activeCustomerIds, setActiveCustomerIds] = useState<Set<string>>(new Set());
-  const [subscribedCustomerIds, setSubscribedCustomerIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
@@ -59,56 +63,50 @@ function AdminCustomersScreenContent() {
         supabase.from('custom_orders').select('user_id'),
       ]);
 
-      const subscribedIds = new Set<string>();
-      allSubsRes.data?.forEach((r: any) => r.user_id && subscribedIds.add(r.user_id));
-      customOrdersRes.data?.forEach((r: any) => r.user_id && subscribedIds.add(r.user_id));
-      setSubscribedCustomerIds(subscribedIds);
       if (activeSubsRes.data) {
         setActiveCustomerIds(new Set(activeSubsRes.data.map((r: any) => r.user_id)));
       }
 
-      const allUserIds = new Set<string>([...subscribedIds]);
-
-      let profilesRes;
-      if (allUserIds.size > 0) {
-        const ids = Array.from(allUserIds);
-        const chunks: string[][] = [];
-        for (let i = 0; i < ids.length; i += 200) chunks.push(ids.slice(i, i + 200));
-        const results = await Promise.all(
-          chunks.map(chunk =>
-            supabase
-              .from('profiles')
-              .select('*, subscriptions(count)')
-              .in('id', chunk)
-              .order('created_at', { ascending: false })
-          )
-        );
-        profilesRes = {
-          data: results.flatMap(r => r.data ?? []),
-        };
-      } else {
-        profilesRes = await supabase
-          .from('profiles')
-          .select('*, subscriptions(count)')
-          .eq('role', 'customer')
-          .order('created_at', { ascending: false });
-      }
-
-      const customerRoleRes = await supabase
+      const { data: customerProfiles } = await supabase
         .from('profiles')
-        .select('*, subscriptions(count)')
+        .select('*')
         .eq('role', 'customer')
         .order('created_at', { ascending: false });
-
-      const merged = new Map<string, any>();
-      (customerRoleRes.data ?? []).forEach((p: any) => merged.set(p.id, p));
-      (profilesRes.data ?? []).forEach((p: any) => {
-        if (!merged.has(p.id)) merged.set(p.id, p);
+      const profiles = customerProfiles ?? [];
+      const allUserIds = profiles.map((profile: any) => profile.id);
+      const subscriptionCount = new Map<string, number>();
+      const customOrderCount = new Map<string, number>();
+      allSubsRes.data?.forEach((row: any) => {
+        if (row.user_id) subscriptionCount.set(row.user_id, (subscriptionCount.get(row.user_id) ?? 0) + 1);
       });
-      const sorted = Array.from(merged.values()).sort((a, b) =>
-        (b.created_at ?? '').localeCompare(a.created_at ?? '')
-      );
-      setCustomers(sorted);
+      customOrdersRes.data?.forEach((row: any) => {
+        if (row.user_id) customOrderCount.set(row.user_id, (customOrderCount.get(row.user_id) ?? 0) + 1);
+      });
+
+      const { data: addresses } = await supabase
+        .from('addresses')
+        .select('user_id, street, city, pincode, is_default')
+        .in('user_id', allUserIds);
+      const addressMap = new Map<string, any>();
+      (addresses ?? []).forEach((address: any) => {
+        if (!addressMap.has(address.user_id) || address.is_default) addressMap.set(address.user_id, address);
+      });
+
+      setCustomers(profiles
+        .map((customer) => ({
+          ...customer,
+          subscriptionCount: subscriptionCount.get(customer.id) ?? 0,
+          customOrderCount: customOrderCount.get(customer.id) ?? 0,
+          address: addressMap.get(customer.id) ?? null,
+          status: subscriptionCount.has(customer.id) && customOrderCount.has(customer.id)
+            ? 'Subscribed & Customized'
+            : subscriptionCount.has(customer.id)
+              ? 'Subscribed'
+              : customOrderCount.has(customer.id)
+                ? 'Customized'
+                : 'Installed Only',
+        }))
+        .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? '')));
     } catch (e) {
       console.error('load error', e);
     } finally {
@@ -121,9 +119,7 @@ function AdminCustomersScreenContent() {
 
   // Sync filter when navigating with params
   useEffect(() => {
-    if (params.customerFilter) {
-      setActiveFilter(params.customerFilter as CustomerFilter);
-    }
+    setActiveFilter(isCustomerFilter(params.customerFilter) ? params.customerFilter : 'all');
   }, [params.customerFilter]);
 
   const today = new Date().toISOString().split('T')[0];
@@ -136,8 +132,10 @@ function AdminCustomersScreenContent() {
         return activeCustomerIds.has(c.id);
       case 'inactive':
         return !activeCustomerIds.has(c.id);
-      case 'subscribed':
-        return subscribedCustomerIds.has(c.id);
+      case 'subscription_orders':
+        return c.subscriptionCount > 0;
+      case 'custom_orders':
+        return c.customOrderCount > 0;
       default:
         return true;
     }
@@ -161,7 +159,7 @@ function AdminCustomersScreenContent() {
       <ScrollView style={webStyles.scroll} contentContainerStyle={webStyles.content} showsVerticalScrollIndicator={false}>
         <View style={webStyles.pageHeader}>
           <View>
-            <Text style={webStyles.pageTitle}>Users</Text>
+            <Text style={webStyles.pageTitle}>User</Text>
             <Text style={webStyles.pageSubtitle}>{customers.length} registered users</Text>
           </View>
         </View>
@@ -175,7 +173,11 @@ function AdminCustomersScreenContent() {
               activeOpacity={0.8}
             >
               <Text style={[webStyles.filterChipText, activeFilter === f && webStyles.filterChipTextActive]}>
-                {FILTER_LABELS[f]}
+                {f === 'subscription_orders'
+                  ? `${FILTER_LABELS[f]} (${customers.filter((c) => c.subscriptionCount > 0).length})`
+                  : f === 'custom_orders'
+                    ? `${FILTER_LABELS[f]} (${customers.filter((c) => c.customOrderCount > 0).length})`
+                    : FILTER_LABELS[f]}
               </Text>
             </TouchableOpacity>
           ))}
@@ -205,8 +207,10 @@ function AdminCustomersScreenContent() {
           <View style={webStyles.tableHead}>
             <Text style={[webStyles.thCell, { flex: 3 }]}>Customer</Text>
             <Text style={[webStyles.thCell, { flex: 2 }]}>Mobile</Text>
+            <Text style={[webStyles.thCell, { flex: 3 }]}>Address</Text>
             <Text style={[webStyles.thCell, { flex: 1 }]}>Joined</Text>
             <Text style={[webStyles.thCell, { flex: 1 }]}>Subscriptions</Text>
+            <Text style={[webStyles.thCell, { flex: 1 }]}>Custom Orders</Text>
             <Text style={[webStyles.thCell, { width: 80 }]}></Text>
           </View>
 
@@ -231,15 +235,21 @@ function AdminCustomersScreenContent() {
                   </View>
                   <View>
                     <Text style={webStyles.customerName}>{customer.full_name ?? 'Name not set'}</Text>
-                    <Text style={webStyles.customerMobile}>{customer.is_verified ? 'Verified' : 'Unverified'}</Text>
+                    <Text style={webStyles.customerMobile}>{customer.status}</Text>
                   </View>
                 </View>
                 <Text style={[webStyles.tdCell, { flex: 2 }]}>+91 {customer.mobile}</Text>
+                <Text style={[webStyles.tdMuted, { flex: 3 }]} numberOfLines={2}>
+                  {customer.address ? `${customer.address.street}, ${customer.address.city}` : '—'}
+                </Text>
                 <Text style={[webStyles.tdMuted, { flex: 1 }]}>
                   {customer.created_at ? format(new Date(customer.created_at), 'dd MMM yyyy') : '—'}
                 </Text>
                 <Text style={[webStyles.tdCell, { flex: 1 }]}>
-                  {customer.subscriptions?.[0]?.count ?? 0}
+                  {customer.subscriptionCount}
+                </Text>
+                <Text style={[webStyles.tdCell, { flex: 1 }]}>
+                  {customer.customOrderCount}
                 </Text>
                 <View style={{ width: 80, alignItems: 'flex-end' }}>
                   <ChevronRight size={16} color={Colors.neutral[400]} />
@@ -282,7 +292,7 @@ function AdminCustomersScreenContent() {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Users</Text>
+        <Text style={styles.title}>User</Text>
         <Text style={styles.count}>{filtered.length} shown</Text>
       </View>
 
@@ -295,7 +305,11 @@ function AdminCustomersScreenContent() {
             activeOpacity={0.8}
           >
             <Text style={[styles.mFilterChipText, activeFilter === f && styles.mFilterChipTextActive]}>
-              {FILTER_LABELS[f]}
+              {f === 'subscription_orders'
+                ? `${FILTER_LABELS[f]} (${customers.filter((c) => c.subscriptionCount > 0).length})`
+                : f === 'custom_orders'
+                  ? `${FILTER_LABELS[f]} (${customers.filter((c) => c.customOrderCount > 0).length})`
+                  : FILTER_LABELS[f]}
             </Text>
           </TouchableOpacity>
         ))}
@@ -342,6 +356,12 @@ function AdminCustomersScreenContent() {
                   <Text style={styles.customerMobile}>+91 {customer.mobile}</Text>
                   <Text style={styles.customerDate}>
                     Joined {format(new Date(customer.created_at), 'dd MMM yyyy')}
+                  </Text>
+                  <Text style={styles.customerType}>
+                    {customer.status}
+                  </Text>
+                  <Text style={styles.customerOrders}>
+                    Subscriptions: {customer.subscriptionCount} · Custom orders: {customer.customOrderCount}
                   </Text>
                 </View>
                 <ChevronRight size={16} color={Colors.neutral[400]} />
@@ -465,6 +485,16 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
   },
   customerDate: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+  },
+  customerType: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    color: Colors.primary,
+  },
+  customerOrders: {
     fontFamily: Typography.fontFamily.sansRegular,
     fontSize: Typography.size.xs,
     color: Colors.textTertiary,

@@ -21,7 +21,7 @@ import { format } from 'date-fns';
 
 type OrderTab = 'subscription' | 'custom';
 type SubStatusFilter = 'all' | 'active' | 'pending' | 'expired' | 'paused' | 'paused_today' | 'paused_tomorrow' | 'expiring_soon' | 'resumed_today' | 'resumed_tomorrow' | 'new_today' | 'renewed_today' | 'end_today' | 'delivery_today' | 'delivery_tomorrow';
-type CustomFilter = 'all' | 'today' | 'next5' | 'unpaid' | 'pending';
+type CustomFilter = 'all' | 'today' | 'next5' | 'unpaid' | 'pending' | 'paid' | 'cancelled';
 
 const SUB_STATUS_FILTERS: { label: string; value: SubStatusFilter }[] = [
   { label: 'All', value: 'all' },
@@ -47,6 +47,8 @@ const CUSTOM_FILTERS: { label: string; value: CustomFilter }[] = [
   { label: 'Next 5 Days', value: 'next5' },
   { label: 'Unpaid', value: 'unpaid' },
   { label: 'Pending', value: 'pending' },
+  { label: 'Paid', value: 'paid' },
+  { label: 'Cancelled', value: 'cancelled' },
 ];
 
 export default function AdminOrdersScreen() {
@@ -77,8 +79,11 @@ function AdminOrdersScreenContent() {
   const [riderMap, setRiderMap] = useState<Record<string, string>>({});
   const [addressMap, setAddressMap] = useState<Record<string, any>>({});
   const [customAddressMap, setCustomAddressMap] = useState<Record<string, any>>({});
+  const [userTagsMap, setUserTagsMap] = useState<Record<string, Array<{ id: string; name: string; color: string }>>>({});
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [monthStatusCounts, setMonthStatusCounts] = useState<{ active: number; paused: number; expired: number; pending: number }>({ active: 0, paused: 0, expired: 0, pending: 0 });
+  const [customStatusCounts, setCustomStatusCounts] = useState<{ all: number; pending: number; paid: number; cancelled: number }>({ all: 0, pending: 0, paid: 0, cancelled: 0 });
   const PAGE_SIZE = 15;
 
   useEffect(() => {
@@ -103,7 +108,7 @@ function AdminOrdersScreenContent() {
       // Subscription query
       let subQuery = supabase
         .from('subscriptions')
-        .select('id, user_id, status, start_date, end_date, new_end_date, pause_start_date, pause_until, created_at, user:profiles(full_name, mobile), plan:subscription_plans(name, frequency, image_url, price, mrp_price), orders(id, scheduled_date, status)')
+        .select('id, user_id, status, start_date, end_date, new_end_date, pause_start_date, pause_until, created_at, delivery_address_id, user:profiles(full_name, mobile), plan:subscription_plans(name, frequency, image_url, price, mrp_price), orders(id, scheduled_date, status)')
         .order('created_at', { ascending: false })
         .limit(200);
 
@@ -171,7 +176,11 @@ function AdminOrdersScreenContent() {
       } else if (customFilter === 'unpaid') {
         customQuery = customQuery.eq('status', 'confirmed').neq('payment_status', 'paid');
       } else if (customFilter === 'pending') {
-        customQuery = customQuery.not('status', 'in', '("delivered","cancelled")');
+        customQuery = customQuery.eq('status', 'pending');
+      } else if (customFilter === 'paid') {
+        customQuery = customQuery.in('payment_status', ['paid', 'captured']);
+      } else if (customFilter === 'cancelled') {
+        customQuery = customQuery.eq('status', 'cancelled');
       }
 
       // No auxiliary query needed for expired filter (status-based)
@@ -189,17 +198,91 @@ function AdminOrdersScreenContent() {
         .in('status', ['assigned', 'accepted', 'picked_up'])
         .limit(500);
 
-      const [{ data: subData }, { data: customData, error: customErr }, activeIdsRes, priorSubsRes, riderAssignRes] = await Promise.all([
+      // Current-month subscription status counts (distinct customers per status)
+      const monthStart = `${today.slice(0, 8)}01`;
+      const monthEnd = new Date(new Date(`${monthStart}T00:00:00Z`).getUTCFullYear(), new Date(`${monthStart}T00:00:00Z`).getUTCMonth() + 1, 0).toISOString().split('T')[0];
+      const monthSubsQuery = supabase
+        .from('subscriptions')
+        .select('user_id, status, start_date, end_date, new_end_date, pause_start_date, pause_until, created_at, delivery_address_id')
+        .order('created_at', { ascending: false })
+        .limit(1000);
+      const activeCountQuery = supabase
+        .from('subscriptions')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'active')
+        .or(`pause_until.is.null,pause_until.lt.${today}`);
+      const pausedSubscriptionsQuery = supabase
+        .from('subscriptions')
+        .select('id, status, pause_start_date, pause_until')
+        .limit(1000);
+      const customCountsQuery = supabase
+        .from('custom_orders')
+        .select('status, payment_status')
+        .limit(1000);
+
+      const [{ data: subData }, { data: customData, error: customErr }, activeIdsRes, priorSubsRes, riderAssignRes, monthSubsRes, customCountsRes, activeCountRes, pausedSubscriptionsRes] = await Promise.all([
         subQuery,
         customQuery,
         activeIdsQuery ?? Promise.resolve({ data: null }),
         todaySubsQuery ?? Promise.resolve({ data: null }),
         riderAssignQuery,
+        monthSubsQuery,
+        customCountsQuery,
+        activeCountQuery,
+        pausedSubscriptionsQuery,
       ]);
 
-      const subUserIds = (subData ?? []).map((s: any) => s.user_id);
-      const addressRes = subUserIds.length > 0
-        ? await supabase.from('addresses').select('user_id, street, apartment_name, place_category, landmark, locality_id, is_default').in('user_id', subUserIds).order('is_default', { ascending: false })
+      // Count active subscriptions per address (each address counted separately);
+      // paused, expired, and pending are counted per customer.
+      const activeCount = activeCountRes.count ?? 0;
+      const todayPausedSubscriptions = (pausedSubscriptionsRes.data ?? []).filter((s: any) => {
+        const hasActivePausePeriod = Boolean(
+          s.pause_start_date &&
+          s.pause_until &&
+          s.pause_start_date <= today &&
+          s.pause_until >= today
+        );
+        return s.status === 'paused' || hasActivePausePeriod;
+      });
+      const monthPaused = new Set<string>();
+      const monthExpired = new Set<string>();
+      const monthPending = new Set<string>();
+      (monthSubsRes.data ?? []).forEach((s: any) => {
+        const uid = s.user_id as string;
+        if (!uid) return;
+        const effectiveEnd = s.new_end_date ?? s.end_date;
+        const overlapsMonth = (!s.start_date || s.start_date <= monthEnd) && (!effectiveEnd || effectiveEnd >= monthStart);
+        if (!overlapsMonth) return;
+        const hasActivePausePeriod = Boolean(
+          s.pause_start_date &&
+          s.pause_until &&
+          s.pause_start_date <= today &&
+          s.pause_until >= today
+        );
+        const isPaused = s.status === 'paused' || hasActivePausePeriod;
+        const displayStatus = isPaused ? 'paused' : effectiveEnd && effectiveEnd < today ? 'expired' : s.status;
+        if (displayStatus === 'paused') monthPaused.add(uid);
+        else if (displayStatus === 'expired') monthExpired.add(uid);
+        else if (displayStatus === 'pending') monthPending.add(uid);
+      });
+      setMonthStatusCounts({
+        active: activeCount,
+        paused: todayPausedSubscriptions.length,
+        expired: monthExpired.size,
+        pending: monthPending.size,
+      });
+
+      const customCountRows = customCountsRes.data ?? [];
+      setCustomStatusCounts({
+        all: customCountRows.length,
+        pending: customCountRows.filter((o: any) => o.status === 'pending').length,
+        paid: customCountRows.filter((o: any) => o.payment_status === 'paid' || o.payment_status === 'captured').length,
+        cancelled: customCountRows.filter((o: any) => o.status === 'cancelled').length,
+      });
+
+      const subAddressIds = (subData ?? []).map((s: any) => s.delivery_address_id).filter(Boolean);
+      const addressRes = subAddressIds.length > 0
+        ? await supabase.from('addresses').select('id, street, apartment_name, landmark, locality_id, city, state, pincode').in('id', subAddressIds)
         : { data: null };
       if (subData) setSubscriptions(subData);
       if (customData) setCustomOrders(customData);
@@ -235,14 +318,37 @@ function AdminOrdersScreenContent() {
       }
       if (addressRes?.data) {
         const amap: Record<string, any> = {};
-        (addressRes.data as any[]).forEach((a) => {
-          if (!amap[a.user_id]) amap[a.user_id] = a;
-        });
+        (addressRes.data as any[]).forEach((a) => { amap[a.id] = a; });
         setAddressMap(amap);
       } else {
         setAddressMap({});
       }
       if (customErr) setCustomError(customErr.message);
+
+      // Fetch customer tags for all users in the orders list
+      const allUserIds = Array.from(new Set([
+        ...(subData ?? []).map((s: any) => s.user_id),
+        ...(customData ?? []).map((o: any) => o.user_id),
+      ].filter(Boolean))) as string[];
+      const tagsRes = allUserIds.length > 0
+        ? await supabase
+            .from('customer_tag_assignments')
+            .select('customer_id, tag:customer_tags(id, name, color)')
+            .in('customer_id', allUserIds)
+        : { data: null };
+      if (tagsRes.data) {
+        const tmap: Record<string, Array<{ id: string; name: string; color: string }>> = {};
+        (tagsRes.data as any[]).forEach((row: any) => {
+          const uid = row.customer_id as string;
+          const tag = row.tag;
+          if (!tag) return;
+          if (!tmap[uid]) tmap[uid] = [];
+          tmap[uid].push({ id: tag.id, name: tag.name, color: tag.color });
+        });
+        setUserTagsMap(tmap);
+      } else {
+        setUserTagsMap({});
+      }
 
       const customAddressIds = (customData ?? []).map((o: any) => o.address_id).filter(Boolean);
       const customAddrRes = customAddressIds.length > 0
@@ -268,6 +374,8 @@ function AdminOrdersScreenContent() {
   usePageVisibility(load);
   useFocusEffect(useCallback(() => { load(); }, [subFilter, customFilter]));
 
+  const formatAddress = (address: any): string => [address.apartment_name, address.street, address.landmark, address.city, address.state, address.pincode].filter(Boolean).join(', ') || '—';
+
   const filteredSubs = subscriptions.filter((s) => {
     const todayStr = new Date().toISOString().split('T')[0];
     const tomorrowDate = new Date(); tomorrowDate.setDate(tomorrowDate.getDate() + 1);
@@ -292,13 +400,15 @@ function AdminOrdersScreenContent() {
     const q = search.toLowerCase();
     const name = s.user?.full_name?.toLowerCase() ?? '';
     const mobile = s.user?.mobile ?? '';
-    const addr = addressMap[s.user_id] as any;
-    const apartment = addr?.apartment_name?.toLowerCase() ?? '';
-    const flatPlot = (addr?.street ?? '').toLowerCase();
-    return name.includes(q) || mobile.includes(q) || apartment.includes(q) || flatPlot.includes(q);
+    const addr = addressMap[s.delivery_address_id] as any;
+    const addressText = addr ? formatAddress(addr).toLowerCase() : '';
+    return name.includes(q) || mobile.includes(q) || addressText.includes(q);
   });
 
   const filteredCustom = customOrders.filter((o) => {
+    if (customFilter === 'pending' && o.status !== 'pending') return false;
+    if (customFilter === 'paid' && o.payment_status !== 'paid' && o.payment_status !== 'captured') return false;
+    if (customFilter === 'cancelled' && o.status !== 'cancelled') return false;
     if (!search) return true;
     const name = o.user?.full_name?.toLowerCase() ?? '';
     const mobile = o.user?.mobile ?? '';
@@ -324,15 +434,15 @@ function AdminOrdersScreenContent() {
     const rows: { name: string; address: string; date: string; status: string }[] = [];
     if (activeTab === 'subscription') {
       filteredSubs.forEach((s: any) => {
-        const addr = addressMap[s.user_id] as any;
-        const addrParts = [addr?.apartment_name, addr?.street, addr?.landmark].filter(Boolean);
+        const addr = addressMap[s.delivery_address_id] as any;
+        const addressText = addr ? formatAddress(addr) : '—';
         const orders: any[] = s.orders ?? [];
         const dateStr = orders.length > 0
           ? format(new Date(orders[0].scheduled_date), 'dd MMM yyyy')
           : s.start_date ? format(new Date(s.start_date), 'dd MMM yyyy') : '—';
         rows.push({
           name: s.user?.full_name ?? `+91 ${s.user?.mobile ?? ''}`,
-          address: addrParts.join(', ') || '—',
+          address: addressText || '—',
           date: dateStr,
           status: getSubDisplayStatus(s) ?? '—',
         });
@@ -503,6 +613,39 @@ function AdminOrdersScreenContent() {
           </TouchableOpacity>
         </View>
 
+        {/* Month status tabs */}
+        <View style={webStyles.statusTabsRow}>
+          {(activeTab === 'subscription' ? [
+            { label: 'Active', value: 'active', count: monthStatusCounts.active, color: Colors.primary, bg: Colors.primarySurface },
+            { label: 'Paused', value: 'paused', count: monthStatusCounts.paused, color: '#B45309', bg: '#FEF3C7' },
+            { label: 'Expired', value: 'expired', count: monthStatusCounts.expired, color: '#DC2626', bg: '#FEE2E2' },
+            { label: 'Pending', value: 'pending', count: monthStatusCounts.pending, color: '#92400E', bg: '#FEF3C7' },
+          ] : [
+            { label: 'All', value: 'all', count: customStatusCounts.all, color: Colors.primary, bg: Colors.primarySurface },
+            { label: 'Pending', value: 'pending', count: customStatusCounts.pending, color: '#92400E', bg: '#FEF3C7' },
+            { label: 'Paid', value: 'paid', count: customStatusCounts.paid, color: Colors.success, bg: '#D1FAE5' },
+            { label: 'Cancelled', value: 'cancelled', count: customStatusCounts.cancelled, color: '#DC2626', bg: '#FEE2E2' },
+          ]).map((tab) => {
+            const isSelected = activeTab === 'subscription'
+              ? subFilter === tab.value
+              : customFilter === tab.value;
+            return (
+              <TouchableOpacity
+                key={tab.value}
+                activeOpacity={0.78}
+                onPress={() => {
+                  if (activeTab === 'subscription') setSubFilter(tab.value as SubStatusFilter);
+                  else setCustomFilter(tab.value as CustomFilter);
+                }}
+                style={[webStyles.statusTab, { backgroundColor: tab.bg, borderColor: isSelected ? tab.color : 'transparent' }, isSelected && webStyles.statusTabSelected]}
+              >
+                <Text style={[webStyles.statusTabCount, { color: tab.color }]}>{loading ? '—' : tab.count}</Text>
+                <Text style={[webStyles.statusTabLabel, { color: tab.color }]}>{tab.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
         <View style={[webStyles.tableCard, { overflow: 'visible' }]}>
           <View style={[webStyles.toolbar, { overflow: 'visible', zIndex: 10 }]}>
             <View style={webStyles.searchBar}>
@@ -587,16 +730,23 @@ function AdminOrdersScreenContent() {
                         {getSubStatusIcon(sub)}
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={webStyles.customerName} numberOfLines={1}>{sub.user?.full_name ?? `+91 ${sub.user?.mobile}`}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                          <Text style={webStyles.customerName} numberOfLines={1}>{sub.user?.full_name ?? `+91 ${sub.user?.mobile}`}</Text>
+                          {(userTagsMap[sub.user_id] ?? []).map((tag) => (
+                            <View key={tag.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999, borderWidth: 1, borderColor: tag.color, backgroundColor: tag.color + '15' }}>
+                              <View style={{ width: 5, height: 5, borderRadius: 2.5, backgroundColor: tag.color }} />
+                              <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, color: tag.color }}>{tag.name}</Text>
+                            </View>
+                          ))}
+                        </View>
                         <Text style={webStyles.customerMobile}>+91 {sub.user?.mobile}</Text>
                       </View>
                     </View>
                     <View style={webStyles.colAddress}>
                       {(() => {
-                        const addr = addressMap[sub.user_id] as any;
+                        const addr = addressMap[sub.delivery_address_id] as any;
                         if (!addr) return <Text style={webStyles.tdMuted}>—</Text>;
-                        const parts = [addr.apartment_name, addr.street, addr.landmark].filter(Boolean);
-                        return <Text style={webStyles.tdMuted} numberOfLines={3}>{parts.join(', ') || '—'}</Text>;
+                        return <Text style={webStyles.tdMuted} numberOfLines={3}>{formatAddress(addr)}</Text>;
                       })()}
                     </View>
                     <Text style={[webStyles.tdCell, webStyles.colPlan]} numberOfLines={1}>{sub.plan?.name ?? '—'}</Text>
@@ -644,7 +794,15 @@ function AdminOrdersScreenContent() {
                         <Flower2 size={16} color={Colors.primary} />
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={webStyles.customerName} numberOfLines={1}>{order.user?.full_name ?? `+91 ${order.user?.mobile}`}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                          <Text style={webStyles.customerName} numberOfLines={1}>{order.user?.full_name ?? `+91 ${order.user?.mobile}`}</Text>
+                          {(userTagsMap[order.user_id] ?? []).map((tag) => (
+                            <View key={tag.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999, borderWidth: 1, borderColor: tag.color, backgroundColor: tag.color + '15' }}>
+                              <View style={{ width: 5, height: 5, borderRadius: 2.5, backgroundColor: tag.color }} />
+                              <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, color: tag.color }}>{tag.name}</Text>
+                            </View>
+                          ))}
+                        </View>
                         <Text style={webStyles.customerMobile}>+91 {order.user?.mobile}</Text>
                       </View>
                     </View>
@@ -755,6 +913,39 @@ function AdminOrdersScreenContent() {
         </TouchableOpacity>
       </View>
 
+      {/* Month status tabs */}
+      <View style={styles.statusTabsRow}>
+        {(activeTab === 'subscription' ? [
+          { label: 'Active', value: 'active', count: monthStatusCounts.active, color: Colors.primary, bg: Colors.primarySurface },
+          { label: 'Paused', value: 'paused', count: monthStatusCounts.paused, color: '#B45309', bg: '#FEF3C7' },
+          { label: 'Expired', value: 'expired', count: monthStatusCounts.expired, color: '#DC2626', bg: '#FEE2E2' },
+          { label: 'Pending', value: 'pending', count: monthStatusCounts.pending, color: '#92400E', bg: '#FEF3C7' },
+        ] : [
+          { label: 'All', value: 'all', count: customStatusCounts.all, color: Colors.primary, bg: Colors.primarySurface },
+          { label: 'Pending', value: 'pending', count: customStatusCounts.pending, color: '#92400E', bg: '#FEF3C7' },
+          { label: 'Paid', value: 'paid', count: customStatusCounts.paid, color: Colors.success, bg: '#D1FAE5' },
+          { label: 'Cancelled', value: 'cancelled', count: customStatusCounts.cancelled, color: '#DC2626', bg: '#FEE2E2' },
+        ]).map((tab) => {
+          const isSelected = activeTab === 'subscription'
+            ? subFilter === tab.value
+            : customFilter === tab.value;
+          return (
+            <TouchableOpacity
+              key={tab.value}
+              activeOpacity={0.78}
+              onPress={() => {
+                if (activeTab === 'subscription') setSubFilter(tab.value as SubStatusFilter);
+                else setCustomFilter(tab.value as CustomFilter);
+              }}
+              style={[styles.statusTab, { backgroundColor: tab.bg, borderColor: isSelected ? tab.color : 'transparent' }, isSelected && styles.statusTabSelected]}
+            >
+              <Text style={[styles.statusTabCount, { color: tab.color }]}>{loading ? '—' : tab.count}</Text>
+              <Text style={[styles.statusTabLabel, { color: tab.color }]}>{tab.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
       <View style={styles.searchBar}>
         <Search size={16} color={Colors.textTertiary} />
         <TextInput
@@ -818,9 +1009,22 @@ function AdminOrdersScreenContent() {
                 </View>
               </View>
               <View style={styles.orderBody}>
-                <Text style={styles.customerName}>{sub.user?.full_name ?? `+91 ${sub.user?.mobile}`}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                  <Text style={styles.customerName}>{sub.user?.full_name ?? `+91 ${sub.user?.mobile}`}</Text>
+                  {(userTagsMap[sub.user_id] ?? []).map((tag) => (
+                    <View key={tag.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999, borderWidth: 1, borderColor: tag.color, backgroundColor: tag.color + '15' }}>
+                      <View style={{ width: 5, height: 5, borderRadius: 2.5, backgroundColor: tag.color }} />
+                      <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, color: tag.color }}>{tag.name}</Text>
+                    </View>
+                  ))}
+                </View>
                 <Text style={styles.planName}>{sub.plan?.name ?? '—'}</Text>
                 <Text style={styles.mobile}>+91 {sub.user?.mobile}</Text>
+                {(() => {
+                  const addr = addressMap[sub.delivery_address_id] as any;
+                  if (!addr) return null;
+                  return <Text style={styles.mobile} numberOfLines={1}>{formatAddress(addr)}</Text>;
+                })()}
               </View>
               <View style={styles.orderRight}>
                 <StatusChip status={getSubDisplayStatus(sub)} />
@@ -847,7 +1051,15 @@ function AdminOrdersScreenContent() {
                 </View>
               </View>
               <View style={styles.orderBody}>
-                <Text style={styles.customerName}>{order.user?.full_name ?? `+91 ${order.user?.mobile}`}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                  <Text style={styles.customerName}>{order.user?.full_name ?? `+91 ${order.user?.mobile}`}</Text>
+                  {(userTagsMap[order.user_id] ?? []).map((tag) => (
+                    <View key={tag.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999, borderWidth: 1, borderColor: tag.color, backgroundColor: tag.color + '15' }}>
+                      <View style={{ width: 5, height: 5, borderRadius: 2.5, backgroundColor: tag.color }} />
+                      <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, color: tag.color }}>{tag.name}</Text>
+                    </View>
+                  ))}
+                </View>
                 {(() => {
                   const addr = customAddressMap[order.address_id] as any;
                   if (!addr) return null;
@@ -1003,6 +1215,34 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.white,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
+  },
+  statusTabsRow: {
+    flexDirection: 'row',
+    gap: Spacing[2],
+    paddingHorizontal: Spacing[5],
+    paddingVertical: Spacing[3],
+    backgroundColor: Colors.background,
+  },
+  statusTab: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing[2],
+    borderRadius: Radius.md,
+    borderWidth: 1.5,
+  },
+  statusTabSelected: {
+    borderWidth: 2,
+    opacity: 1,
+  },
+  statusTabCount: {
+    fontFamily: Typography.fontFamily.bold,
+    fontSize: Typography.size.xl,
+  },
+  statusTabLabel: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    marginTop: 2,
   },
   tabBtn: {
     flex: 1,
@@ -1232,6 +1472,32 @@ const webStyles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     marginBottom: 4,
+  },
+  statusTabsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 4,
+  },
+  statusTab: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: Radius.md,
+    borderWidth: 1.5,
+  },
+  statusTabSelected: {
+    borderWidth: 2,
+    opacity: 1,
+  },
+  statusTabCount: {
+    fontFamily: Typography.fontFamily.bold,
+    fontSize: 22,
+  },
+  statusTabLabel: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    marginTop: 2,
   },
   tabBtn: {
     flexDirection: 'row',

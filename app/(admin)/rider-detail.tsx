@@ -14,7 +14,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import StatusChip from '@/components/ui/StatusChip';
 
-type Tab = 'overview' | 'assignments' | 'attendance' | 'payouts' | 'leave';
+type Tab = 'overview' | 'assignments' | 'attendance' | 'payouts' | 'leave' | 'zones';
 
 const ASSIGN_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
   assigned:   { label: 'Assigned',   color: Colors.primary,      bg: Colors.primarySurface },
@@ -86,15 +86,24 @@ function RiderDetailScreenContent() {
   const [leaveForm, setLeaveForm] = useState({ leave_date: format(new Date(), 'yyyy-MM-dd'), reason: '', notes: '' });
   const [savingLeave, setSavingLeave] = useState(false);
 
+  const [zoneAssignments, setZoneAssignments] = useState<any[]>([]);
+  const [allLocalities, setAllLocalities] = useState<any[]>([]);
+  const [zoneSearch, setZoneSearch] = useState('');
+  const [savingZone, setSavingZone] = useState(false);
+
   const load = useCallback(async () => {
     try {
-      const [riderRes, assignRes, attRes, payoutRes, leaveRes] = await Promise.all([
+      const [riderRes, assignRes, attRes, payoutRes, leaveRes, zoneRes, locRes] = await Promise.all([
         supabase.from('riders').select('*').eq('id', id).maybeSingle(),
         supabase.from('rider_order_assignments').select('*, order:orders(id, scheduled_date, status, user:profiles(full_name, mobile))').eq('rider_id', id).order('assigned_at', { ascending: false }).limit(50),
         supabase.from('rider_attendance').select('*').eq('rider_id', id).order('date', { ascending: false }).limit(60),
         supabase.from('rider_payouts').select('*').eq('rider_id', id).order('created_at', { ascending: false }),
         supabase.from('rider_leave_requests').select('*').eq('rider_id', id).order('leave_date', { ascending: false }),
+        supabase.from('rider_zone_assignments').select('*, locality:localities(id, locality_name)').eq('rider_id', id).order('created_at', { ascending: false }),
+        supabase.from('localities').select('id, locality_name').order('locality_name'),
       ]);
+      setZoneAssignments(zoneRes.data ?? []);
+      setAllLocalities(locRes.data ?? []);
       if (riderRes.data) setRider(riderRes.data);
       setAssignments(assignRes.data ?? []);
       setAttendance(attRes.data ?? []);
@@ -239,6 +248,7 @@ function RiderDetailScreenContent() {
     { key: 'attendance',  label: 'Attendance', count: attendance.length },
     { key: 'payouts',     label: 'Payouts',    count: payouts.length },
     { key: 'leave',       label: 'Leave',      count: leaveRequests.length },
+    { key: 'zones',       label: 'Zones',      count: zoneAssignments.length },
   ];
 
   return (
@@ -307,6 +317,15 @@ function RiderDetailScreenContent() {
               <Text style={s.infoCardTitle}>Compensation</Text>
               <InfoRow icon={<IndianRupee size={14} color={Colors.success} strokeWidth={1.8} />} label="Per Delivery" value={fmt(rider.per_delivery_rate)} />
               <InfoRow icon={<IndianRupee size={14} color={Colors.primary} strokeWidth={1.8} />} label="Daily Rate" value={fmt(rider.daily_rate)} />
+            </View>
+            <View style={s.infoCard}>
+              <Text style={s.infoCardTitle}>Delivery Settings</Text>
+              <InfoRow
+                icon={<Clock size={14} color={Colors.warning} strokeWidth={1.8} />}
+                label="Delivery Deadline"
+                value={rider.delivery_deadline_time ? `${rider.delivery_deadline_time} IST` : 'No limit set'}
+              />
+              <Text style={s.infoCardSub}>Latest time this rider can mark an order as delivered. Edit the rider profile to change it.</Text>
             </View>
             {(rider.emergency_contact_name || rider.emergency_contact_mobile) && (
               <View style={s.infoCard}>
@@ -533,6 +552,61 @@ function RiderDetailScreenContent() {
                 );
               })
             )}
+          </>
+        )}
+
+        {/* ZONES */}
+        {activeTab === 'zones' && (
+          <>
+            <View style={s.infoCard}>
+              <Text style={s.infoCardTitle}>Assigned Delivery Zones</Text>
+              <Text style={s.infoCardSub}>Each zone has a priority: Primary riders get orders first, Backup riders cover when the primary is unavailable.</Text>
+
+              {zoneAssignments.length > 0 && (
+                <View style={s.zoneList}>
+                  {zoneAssignments.map((za: any) => (
+                    <View key={za.id} style={s.zoneRow}>
+                      <View style={s.zoneInfo}>
+                        <MapPin size={14} color={za.priority_level === 'primary' ? Colors.primary : Colors.accentDark} strokeWidth={1.8} />
+                        <Text style={s.zoneName}>{za.locality?.locality_name ?? 'Unknown'}</Text>
+                      </View>
+                      <View style={s.zoneRight}>
+                        <View style={[s.zonePriorityBadge, { backgroundColor: za.priority_level === 'primary' ? Colors.primarySurface : Colors.accentSurface }]}>
+                          <Text style={[s.zonePriorityText, { color: za.priority_level === 'primary' ? Colors.primary : Colors.accentDark }]}>{za.priority_level === 'primary' ? 'Primary' : 'Backup'}</Text>
+                        </View>
+                        <TouchableOpacity onPress={async () => { await supabase.from('rider_zone_assignments').delete().eq('id', za.id); load(); }}>
+                          <X size={16} color={Colors.error} strokeWidth={2} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              <Text style={s.zoneAddLabel}>Add Zone</Text>
+              <View style={s.searchWrap}>
+                <TextInput style={s.zoneSearchInput} value={zoneSearch} onChangeText={setZoneSearch} placeholder="Search localities..." placeholderTextColor={Colors.textDisabled} />
+              </View>
+              <View style={s.zoneAddList}>
+                {allLocalities
+                  .filter(l => !zoneAssignments.some((za: any) => za.locality_id === l.id))
+                  .filter(l => !zoneSearch.trim() || l.locality_name.toLowerCase().includes(zoneSearch.toLowerCase()))
+                  .slice(0, 8)
+                  .map(l => (
+                    <View key={l.id} style={s.zoneAddRow}>
+                      <Text style={s.zoneAddName}>{l.locality_name}</Text>
+                      <View style={s.zoneAddBtns}>
+                        <TouchableOpacity style={[s.zoneAddBtn, { backgroundColor: Colors.primarySurface }]} onPress={async () => { setSavingZone(true); await supabase.from('rider_zone_assignments').insert({ rider_id: id, locality_id: l.id, priority_level: 'primary' }); setSavingZone(false); setZoneSearch(''); load(); }} disabled={savingZone}>
+                          <Text style={[s.zoneAddBtnText, { color: Colors.primary }]}>Primary</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[s.zoneAddBtn, { backgroundColor: Colors.accentSurface }]} onPress={async () => { setSavingZone(true); await supabase.from('rider_zone_assignments').insert({ rider_id: id, locality_id: l.id, priority_level: 'backup' }); setSavingZone(false); setZoneSearch(''); load(); }} disabled={savingZone}>
+                          <Text style={[s.zoneAddBtnText, { color: Colors.accentDark }]}>Backup</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ))}
+              </View>
+            </View>
           </>
         )}
 
@@ -910,4 +984,21 @@ const s = StyleSheet.create({
   cancelBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textSecondary },
   saveBtn: { flex: 2, paddingVertical: Spacing[3], borderRadius: Radius.md, backgroundColor: Colors.primary, alignItems: 'center' },
   saveBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.white },
+  infoCardSub: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginBottom: Spacing[3], lineHeight: 17 },
+  zoneList: { gap: Spacing[2], marginBottom: Spacing[4] },
+  zoneRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, backgroundColor: Colors.neutral[50] },
+  zoneInfo: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], flex: 1 },
+  zoneName: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  zoneRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
+  zonePriorityBadge: { paddingHorizontal: Spacing[2], paddingVertical: 3, borderRadius: Radius.full },
+  zonePriorityText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10 },
+  zoneAddLabel: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textSecondary, marginTop: Spacing[3], marginBottom: Spacing[2] },
+  searchWrap: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], backgroundColor: Colors.neutral[50], borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingHorizontal: Spacing[3], paddingVertical: Spacing[2], marginBottom: Spacing[2] },
+  zoneSearchInput: { flex: 1, fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary, outlineStyle: 'none' } as any,
+  zoneAddList: { gap: Spacing[1] },
+  zoneAddRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderBottomWidth: 1, borderBottomColor: Colors.divider },
+  zoneAddName: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary, flex: 1 },
+  zoneAddBtns: { flexDirection: 'row', gap: Spacing[1] },
+  zoneAddBtn: { paddingVertical: Spacing[1], paddingHorizontal: Spacing[2], borderRadius: Radius.sm },
+  zoneAddBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10 },
 });

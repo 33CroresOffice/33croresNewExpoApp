@@ -6,7 +6,7 @@ import {
   Platform, ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { TrendingUp, TrendingDown, DollarSign, CreditCard, ArrowUpRight, ArrowDownRight, Receipt, Wallet, ChevronRight, ChartBar as BarChart3, ChartPie as PieChart } from 'lucide-react-native';
+import { TrendingUp, TrendingDown, DollarSign, CreditCard, ArrowUpRight, ArrowDownRight, Receipt, Wallet, ChevronRight, ChartBar as BarChart3, ChartPie as PieChart, Bike } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { format, subMonths, startOfMonth, endOfMonth } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
@@ -17,6 +17,7 @@ interface FinanceSummary {
   totalRefunds: number;
   netRevenue: number;
   totalVendorPayments: number;
+  totalRiderPayouts: number;
   totalExpenses: number;
   grossProfit: number;
   profitMargin: number;
@@ -82,7 +83,7 @@ function FinanceScreenContent() {
       const startStr = format(periodStart, 'yyyy-MM-dd');
       const endStr = format(periodEnd, 'yyyy-MM-dd');
 
-      const [paymentsRes, vendorPayRes, expensesRes, subsRes, ledgerRes] = await Promise.all([
+      const [paymentsRes, vendorPayRes, expensesRes, subsRes, ledgerRes, payoutsRes] = await Promise.all([
         supabase.from('payments').select('amount, status, created_at')
           .gte('created_at', startStr).lte('created_at', endStr + 'T23:59:59'),
         supabase.from('vendor_payments').select('amount, status, payment_date')
@@ -91,6 +92,8 @@ function FinanceScreenContent() {
           .gte('expense_date', startStr).lte('expense_date', endStr),
         supabase.from('subscriptions').select('status, created_at'),
         supabase.from('finance_ledger').select('*').order('entry_date', { ascending: false }).limit(8),
+        supabase.from('rider_payouts').select('final_amount, status, paid_at')
+          .gte('paid_at', startStr).lte('paid_at', endStr + 'T23:59:59'),
       ]);
 
       const payments = paymentsRes.data ?? [];
@@ -98,13 +101,15 @@ function FinanceScreenContent() {
       const expenses = expensesRes.data ?? [];
       const subs = subsRes.data ?? [];
       const ledger = ledgerRes.data ?? [];
+      const payouts = payoutsRes.data ?? [];
 
       const totalRevenue = payments.filter(p => p.status === 'success').reduce((s, p) => s + p.amount / 100, 0);
       const totalRefunds = payments.filter(p => p.status === 'refunded').reduce((s, p) => s + p.amount / 100, 0);
       const netRevenue = totalRevenue - totalRefunds;
       const totalVendorPayments = vendorPays.filter(p => p.status === 'completed').reduce((s, p) => s + Number(p.amount), 0);
+      const totalRiderPayouts = payouts.filter(p => p.status === 'paid').reduce((s, p) => s + p.final_amount, 0);
       const totalExpenses = expenses.reduce((s, e) => s + Number(e.amount), 0);
-      const grossProfit = netRevenue - totalVendorPayments - totalExpenses;
+      const grossProfit = netRevenue - totalVendorPayments - totalRiderPayouts - totalExpenses;
       const profitMargin = netRevenue > 0 ? (grossProfit / netRevenue) * 100 : 0;
       const activeSubscriptions = subs.filter(s => s.status === 'active').length;
       const newSubscriptions = subs.filter(s => {
@@ -112,22 +117,24 @@ function FinanceScreenContent() {
         return d >= periodStart && d <= periodEnd;
       }).length;
 
-      setSummary({ totalRevenue, totalRefunds, netRevenue, totalVendorPayments, totalExpenses, grossProfit, profitMargin, activeSubscriptions, newSubscriptions });
+      setSummary({ totalRevenue, totalRefunds, netRevenue, totalVendorPayments, totalRiderPayouts, totalExpenses, grossProfit, profitMargin, activeSubscriptions, newSubscriptions });
 
       const bars: MonthlyBar[] = [];
       for (let i = 5; i >= 0; i--) {
         const m = subMonths(now, i);
         const ms = format(startOfMonth(m), 'yyyy-MM-dd');
         const me = format(endOfMonth(m), 'yyyy-MM-dd');
-        const [pR, vpR, eR] = await Promise.all([
+        const [pR, vpR, eR, rpR] = await Promise.all([
           supabase.from('payments').select('amount, status').gte('created_at', ms).lte('created_at', me + 'T23:59:59'),
           supabase.from('vendor_payments').select('amount, status').gte('payment_date', ms).lte('payment_date', me),
           supabase.from('expenses').select('amount').gte('expense_date', ms).lte('expense_date', me),
+          supabase.from('rider_payouts').select('final_amount, status, paid_at').gte('paid_at', ms).lte('paid_at', me + 'T23:59:59'),
         ]);
         const rev = (pR.data ?? []).filter(p => p.status === 'success').reduce((s, p) => s + p.amount / 100, 0);
         const vp = (vpR.data ?? []).filter(p => p.status === 'completed').reduce((s, p) => s + Number(p.amount), 0);
+        const rp = (rpR.data ?? []).filter(p => p.status === 'paid').reduce((s, p) => s + Number(p.final_amount), 0);
         const exp = (eR.data ?? []).reduce((s, e) => s + Number(e.amount), 0);
-        bars.push({ month: format(m, 'MMM'), revenue: rev, expenses: vp + exp, profit: rev - vp - exp });
+        bars.push({ month: format(m, 'MMM'), revenue: rev, expenses: vp + rp + exp, profit: rev - vp - rp - exp });
       }
       setMonthlyBars(bars);
 
@@ -190,6 +197,7 @@ function FinanceScreenContent() {
               <MetricCard icon={<TrendingUp size={18} color={Colors.success} strokeWidth={1.8} />} iconBg="#E8F5E9" label="Gross Revenue" value={fmt(summary.totalRevenue)} sub={`${summary.newSubscriptions} new subs`} isWeb={isWeb} />
               <MetricCard icon={<DollarSign size={18} color={Colors.primary} strokeWidth={1.8} />} iconBg={Colors.primarySurface} label="Net Revenue" value={fmt(summary.netRevenue)} sub={summary.totalRefunds > 0 ? `−${fmt(summary.totalRefunds)} refunds` : 'No refunds'} isWeb={isWeb} />
               <MetricCard icon={<TrendingDown size={18} color={Colors.warning} strokeWidth={1.8} />} iconBg="#FFF3E0" label="Vendor Costs" value={fmt(summary.totalVendorPayments)} sub="Procurement paid" isWeb={isWeb} />
+              <MetricCard icon={<Bike size={18} color={Colors.accent} strokeWidth={1.8} />} iconBg={Colors.accentSurface} label="Rider Payouts" value={fmt(summary.totalRiderPayouts)} sub="Delivery payouts" isWeb={isWeb} />
               <MetricCard icon={<Receipt size={18} color={Colors.secondary} strokeWidth={1.8} />} iconBg={Colors.secondarySurface} label="Expenses" value={fmt(summary.totalExpenses)} sub="Operational costs" isWeb={isWeb} />
               <MetricCard icon={<Wallet size={18} color={summary.grossProfit >= 0 ? Colors.success : Colors.error} strokeWidth={1.8} />} iconBg={summary.grossProfit >= 0 ? '#E8F5E9' : '#FFEBEE'} label="Gross Profit" value={fmt(summary.grossProfit)} valueColor={summary.grossProfit >= 0 ? Colors.success : Colors.error} sub={`${summary.profitMargin.toFixed(1)}% margin`} isWeb={isWeb} />
               <MetricCard icon={<CreditCard size={18} color={Colors.accent} strokeWidth={1.8} />} iconBg={Colors.accentSurface} label="Active Subs" value={String(summary.activeSubscriptions)} sub="Currently active" isWeb={isWeb} />
@@ -260,6 +268,7 @@ function FinanceScreenContent() {
               <View style={[s.quickActions, isWeb && s.quickActionsWeb]}>
                 <QuickActionCard icon={<Receipt size={20} color={Colors.primary} strokeWidth={1.8} />} label="Expenses" sub="Track & manage" onPress={() => router.push('/(admin)/expenses' as any)} isWeb={isWeb} />
                 <QuickActionCard icon={<CreditCard size={20} color={Colors.secondary} strokeWidth={1.8} />} label="Payments" sub="Customer payments" onPress={() => router.push('/(admin)/finance-payments' as any)} isWeb={isWeb} />
+                <QuickActionCard icon={<Wallet size={20} color={Colors.accent} strokeWidth={1.8} />} label="Rider Payouts" sub="Approve & pay" onPress={() => router.push('/(admin)/rider-payouts' as any)} isWeb={isWeb} />
                 <QuickActionCard icon={<PieChart size={20} color={Colors.accent} strokeWidth={1.8} />} label="Ledger" sub="All transactions" onPress={() => router.push('/(admin)/ledger' as any)} isWeb={isWeb} />
               </View>
             </View>

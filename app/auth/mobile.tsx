@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -22,6 +22,18 @@ export default function MobileScreen() {
   const insets = useSafeAreaInsets();
   const [mobile, setMobile] = useState('');
   const [error, setError] = useState('');
+
+  const handleMobileChange = useCallback((text: string) => {
+    setMobile(text.replace(/[^0-9]/g, '').slice(0, 10));
+    setError('');
+  }, []);
+
+  const prefixEl = useMemo(() => (
+    <View style={styles.countryCode}>
+      <Text style={styles.flag}>🇮🇳</Text>
+      <Text style={styles.code}>+91</Text>
+    </View>
+  ), []);
 
   const validate = () => {
     const cleaned = mobile.replace(/\s/g, '');
@@ -78,20 +90,12 @@ export default function MobileScreen() {
             <Input
               label="Mobile Number"
               value={mobile}
-              onChangeText={(text) => {
-                setMobile(text.replace(/[^0-9]/g, '').slice(0, 10));
-                setError('');
-              }}
+              onChangeText={handleMobileChange}
               keyboardType="phone-pad"
               maxLength={10}
               placeholder="98765 43210"
               error={error}
-              prefix={
-                <View style={styles.countryCode}>
-                  <Text style={styles.flag}>🇮🇳</Text>
-                  <Text style={styles.code}>+91</Text>
-                </View>
-              }
+              prefix={prefixEl}
               autoFocus
               returnKeyType="done"
               onSubmitEditing={handleContinue}

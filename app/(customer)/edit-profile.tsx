@@ -62,6 +62,7 @@ export default function EditProfileScreen() {
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.7,
+      base64: true,
     });
 
     if (result.canceled || !result.assets?.[0]) return;
@@ -75,19 +76,19 @@ export default function EditProfileScreen() {
       const filePath = `${profile!.id}/avatar.${ext}`;
 
       const response = await fetch(asset.uri);
-      const blob = await response.blob();
-      const arrayBuffer = await blob.arrayBuffer();
+      const uploadBody = await response.blob();
 
       const { error: uploadError } = await supabase.storage
         .from('avatars')
-        .upload(filePath, arrayBuffer, { contentType: mimeType, upsert: true });
+        .upload(filePath, uploadBody, { contentType: mimeType, upsert: true });
 
       if (uploadError) throw uploadError;
 
       const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(filePath);
       const publicUrl = `${urlData.publicUrl}?t=${Date.now()}`;
 
-      await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', profile!.id);
+      const { error: dbError } = await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', profile!.id);
+      if (dbError) throw dbError;
       setAvatarUri(publicUrl);
       setProfile({ ...profile!, avatar_url: publicUrl });
     } catch {

@@ -134,6 +134,20 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    // Fetch all active/paused subscriptions once for effective end date checks
+    const { data: allActiveSubs, error: allActiveError } = await serviceSupabase
+      .from("subscriptions")
+      .select("id, user_id, plan_id, end_date, new_end_date")
+      .in("status", ["active", "paused"]);
+
+    if (allActiveError) {
+      console.error("Error fetching active subscriptions:", allActiveError);
+    }
+
+    const activeSubs = allActiveSubs ?? [];
+    const effectiveEndDate = (sub: { new_end_date: string | null; end_date: string | null }): string | null =>
+      sub.new_end_date ?? sub.end_date;
+
     // ── 1. Data-driven time-based automated notifications ────────────────────
     // Load all active automated templates that have a send_at_days_before set
     const { data: automatedTemplates } = await serviceSupabase
@@ -159,14 +173,10 @@ Deno.serve(async (req: Request) => {
         targetDate.setUTCDate(targetDate.getUTCDate() + group.days_before);
         const targetDateStr = targetDate.toISOString().split("T")[0];
 
-        // Find subscriptions expiring on targetDate that haven't been notified for this event+template today
-        const { data: expiringSubs } = await serviceSupabase
-          .from("subscriptions")
-          .select("id, user_id, plan_id, end_date")
-          .in("status", ["active", "paused"])
-          .eq("end_date", targetDateStr);
+        // Find subscriptions whose effective end date matches targetDate
+        const expiringSubs = activeSubs.filter(s => effectiveEndDate(s) === targetDateStr);
 
-        if (!expiringSubs || expiringSubs.length === 0) continue;
+        if (expiringSubs.length === 0) continue;
 
         for (const sub of expiringSubs) {
           // Idempotency: check if any log exists today for this subscription + event_type
@@ -195,7 +205,7 @@ Deno.serve(async (req: Request) => {
           const planName = plan?.name ?? "subscription";
           const variables: Record<string, string> = {
             plan_name: planName,
-            end_date: sub.end_date ?? "",
+            end_date: effectiveEndDate(sub) ?? "",
             days_left: String(group.days_before),
             amount: plan?.price ? String(plan.price / 100) : "",
           };
@@ -217,20 +227,21 @@ Deno.serve(async (req: Request) => {
 
           // Create CRM task for expiring subscriptions (3–7 day window)
           if (group.days_before >= 3 && group.days_before <= 7) {
+            const effEnd = effectiveEndDate(sub);
             await serviceSupabase.from("crm_tasks").insert({
               title: `Renewal reminder: ${planName}`,
-              description: `Subscription ends on ${sub.end_date}. Contact customer to renew.`,
+              description: `Subscription ends on ${effEnd}. Contact customer to renew.`,
               task_type: "renewal",
               priority: "high",
               status: "open",
-              due_date: sub.end_date,
+              due_date: effEnd,
               customer_id: sub.user_id,
             });
 
             await serviceSupabase.from("customer_activity_log").insert({
               customer_id: sub.user_id,
               activity_type: "note_added",
-              description: `Renewal reminder created: ${planName} expires on ${sub.end_date}`,
+              description: `Renewal reminder created: ${planName} expires on ${effEnd}`,
               metadata: { subscription_id: sub.id, trigger: "auto_renewal_check" },
             });
 
@@ -245,16 +256,11 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── 2. Expire subscriptions past the 2-day grace period ──────────────────
-    const { data: toExpire, error: expireError } = await serviceSupabase
-      .from("subscriptions")
-      .select("id, user_id, plan_id, end_date")
-      .in("status", ["active", "paused"])
-      .not("end_date", "is", null)
-      .lt("end_date", twoDaysAgoStr);
+    // Use effective end date (new_end_date if set, else end_date) so paused/extended
+    // subscriptions are not incorrectly expired before their extended end date.
+    const toExpire = activeSubs.filter(s => s.end_date && effectiveEndDate(s)! < twoDaysAgoStr);
 
-    if (expireError) {
-      console.error("Error fetching subscriptions to expire:", expireError);
-    } else if (toExpire && toExpire.length > 0) {
+    if (toExpire.length > 0) {
       for (const sub of toExpire) {
         const { data: plan } = await serviceSupabase
           .from("subscription_plans")
@@ -272,14 +278,14 @@ Deno.serve(async (req: Request) => {
         await serviceSupabase.from("customer_activity_log").insert({
           customer_id: sub.user_id,
           activity_type: "subscription_cancelled",
-          description: `Subscription expired (end date: ${sub.end_date}, grace period elapsed)`,
+          description: `Subscription expired (end date: ${effectiveEndDate(sub)}, grace period elapsed)`,
           metadata: { subscription_id: sub.id, trigger: "auto_renewal_check" },
         });
 
         const count = await triggerAutomatedNotifications(
           sub.user_id,
           "subscription_expired",
-          { plan_name: planName, end_date: sub.end_date ?? "" },
+          { plan_name: planName, end_date: effectiveEndDate(sub) ?? "" },
           sub.id,
         );
         automatedNotifCount += count;

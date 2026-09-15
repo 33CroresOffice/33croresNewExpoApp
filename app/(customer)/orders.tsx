@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   Image,
 } from 'react-native';
 import { router } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ClipboardList,
@@ -20,11 +21,13 @@ import {
   CirclePause as PauseCircle,
   CircleCheck as CheckCircle2,
   TriangleAlert as AlertTriangle,
+  Flame,
+  Package,
 } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
-import { Order, Subscription, SubscriptionRenewalHistory } from '@/types/database';
+import { Order, Subscription, SubscriptionRenewalHistory, PoojaOrder } from '@/types/database';
 import StatusChip from '@/components/ui/StatusChip';
 import EmptyState from '@/components/ui/EmptyState';
 import { Skeleton } from '@/components/ui/SkeletonLoader';
@@ -33,13 +36,27 @@ import { getEffectiveStatus } from '@/utils/subscriptionStatus';
 
 const C = Colors;
 
-type Tab = 'upcoming' | 'past' | 'custom' | 'renewals';
+type Tab = 'upcoming' | 'past' | 'packages' | 'custom' | 'renewals';
+
+type ProviderBooking = {
+  id: string;
+  preferred_date: string;
+  preferred_time: string;
+  consultation_mode: string;
+  notes: string | null;
+  status: string;
+  provider: { full_name: string } | null;
+  provider_services: { name: string } | null;
+  provider_pooja_setups: { pooja_type: { name: string } | null } | null;
+};
 
 export default function OrdersScreen() {
   const insets = useSafeAreaInsets();
   const { profile } = useAuthStore();
   const [orders, setOrders] = useState<Order[]>([]);
   const [customOrders, setCustomOrders] = useState<any[]>([]);
+  const [poojaOrders, setPoojaOrders] = useState<PoojaOrder[]>([]);
+  const [providerBookings, setProviderBookings] = useState<ProviderBooking[]>([]);
   const [renewals, setRenewals] = useState<SubscriptionRenewalHistory[]>([]);
   const [activeSubs, setActiveSubs] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,7 +67,7 @@ export default function OrdersScreen() {
     if (!profile) return;
     const { data: { user } } = await supabase.auth.getUser();
     const uid = user?.id ?? profile.id;
-    const [ordersRes, customRes, renewalsRes, subsRes] = await Promise.all([
+    const [ordersRes, customRes, poojaRes, providerBookingsRes, renewalsRes, subsRes] = await Promise.all([
       supabase
         .from('orders')
         .select('*, subscription:subscriptions(*, plan:subscription_plans(*))')
@@ -60,6 +77,16 @@ export default function OrdersScreen() {
         .from('custom_orders')
         .select('*')
         .eq('user_id', uid)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('pooja_orders')
+        .select('*, plan:subscription_plans(*), address:addresses(*)')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('provider_bookings')
+        .select('id, preferred_date, preferred_time, consultation_mode, notes, status, provider:service_providers(full_name), provider_services(name), provider_pooja_setups(pooja_type:pooja_types(name))')
+        .eq('customer_id', uid)
         .order('created_at', { ascending: false }),
       supabase
         .from('subscription_renewal_history')
@@ -75,6 +102,8 @@ export default function OrdersScreen() {
     ]);
     if (ordersRes.data) setOrders(ordersRes.data as Order[]);
     if (customRes.data) setCustomOrders(customRes.data);
+    if (poojaRes.data) setPoojaOrders(poojaRes.data as PoojaOrder[]);
+    if (providerBookingsRes.data) setProviderBookings(providerBookingsRes.data as unknown as ProviderBooking[]);
     if (renewalsRes.data) setRenewals(renewalsRes.data as SubscriptionRenewalHistory[]);
     if (subsRes.data) setActiveSubs(subsRes.data as Subscription[]);
     setLoading(false);
@@ -82,6 +111,12 @@ export default function OrdersScreen() {
   };
 
   useEffect(() => { load(); }, [profile]);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [profile])
+  );
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -97,6 +132,7 @@ export default function OrdersScreen() {
   const tabs: { key: Tab; label: string }[] = [
     { key: 'upcoming', label: 'Upcoming' },
     { key: 'past', label: 'Past' },
+    { key: 'packages', label: 'Packages' },
     { key: 'custom', label: 'Custom' },
     { key: 'renewals', label: 'Renewals' },
   ];
@@ -232,6 +268,84 @@ export default function OrdersScreen() {
                 </View>
               ))}
             </View>
+          ) : activeTab === 'packages' ? (
+            (() => {
+              const allPackages = [
+                ...poojaOrders.map((o) => ({ kind: 'pooja' as const, id: o.id, date: o.created_at, item: o })),
+                ...providerBookings.map((b) => ({ kind: 'pandit' as const, id: b.id, date: b.created_at, item: b })),
+              ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+              if (allPackages.length === 0) {
+                return (
+                  <EmptyState
+                    icon={<Package size={52} color={C.neutral[400]} />}
+                    title="No packages yet"
+                    description="Your pooja packages and pandit bookings will appear here"
+                    actionLabel="Browse Pooja Packages"
+                    onAction={() => router.push('/(customer)/plans')}
+                  />
+                );
+              }
+              return (
+                <View style={styles.list}>
+                  {allPackages.map(({ kind, id, item }) => {
+                    if (kind === 'pooja') {
+                      const order = item as PoojaOrder;
+                      return (
+                        <TouchableOpacity
+                          key={`pooja-${id}`}
+                          style={styles.customCard}
+                          onPress={() => router.push({ pathname: '/(customer)/pooja-order-detail', params: { id: order.id } })}
+                          activeOpacity={0.85}
+                        >
+                          <View style={styles.customCardTop}>
+                            <View style={styles.poojaIconWrap}><Package size={18} color={C.accent} /></View>
+                            <View style={styles.customCardInfo}>
+                              <Text style={styles.customCardTitle}>{(order.plan as any)?.name ?? 'Pooja Package'}</Text>
+                              <Text style={styles.customCardDate}>Delivery: {format(new Date(order.delivery_date), 'dd MMM yyyy')} · {order.delivery_time}</Text>
+                            </View>
+                            <StatusChip status={order.status} />
+                          </View>
+                          <View style={styles.poojaMeta}>
+                            <Text style={styles.poojaMetaText}>Payment: {order.payment_status === 'paid' ? 'Paid' : 'Pending'}</Text>
+                            <Text style={styles.poojaMetaAmount}>₹{(order.total_price / 100).toLocaleString('en-IN')}</Text>
+                          </View>
+                          <View style={styles.customFooter}>
+                            <Text style={styles.customCreated}>Placed {format(new Date(order.created_at), 'dd MMM yyyy, hh:mm a')}</Text>
+                            <ChevronRight size={14} color={C.textTertiary} />
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    }
+                    const booking = item as ProviderBooking;
+                    const poojaName = booking.provider_pooja_setups?.pooja_type?.name;
+                    const serviceName = poojaName ?? booking.provider_services?.name ?? 'Pandit service';
+                    return (
+                      <TouchableOpacity
+                        key={`pandit-${id}`}
+                        style={styles.customCard}
+                        onPress={() => router.push({ pathname: '/(customer)/service-order-details', params: { id: booking.id } })}
+                        activeOpacity={0.85}
+                      >
+                        <View style={styles.customCardTop}>
+                          <View style={styles.poojaIconWrap}><Flame size={18} color={C.accent} /></View>
+                          <View style={styles.customCardInfo}>
+                            <Text style={styles.customCardTitle}>{serviceName}</Text>
+                            <Text style={styles.customCardDate}>{booking.provider?.full_name ?? 'Pandit'} · {format(new Date(booking.preferred_date), 'dd/MM/yyyy')}</Text>
+                          </View>
+                          <StatusChip status={booking.status} />
+                        </View>
+                        <View style={styles.poojaMeta}>
+                          <Text style={styles.poojaMetaText}>{booking.preferred_time}</Text>
+                          <Text style={styles.poojaMetaText}>{booking.consultation_mode.replace('_', ' ')}</Text>
+                        </View>
+                        {booking.notes ? <Text style={styles.customNote} numberOfLines={2}>Note: {booking.notes}</Text> : null}
+                        <View style={styles.customFooter}><ChevronRight size={14} color={C.textTertiary} /></View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              );
+            })()
           ) : activeTab === 'custom' ? (
             customOrders.length === 0 ? (
               <EmptyState
@@ -749,6 +863,10 @@ const styles = StyleSheet.create({
   },
 
   // Custom order cards
+  poojaIconWrap: { width: 38, height: 38, borderRadius: 19, backgroundColor: C.accentSurface, alignItems: 'center', justifyContent: 'center' },
+  poojaMeta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing[3], paddingTop: Spacing[3], borderTopWidth: 1, borderTopColor: C.divider },
+  poojaMetaText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: C.textTertiary },
+  poojaMetaAmount: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: C.textPrimary },
   customCard: {
     backgroundColor: C.white,
     borderRadius: Radius.lg,

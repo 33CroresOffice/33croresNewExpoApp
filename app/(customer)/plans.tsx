@@ -11,7 +11,7 @@ import {
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Check, ChevronRight, Layers } from 'lucide-react-native';
+import { Check, ChevronRight, Layers, Flower2, Flame } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { SubscriptionPlan } from '@/types/database';
@@ -21,13 +21,14 @@ import Badge from '@/components/ui/Badge';
 export default function PlansScreen() {
   const insets = useSafeAreaInsets();
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
+  const [productType, setProductType] = useState<'flower' | 'pooja'>('flower');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
     const { data } = await supabase
       .from('subscription_plans')
-      .select('*')
+      .select('*, pooja_items:plan_pooja_items(*, pooja_item:pooja_items(*))')
       .eq('is_active', true)
       .eq('show_in_customer_plans', true)
       .order('sort_order');
@@ -39,6 +40,8 @@ export default function PlansScreen() {
   useFocusEffect(useCallback(() => { load(); }, []));
 
   const formatPrice = (paise: number) => `₹${(paise / 100).toLocaleString('en-IN')}`;
+
+  const visiblePlans = plans.filter((plan) => (plan.product_type ?? 'flower') === productType);
 
   const frequencyLabel: Record<string, string> = {
     weekly: 'Weekly',
@@ -60,7 +63,7 @@ export default function PlansScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Layers size={22} color={Colors.primary} strokeWidth={1.8} />
+          {productType === 'pooja' ? <Flame size={22} color={Colors.accent} strokeWidth={1.8} /> : <Layers size={22} color={Colors.primary} strokeWidth={1.8} />}
           <Text style={styles.title}>Plans</Text>
         </View>
       </View>
@@ -77,10 +80,18 @@ export default function PlansScreen() {
         }
       >
         <View style={styles.heroSection}>
-          <Text style={styles.heroTitle}>Fresh flowers,{'\n'}your way</Text>
+          <Text style={styles.heroTitle}>{productType === 'pooja' ? <>Sacred essentials,{'\n'}delivered with care</> : <>Fresh flowers,{'\n'}your way</>}</Text>
           <Text style={styles.subtitle}>
-            Choose a plan that suits your lifestyle. Cancel or pause anytime.
+            {productType === 'pooja' ? 'Choose a pooja package for daily rituals or special occasions.' : 'Choose a plan that suits your lifestyle. Cancel or pause anytime.'}
           </Text>
+          <View style={styles.productToggle}>
+            {([['flower', 'Flowers', Flower2], ['pooja', 'Pooja Packages', Flame]] as const).map(([key, label, Icon]) => (
+              <TouchableOpacity key={key} style={[styles.productToggleItem, productType === key && styles.productToggleItemActive]} onPress={() => setProductType(key)}>
+                <Icon size={16} color={productType === key ? Colors.white : Colors.textSecondary} strokeWidth={2} />
+                <Text style={[styles.productToggleText, productType === key && styles.productToggleTextActive]}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
 
         {loading ? (
@@ -89,7 +100,7 @@ export default function PlansScreen() {
             <SkeletonCard />
             <SkeletonCard />
           </View>
-        ) : plans.length === 0 ? (
+        ) : visiblePlans.length === 0 ? (
           <View style={styles.emptyState}>
             <Layers size={48} color={Colors.textDisabled} strokeWidth={1.2} />
             <Text style={styles.emptyTitle}>No plans available</Text>
@@ -97,7 +108,7 @@ export default function PlansScreen() {
           </View>
         ) : (
           <View style={styles.list}>
-            {plans.map((plan, index) => (
+            {visiblePlans.map((plan, index) => (
               <TouchableOpacity
                 key={plan.id}
                 style={[styles.planCard, index === 1 && styles.featuredCard]}
@@ -131,7 +142,7 @@ export default function PlansScreen() {
 
                     <View style={styles.priceRow}>
                       <Text style={styles.price}>{formatPrice(plan.price)}</Text>
-                      <Text style={styles.pricePer}>/month</Text>
+                      <Text style={styles.pricePer}>{plan.product_type === 'pooja' ? '/delivery' : '/month'}</Text>
                       {plan.mrp_price > plan.price && (
                         <Text style={styles.mrpPrice}>
                           {formatPrice(plan.mrp_price)}
@@ -145,7 +156,12 @@ export default function PlansScreen() {
                   </View>
 
                   <View style={styles.featuresList}>
-                    {(plan.features as string[]).slice(0, 4).map((feat) => (
+                    {plan.product_type === 'pooja' && plan.pooja_items?.length ? plan.pooja_items.slice(0, 4).map((item) => (
+                      <View key={item.pooja_item_id} style={styles.featureItem}>
+                        <Flame size={13} color={Colors.accent} strokeWidth={2.2} />
+                        <Text style={styles.featureText}>{item.pooja_item?.name} · {item.quantity_per_delivery} {item.unit_type}</Text>
+                      </View>
+                    )) : (plan.features as string[]).slice(0, 4).map((feat) => (
                       <View key={feat} style={styles.featureItem}>
                         <Check size={13} color={Colors.primary} strokeWidth={2.5} />
                         <Text style={styles.featureText}>{feat}</Text>
@@ -172,7 +188,7 @@ export default function PlansScreen() {
 
         <View style={styles.guarantee}>
           <Text style={styles.guaranteeText}>
-            Free delivery · Eco-friendly packaging · Cancel anytime
+            {productType === 'pooja' ? 'Choose your delivery date · Freshly packed · Made for your rituals' : 'Free delivery · Eco-friendly packaging · Cancel anytime'}
           </Text>
         </View>
 
@@ -205,6 +221,11 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
   },
   content: { padding: Spacing[5], gap: Spacing[5] },
+  productToggle: { flexDirection: 'row', backgroundColor: Colors.neutral[100], borderRadius: Radius.md, padding: 4, marginTop: Spacing[2] },
+  productToggleItem: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: Radius.sm },
+  productToggleItemActive: { backgroundColor: Colors.primary },
+  productToggleText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textSecondary },
+  productToggleTextActive: { color: Colors.white },
   heroSection: { gap: Spacing[2] },
   heroTitle: {
     fontFamily: Typography.fontFamily.bold,

@@ -201,8 +201,18 @@ function RiderAssignmentsScreenContent() {
     if (newStatus === 'accepted') update.accepted_at = now;
     if (newStatus === 'picked_up') update.picked_up_at = now;
     if (newStatus === 'delivered') { update.delivered_at = now; await supabase.from('orders').update({ status: 'delivered', delivered_at: now }).eq('id', assignment.order_id); }
-    if (newStatus === 'failed') { update.failed_at = now; update.failure_reason = failureReason; await supabase.from('orders').update({ status: 'failed' }).eq('id', assignment.order_id); }
-    await supabase.from('rider_order_assignments').update(update).eq('id', assignment.id);
+    if (newStatus === 'failed') {
+      update.failed_at = now;
+      update.failure_reason = failureReason;
+      await supabase.from('orders').update({ status: 'failed' }).eq('id', assignment.order_id);
+    }
+    const { error: assignmentError } = await supabase.from('rider_order_assignments').update(update).eq('id', assignment.id);
+    if (!assignmentError && newStatus === 'failed' && assignment.order_id) {
+      await supabase.rpc('handle_failed_delivery', {
+        p_order_id: assignment.order_id,
+        p_reason: failureReason || 'Delivery failed',
+      });
+    }
     setUpdatingStatus(false);
     setShowStatusModal(false);
     setFailureReason('');
@@ -250,38 +260,16 @@ function RiderAssignmentsScreenContent() {
   const bulkSmartAssign = async () => {
     if (unassignedOrders.length === 0) return;
     setBulkAssigning(true);
-    let assigned = 0;
-    let failed = 0;
-    const usedThisRound = new Map<string, number>(activeCountMap);
-
-    for (const order of unassignedOrders) {
-      const best = riders
-        .filter(r => !leaveSet.has(r.id))
-        .map(r => ({ rider: r, score: scoreRider(r, order, usedThisRound, leaveSet) }))
-        .filter(x => x.score >= 0)
-        .sort((a, b) => b.score - a.score)[0];
-
-      if (!best) { failed++; continue; }
-
-      const { error } = await supabase.from('rider_order_assignments').insert({
-        rider_id: best.rider.id,
-        order_id: order.id,
-        assigned_by: adminProfile?.id,
-        status: 'assigned',
-        delivery_fee: 0,
-        notes: 'Auto-assigned by smart system',
-      });
-      if (!error) {
-        await supabase.from('orders').update({ status: 'out_for_delivery' }).eq('id', order.id);
-        usedThisRound.set(best.rider.id, (usedThisRound.get(best.rider.id) ?? 0) + 1);
-        assigned++;
-      } else {
-        failed++;
-      }
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const { data, error } = await supabase.rpc('auto_assign_riders', { target_date: today });
+    if (error) {
+      setBulkAssigning(false);
+      Alert.alert('Error', error.message);
+      return;
     }
-
+    const result = data as any;
     setBulkAssigning(false);
-    setBulkResult({ assigned, failed });
+    setBulkResult({ assigned: result?.assigned ?? 0, failed: result?.failed ?? 0 });
     setShowBulkResult(true);
     load();
   };
@@ -449,6 +437,12 @@ function RiderAssignmentsScreenContent() {
                             <Text style={[s.statusText, { color: cfg.color }]}>{cfg.label}</Text>
                           </View>
                           <Text style={s.activeOrderId}>#{a.order_id.slice(-8).toUpperCase()}</Text>
+                          {a.auto_assigned && (
+                            <View style={s.autoBadge}>
+                              <Zap size={9} color={Colors.accentDark} strokeWidth={2.5} />
+                              <Text style={s.autoBadgeText}>AUTO</Text>
+                            </View>
+                          )}
                           <TouchableOpacity style={s.overrideBtn} onPress={() => openOverride(a)} activeOpacity={0.8}>
                             <RefreshCw size={12} color={Colors.textTertiary} strokeWidth={2} />
                           </TouchableOpacity>
@@ -875,6 +869,8 @@ const s = StyleSheet.create({
   activeTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
   activeOrderId: { flex: 1, fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
   overrideBtn: { padding: Spacing[1], borderRadius: Radius.sm, backgroundColor: Colors.neutral[100] },
+  autoBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: Spacing[1], paddingVertical: 2, borderRadius: Radius.full, backgroundColor: Colors.accentSurface },
+  autoBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 9, color: Colors.accentDark },
   activeMid: { gap: 4 },
   activeRider: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   activeRiderName: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.primary },

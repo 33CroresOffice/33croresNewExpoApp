@@ -15,15 +15,19 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowRight, Flower2, Truck, Heart, Star, Sparkles, ChevronRight, User, Calendar, CirclePause as PauseCircle, CircleCheck as CheckCircle2, Paintbrush, RotateCcw, TriangleAlert as AlertTriangle, Timer, Bell, Sun } from 'lucide-react-native';
+import { ArrowRight, Flower2, Truck, Heart, Star, Sparkles, ChevronRight, User, Calendar, CirclePause as PauseCircle, CircleCheck as CheckCircle2, Paintbrush, RotateCcw, TriangleAlert as AlertTriangle, Timer, Bell, Sun, Flame, Compass, Landmark, ShieldCheck } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
-import { supabase } from '@/lib/supabase';
+import { supabase, SUPABASE_URL } from '@/lib/supabase';
+import { Linking } from 'react-native';
 import { useAuthStore } from '@/store/authStore';
 import { SubscriptionPlan } from '@/types/database';
 import { SkeletonCard } from '@/components/ui/SkeletonLoader';
+import TodaysFlowerPack from '@/components/ui/TodaysFlowerPack';
 import { format, addDays, differenceInDays, parseISO } from 'date-fns';
 import { PanjiEntry } from '@/types/database';
 import { getEffectiveStatus } from '@/utils/subscriptionStatus';
+
+type HomeProvider = { id: string; full_name: string; category: string[]; specialization: string; experience_years: number; city: string; bio: string };
 
 type PauseRecord = {
   pause_start_date: string;
@@ -102,6 +106,7 @@ const C = {
   surface: '#FFFFFF',
   primary: '#2D5A27',
   primaryLight: '#C8EDBB',
+  primarySurface: '#EAF5E4',
   primaryDark: '#062100',
   accent: '#A0522D',
   accentLight: '#F5E6D8',
@@ -109,6 +114,7 @@ const C = {
   textMid: '#4A4A4A',
   textSoft: '#888888',
   border: '#E8E3DC',
+  divider: '#F0EBE3',
   overlay: 'rgba(10,26,8,0.55)',
   overlayDeep: 'rgba(10,26,8,0.72)',
   white: '#FFFFFF',
@@ -120,11 +126,15 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { profile, session } = useAuthStore();
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
+  const [poojaPlans, setPoojaPlans] = useState<SubscriptionPlan[]>([]);
+  const [providers, setProviders] = useState<HomeProvider[]>([]);
   const [activeSubs, setActiveSubs] = useState<ActiveSub[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [sharedPoojaNotifications, setSharedPoojaNotifications] = useState<Array<{ id: string; title: string; body: string; metadata: { share_token?: string }; created_at: string }>>([]);
   const [todayPanji, setTodayPanji] = useState<PanjiEntry | null>(null);
+  const [otpBookings, setOtpBookings] = useState<Array<{ id: string; arrival_otp: string; preferred_date: string; preferred_time: string; provider_pooja_setups?: { pooja_type?: { name: string } | null } | null; provider_services?: { name: string } | null }>>([]);
 
   const loadUnreadCount = useCallback(async () => {
     if (!session?.user?.id) return;
@@ -136,7 +146,13 @@ export default function HomeScreen() {
     setUnreadCount(count ?? 0);
   }, [session?.user?.id]);
 
-  useEffect(() => { loadUnreadCount(); }, [loadUnreadCount]);
+  const loadSharedPoojaNotifications = useCallback(async () => {
+    if (!session?.user?.id) return;
+    const { data } = await supabase.from('in_app_notifications').select('id, title, body, metadata, created_at').eq('user_id', session.user.id).eq('event_type', 'pooja_list_shared').order('created_at', { ascending: false }).limit(3);
+    setSharedPoojaNotifications((data ?? []) as typeof sharedPoojaNotifications);
+  }, [session?.user?.id]);
+
+  useEffect(() => { loadUnreadCount(); loadSharedPoojaNotifications(); }, [loadUnreadCount, loadSharedPoojaNotifications]);
 
   // Realtime unread count updates
   useEffect(() => {
@@ -155,7 +171,7 @@ export default function HomeScreen() {
 
   const loadData = async () => {
     const todayStr = format(new Date(), 'yyyy-MM-dd');
-    const [plansRes, subsRes, panjiRes] = await Promise.all([
+    const [plansRes, subsRes, panjiRes, poojaRes, providersRes, otpRes] = await Promise.all([
       supabase.from('subscription_plans').select('*').eq('is_active', true).eq('show_in_customer_plans', true).order('sort_order'),
       supabase
         .from('subscriptions')
@@ -164,10 +180,17 @@ export default function HomeScreen() {
         .order('created_at', { ascending: false })
         .limit(5),
       supabase.from('panji_entries').select('*').eq('date', todayStr).eq('is_published', true).maybeSingle(),
+      supabase.from('subscription_plans').select('*').eq('is_active', true).eq('show_in_customer_plans', true).eq('product_type', 'pooja').order('sort_order').limit(4),
+      supabase.from('service_providers').select('id, full_name, category, specialization, experience_years, city, bio').eq('approval_status', 'approved').eq('is_active', true).eq('bookings_enabled', true).order('full_name').limit(4),
+      supabase.from('provider_bookings').select('id, arrival_otp, preferred_date, preferred_time, provider_pooja_setups(pooja_type:pooja_types(name)), provider_services(name)').eq('status', 'pandit_arrived').eq('arrival_otp_verified', false).not('arrival_otp', 'is', null).order('updated_at', { ascending: false }),
     ]);
-    if (plansRes.data) setPlans(plansRes.data);
-    if (subsRes.data) setActiveSubs(subsRes.data as ActiveSub[]);
+    if (plansRes.data) setPlans(plansRes.data.filter((plan) => (plan.product_type ?? 'flower') === 'flower'));
+    if (poojaRes.data) setPoojaPlans(poojaRes.data);
+    if (providersRes.data) setProviders(providersRes.data as HomeProvider[]);
+    if (subsRes.data) setActiveSubs(subsRes.data as unknown as ActiveSub[]);
     setTodayPanji(panjiRes.data as PanjiEntry | null);
+    if (otpRes.data) setOtpBookings(otpRes.data as typeof otpBookings);
+    else setOtpBookings([]);
     setLoading(false);
     setRefreshing(false);
   };
@@ -343,6 +366,143 @@ export default function HomeScreen() {
         </LinearGradient>
       </TouchableOpacity>
 
+      {sharedPoojaNotifications.length > 0 && (
+        <View style={styles.sharedBanner}>
+          <View style={styles.sharedBannerIcon}><Flame size={18} color={C.accent} /></View>
+          <View style={styles.sharedBannerCopy}>
+            <Text style={styles.sharedBannerTitle}>Pooja list shared with you</Text>
+            <Text style={styles.sharedBannerText} numberOfLines={2}>{sharedPoojaNotifications[0].body}</Text>
+          </View>
+          <TouchableOpacity style={styles.sharedBannerButton} onPress={() => { const token = sharedPoojaNotifications[0].metadata?.share_token; if (token) router.push({ pathname: '/(customer)/pooja-list-view', params: { token } }); }}>
+            <Text style={styles.sharedBannerButtonText}>View</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Pandit Arrival OTP */}
+      {otpBookings.length > 0 && (
+        <View style={styles.otpCard}>
+          <View style={styles.otpCardHeader}>
+            <View style={styles.otpCardIcon}><ShieldCheck size={18} color={C.primary} strokeWidth={2} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.otpCardTitle}>Pandit has arrived</Text>
+              <Text style={styles.otpCardSub}>Share this OTP with the Pandit to start the Pooja</Text>
+            </View>
+          </View>
+          {otpBookings.map((b) => {
+            const poojaName = b.provider_pooja_setups?.pooja_type?.name ?? b.provider_services?.name ?? 'Pooja';
+            return (
+              <TouchableOpacity key={b.id} style={styles.otpRow} onPress={() => router.push({ pathname: '/(customer)/service-order-details', params: { id: b.id } })} activeOpacity={0.85}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.otpRowName} numberOfLines={1}>{poojaName}</Text>
+                  <Text style={styles.otpRowTime}>{b.preferred_date} · {b.preferred_time}</Text>
+                </View>
+                <View style={styles.otpBadge}>
+                  <Text style={styles.otpBadgeText}>{b.arrival_otp}</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+
+      {/* Pooja Packages */}
+      {poojaPlans.length > 0 && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <View>
+              <Text style={styles.sectionEyebrow}>POOJA PACKAGES</Text>
+              <Text style={styles.sectionHeading}>Sacred essentials</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.viewAllBtn}
+              onPress={() => router.push('/(customer)/plans')}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.viewAllText}>View all</Text>
+              <ChevronRight size={13} color={C.primary} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.plansScroll}>
+            {poojaPlans.map((plan) => (
+              <TouchableOpacity
+                key={plan.id}
+                style={[styles.planCard, { backgroundColor: C.accentLight }]}
+                onPress={() => router.push({ pathname: '/(customer)/plan-detail', params: { id: plan.id } })}
+                activeOpacity={0.88}
+              >
+                <Image
+                  source={{ uri: plan.image_url ?? 'https://images.pexels.com/photos/8460302/pexels-photo-8460302.jpeg?auto=compress&cs=tinysrgb&w=600' }}
+                  style={styles.planImg}
+                  resizeMode="cover"
+                />
+                <View style={styles.planGradient} />
+                <View style={[styles.planFreqBadge, { backgroundColor: 'rgba(160,82,45,0.85)' }]}>
+                  <Flame size={10} color={C.white} strokeWidth={2} />
+                  <Text style={styles.planFreqText}>Pooja</Text>
+                </View>
+                <View style={styles.planBottom}>
+                  <Text style={styles.planName} numberOfLines={1}>{plan.name}</Text>
+                  <View style={styles.planPriceRow}>
+                    <Text style={styles.planPrice}>{formatPrice(plan.price)}</Text>
+                    <Text style={styles.planPer}>/delivery</Text>
+                  </View>
+                  <View style={styles.planCta}>
+                    <Text style={styles.planCtaText}>View details</Text>
+                    <ArrowRight size={12} color="rgba(255,255,255,0.85)" />
+                  </View>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Expert Services */}
+      {providers.length > 0 && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <View>
+              <Text style={styles.sectionEyebrow}>EXPERT GUIDANCE</Text>
+              <Text style={styles.sectionHeading}>Book a consultation</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.viewAllBtn}
+              onPress={() => router.push('/(customer)/services')}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.viewAllText}>View all</Text>
+              <ChevronRight size={13} color={C.primary} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.plansScroll}>
+            {providers.map((provider) => {
+              const catIcon = provider.category.includes('astrology') ? Sparkles : provider.category.includes('vaastu') ? Compass : Landmark;
+              const Icon = catIcon;
+              return (
+                <TouchableOpacity
+                  key={provider.id}
+                  style={styles.providerCard}
+                  onPress={() => router.push({ pathname: '/(customer)/service-provider', params: { id: provider.id } })}
+                  activeOpacity={0.88}
+                >
+                  <View style={styles.providerAvatar}>
+                    <Icon size={18} color={C.primary} strokeWidth={1.8} />
+                  </View>
+                  <Text style={styles.providerName} numberOfLines={1}>{provider.full_name}</Text>
+                  <Text style={styles.providerCat} numberOfLines={1}>{provider.category.join(', ')}</Text>
+                  <Text style={styles.providerSpec} numberOfLines={2}>{provider.specialization}</Text>
+                  <View style={styles.providerFooter}>
+                    <Text style={styles.providerExp}>{provider.experience_years} yrs</Text>
+                    <Text style={styles.providerCity} numberOfLines={1}>{provider.city || 'Online'}</Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
       {/* Active Subscriptions */}
       {activeSubs.length > 0 && (
         <View style={styles.subSection}>
@@ -497,6 +657,19 @@ export default function HomeScreen() {
               </TouchableOpacity>
             );
           })}
+        </View>
+      )}
+
+      {/* Today's Flower Pack for first active subscription */}
+      {activeSubs.filter(s => s.status === 'active').length > 0 && (
+        <View style={styles.subSection}>
+          <View style={styles.subSectionHeader}>
+            <View>
+              <Text style={styles.sectionEyebrow2}>TODAY'S DELIVERY</Text>
+              <Text style={styles.sectionHeading2}>Your flower pack</Text>
+            </View>
+          </View>
+          <TodaysFlowerPack planId={activeSubs.find(s => s.status === 'active')!.plan_id} compact />
         </View>
       )}
 
@@ -906,6 +1079,13 @@ const styles = StyleSheet.create({
     fontSize: Typography.size.xs,
     color: C.white,
   },
+  sharedBanner: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3], marginHorizontal: Spacing[5], marginTop: Spacing[4], padding: Spacing[4], backgroundColor: '#FFF8E8', borderRadius: Radius.lg, borderWidth: 1, borderColor: '#F0D9A1' },
+  sharedBannerIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F8E8C5' },
+  sharedBannerCopy: { flex: 1, gap: 2 },
+  sharedBannerTitle: { fontFamily: Typography.fontFamily.sansSemiBold, color: C.text, fontSize: Typography.size.sm },
+  sharedBannerText: { fontFamily: Typography.fontFamily.sansRegular, color: C.textMid, fontSize: Typography.size.xs },
+  sharedBannerButton: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: Radius.md, backgroundColor: C.primary },
+  sharedBannerButtonText: { fontFamily: Typography.fontFamily.sansSemiBold, color: C.white, fontSize: Typography.size.sm },
   statsRow: {
     flexDirection: 'row',
     backgroundColor: C.surface,
@@ -1049,14 +1229,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     letterSpacing: 0.4,
     textTransform: 'capitalize',
-  },
-  subStatusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: Radius.full,
   },
   subStatusText: {
     fontFamily: Typography.fontFamily.sansSemiBold,
@@ -1280,6 +1452,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: Spacing[3],
     left: Spacing[3],
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     backgroundColor: 'rgba(255,255,255,0.15)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.3)',
@@ -1334,6 +1509,63 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.82)',
   },
 
+  providerCard: {
+    width: width * 0.42,
+    backgroundColor: C.surface,
+    borderRadius: 18,
+    padding: Spacing[4],
+    gap: Spacing[2],
+    borderWidth: 1,
+    borderColor: C.border,
+    ...Shadow.sm,
+  },
+  providerAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: C.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing[1],
+  },
+  providerName: {
+    fontFamily: Typography.fontFamily.bold,
+    fontSize: Typography.size.sm,
+    color: C.text,
+    letterSpacing: -0.2,
+  },
+  providerCat: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: 10,
+    color: C.primary,
+    textTransform: 'capitalize',
+  },
+  providerSpec: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: 10,
+    color: C.textMid,
+    lineHeight: 14,
+    flex: 1,
+  },
+  providerFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: C.border,
+    paddingTop: Spacing[2],
+    marginTop: Spacing[1],
+  },
+  providerExp: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: 10,
+    color: C.accent,
+  },
+  providerCity: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: 10,
+    color: C.textSoft,
+  },
   testimonialCard: {
     backgroundColor: C.surface,
     borderRadius: 22,
@@ -1391,4 +1623,14 @@ const styles = StyleSheet.create({
     color: C.text,
   },
   starsRow: { flexDirection: 'row', gap: 2, marginTop: 3 },
+  otpCard: { backgroundColor: C.surface, borderRadius: Radius.lg, padding: Spacing[4], borderWidth: 1, borderColor: C.primary, ...Shadow.sm, gap: Spacing[3] },
+  otpCardHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3] },
+  otpCardIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: C.primarySurface, alignItems: 'center', justifyContent: 'center' },
+  otpCardTitle: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, color: C.text },
+  otpCardSub: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: C.textMid, marginTop: 2 },
+  otpRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3], backgroundColor: C.primarySurface, borderRadius: Radius.md, padding: Spacing[3] },
+  otpRowName: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: C.text },
+  otpRowTime: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: C.textSoft, marginTop: 2 },
+  otpBadge: { backgroundColor: C.primary, borderRadius: Radius.md, paddingHorizontal: Spacing[4], paddingVertical: Spacing[2] },
+  otpBadgeText: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.xl, color: C.white, letterSpacing: 6 },
 });

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, memo } from 'react';
 import {
   View,
   TextInput,
@@ -20,7 +20,7 @@ interface InputProps extends TextInputProps {
   isPassword?: boolean;
 }
 
-export default function Input({
+function InputInner({
   label,
   error,
   containerStyle,
@@ -70,6 +70,10 @@ export default function Input({
     </View>
   );
 }
+
+const Input = memo(InputInner);
+
+export default Input;
 
 const styles = StyleSheet.create({
   container: {

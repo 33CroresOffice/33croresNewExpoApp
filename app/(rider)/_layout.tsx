@@ -1,10 +1,19 @@
 import { Tabs } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LayoutDashboard, PackageCheck, CalendarDays, CircleUser as UserCircle, ShoppingBag } from 'lucide-react-native';
 import { Colors, Typography } from '@/constants/theme';
+import { useAuthStore } from '@/store/authStore';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
 
 const ACCENT = '#3AAFE4';
 
 export default function RiderLayout() {
+  const insets = useSafeAreaInsets();
+  const { session } = useAuthStore();
+  const userId = session?.user?.id;
+
+  usePushNotifications(userId, true);
+
   return (
     <Tabs
       screenOptions={{
@@ -15,13 +24,14 @@ export default function RiderLayout() {
           backgroundColor: '#0F1E28',
           borderTopColor: 'rgba(255,255,255,0.08)',
           borderTopWidth: 1,
-          height: 64,
-          paddingBottom: 10,
+          height: 72 + insets.bottom,
+          paddingBottom: 12 + insets.bottom,
           paddingTop: 8,
         },
         tabBarLabelStyle: {
           fontFamily: Typography.fontFamily.sansMedium,
           fontSize: 11,
+          lineHeight: 14,
           marginTop: 2,
         },
       }}

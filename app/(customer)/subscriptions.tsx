@@ -11,11 +11,11 @@ import {
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Plus, Package, ChevronRight, TriangleAlert as AlertTriangle, RotateCcw, History, Flower2 } from 'lucide-react-native';
+import { Plus, Package, ChevronRight, TriangleAlert as AlertTriangle, RotateCcw, History, Flower2, Flame } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
-import { Subscription } from '@/types/database';
+import { Subscription, PoojaOrder } from '@/types/database';
 import StatusChip from '@/components/ui/StatusChip';
 import EmptyState from '@/components/ui/EmptyState';
 import { Skeleton } from '@/components/ui/SkeletonLoader';
@@ -48,13 +48,15 @@ export default function SubscriptionsScreen() {
   const [customOrders, setCustomOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [topTab, setTopTab] = useState<'subscription' | 'customize'>('subscription');
+  const [providerBookings, setProviderBookings] = useState<any[]>([]);
+  const [poojaOrders, setPoojaOrders] = useState<PoojaOrder[]>([]);
+  const [topTab, setTopTab] = useState<'subscription' | 'packages' | 'customize' | 'service'>('subscription');
 
   const load = async () => {
     if (!profile) return;
     const { data: { user } } = await supabase.auth.getUser();
     const uid = user?.id ?? profile.id;
-    const [subsRes, customRes] = await Promise.all([
+    const [subsRes, customRes, bookingsRes, poojaRes] = await Promise.all([
       supabase
         .from('subscriptions')
         .select('*, plan:subscription_plans(*), delivery_address:addresses(*)')
@@ -65,9 +67,21 @@ export default function SubscriptionsScreen() {
         .select('*')
         .eq('user_id', uid)
         .order('created_at', { ascending: false }),
+      supabase
+        .from('provider_bookings')
+        .select('id, preferred_date, preferred_time, consultation_mode, notes, status, provider:service_providers(full_name), provider_services(name), provider_pooja_setups(pooja_type:pooja_types(name))')
+        .eq('customer_id', uid)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('pooja_orders')
+        .select('*, plan:subscription_plans(*), address:addresses(*)')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false }),
     ]);
     if (subsRes.data) setSubscriptions(subsRes.data as Subscription[]);
     if (customRes.data) setCustomOrders(customRes.data);
+    if (bookingsRes.data) setProviderBookings(bookingsRes.data);
+    if (poojaRes.data) setPoojaOrders(poojaRes.data as PoojaOrder[]);
     setLoading(false);
     setRefreshing(false);
   };
@@ -195,7 +209,7 @@ export default function SubscriptionsScreen() {
         <Text style={styles.title}>My Orders</Text>
         <TouchableOpacity
           style={styles.addBtn}
-          onPress={() => topTab === 'subscription' ? router.push('/(customer)/plans') : router.push('/(customer)/custom-order')}
+          onPress={() => topTab === 'subscription' ? router.push('/(customer)/plans') : topTab === 'packages' ? router.push('/(customer)/plans') : topTab === 'customize' ? router.push('/(customer)/custom-order') : router.push('/(customer)/services')}
         >
           <Plus size={18} color={Colors.white} />
         </TouchableOpacity>
@@ -209,10 +223,22 @@ export default function SubscriptionsScreen() {
           <Text style={[styles.topTabText, topTab === 'subscription' && styles.topTabTextActive]}>Subscription</Text>
         </TouchableOpacity>
         <TouchableOpacity
+          style={[styles.topTab, topTab === 'packages' && styles.topTabActive]}
+          onPress={() => setTopTab('packages')}
+        >
+          <Text style={[styles.topTabText, topTab === 'packages' && styles.topTabTextActive]}>Packages</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
           style={[styles.topTab, topTab === 'customize' && styles.topTabActive]}
           onPress={() => setTopTab('customize')}
         >
           <Text style={[styles.topTabText, topTab === 'customize' && styles.topTabTextActive]}>Customize</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.topTab, topTab === 'service' && styles.topTabActive]}
+          onPress={() => setTopTab('service')}
+        >
+          <Text style={[styles.topTabText, topTab === 'service' && styles.topTabTextActive]}>Service</Text>
         </TouchableOpacity>
       </View>
 
@@ -261,6 +287,99 @@ export default function SubscriptionsScreen() {
                   {pastSubscriptions.map((sub) => renderCard(sub, true))}
                 </View>
               )}
+            </View>
+          )
+        ) : topTab === 'packages' ? (
+          loading ? (
+            <View style={styles.skeletonList}>
+              {[1, 2].map((k) => (
+                <Skeleton key={k} height={80} borderRadius={12} />
+              ))}
+            </View>
+          ) : poojaOrders.length === 0 ? (
+            <EmptyState
+              icon={<Package size={52} color={Colors.neutral[400]} />}
+              title="No packages yet"
+              description="Your pooja package bookings will appear here"
+              actionLabel="Browse Pooja Packages"
+              onAction={() => router.push('/(customer)/plans')}
+            />
+          ) : (
+            <View style={styles.list}>
+              {poojaOrders.map((order) => (
+                <TouchableOpacity
+                  key={order.id}
+                  style={styles.customCard}
+                  onPress={() => router.push({ pathname: '/(customer)/pooja-order-detail', params: { id: order.id } })}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.customCardTop}>
+                    <View style={styles.panditIconWrap}><Package size={18} color={Colors.accent} /></View>
+                    <View style={styles.customCardInfo}>
+                      <Text style={styles.customCardTitle}>{(order.plan as any)?.name ?? 'Pooja Package'}</Text>
+                      <Text style={styles.customCardDate}>Delivery: {format(new Date(order.delivery_date), 'dd MMM yyyy')} · {order.delivery_time}</Text>
+                    </View>
+                    <StatusChip status={order.status} />
+                  </View>
+                  <View style={styles.panditMeta}>
+                    <Text style={styles.panditMetaText}>Payment: {order.payment_status === 'paid' ? 'Paid' : 'Pending'}</Text>
+                    <Text style={styles.panditMetaText}>₹{(order.total_price / 100).toLocaleString('en-IN')}</Text>
+                  </View>
+                  <View style={styles.customFooter}>
+                    <Text style={styles.customCreated}>Placed {format(new Date(order.created_at), 'dd MMM yyyy')}</Text>
+                    <ChevronRight size={14} color={Colors.textTertiary} />
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )
+        ) : topTab === 'service' ? (
+          loading ? (
+            <View style={styles.skeletonList}>
+              {[1, 2].map((k) => (
+                <Skeleton key={k} height={80} borderRadius={12} />
+              ))}
+            </View>
+          ) : providerBookings.length === 0 ? (
+            <EmptyState
+              icon={<Flame size={52} color={Colors.neutral[400]} />}
+              title="No service bookings yet"
+              description="Book a service for your next pooja ceremony"
+              actionLabel="Browse Services"
+              onAction={() => router.push('/(customer)/services')}
+            />
+          ) : (
+            <View style={styles.list}>
+              {providerBookings.map((booking: any) => {
+                const poojaName = booking.provider_pooja_setups?.pooja_type?.name;
+                const serviceName = poojaName ?? booking.provider_services?.name ?? 'Pandit service';
+                return (
+                  <TouchableOpacity
+                    key={booking.id}
+                    style={styles.customCard}
+                    onPress={() => router.push({ pathname: '/(customer)/service-order-details', params: { id: booking.id } })}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.customCardTop}>
+                      <View style={styles.panditIconWrap}><Flame size={18} color={Colors.accent} /></View>
+                      <View style={styles.customCardInfo}>
+                        <Text style={styles.customCardTitle}>{serviceName}</Text>
+                        <Text style={styles.customCardDate}>
+                          {booking.provider?.full_name ?? 'Pandit'} · {format(new Date(booking.preferred_date), 'dd/MM/yyyy')}
+                        </Text>
+                      </View>
+                      <StatusChip status={booking.status} />
+                    </View>
+                    <View style={styles.panditMeta}>
+                      <Text style={styles.panditMetaText}>{booking.preferred_time}</Text>
+                      <Text style={styles.panditMetaText}>{booking.consultation_mode.replace('_', ' ')}</Text>
+                    </View>
+                    {booking.notes ? (
+                      <Text style={styles.customNote} numberOfLines={2}>Note: {booking.notes}</Text>
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           )
         ) : loading ? (
@@ -443,6 +562,9 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     lineHeight: 18,
   },
+  panditIconWrap: { width: 40, height: 40, borderRadius: Radius.md, backgroundColor: Colors.accentSurface, alignItems: 'center', justifyContent: 'center' },
+  panditMeta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: Spacing[2], borderTopWidth: 1, borderTopColor: Colors.divider },
+  panditMetaText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, textTransform: 'capitalize' },
   customFooter: {
     flexDirection: 'row',
     alignItems: 'center',

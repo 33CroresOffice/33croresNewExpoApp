@@ -22,6 +22,9 @@ verify_jwt = true
 [functions.create-rider-user]
 verify_jwt = true
 
+[functions.create-provider-user]
+verify_jwt = true
+
 [functions.create-vendor-user]
 verify_jwt = true
 
@@ -30,6 +33,9 @@ verify_jwt = false
 
 [functions.generate-orders]
 verify_jwt = false
+
+[functions.send-automated-notifications]
+verify_jwt = true
 
 [functions.send-bulk-notification]
 verify_jwt = true
@@ -51,3 +57,21 @@ verify_jwt = false
 
 [functions.verify-razorpay-payment]
 verify_jwt = true
+
+[functions.create-pooja-order-payment]
+verify_jwt = true
+
+[functions.verify-pooja-order-payment]
+verify_jwt = true
+
+[functions.create-provider-booking-payment]
+verify_jwt = true
+
+[functions.verify-provider-booking-payment]
+verify_jwt = true
+
+[functions.share-pooja-list]
+verify_jwt = true
+
+[functions.pooja-list-view]
+verify_jwt = false

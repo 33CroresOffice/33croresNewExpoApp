@@ -50,6 +50,7 @@ type FormState = {
   emergency_contact_name: string;
   emergency_contact_mobile: string;
   monthly_salary: string;
+  delivery_deadline_time: string;
   notes: string;
   is_active: boolean;
   profile_photo_url: string | null;
@@ -89,6 +90,7 @@ function EditRiderScreenContent() {
     emergency_contact_name: '',
     emergency_contact_mobile: '',
     monthly_salary: '',
+    delivery_deadline_time: '',
     notes: '',
     is_active: true,
     profile_photo_url: null,
@@ -127,6 +129,7 @@ function EditRiderScreenContent() {
         emergency_contact_name: data.emergency_contact_name ?? '',
         emergency_contact_mobile: data.emergency_contact_mobile ?? '',
         monthly_salary: data.monthly_salary != null ? String(data.monthly_salary) : '',
+        delivery_deadline_time: data.delivery_deadline_time ?? '',
         notes: data.notes ?? '',
         is_active: data.is_active ?? true,
         profile_photo_url: data.profile_photo_url ?? null,
@@ -174,6 +177,7 @@ function EditRiderScreenContent() {
       emergency_contact_name: form.emergency_contact_name.trim() || null,
       emergency_contact_mobile: form.emergency_contact_mobile.trim() || null,
       monthly_salary: parseInt(form.monthly_salary) || 0,
+      delivery_deadline_time: form.delivery_deadline_time.trim() || null,
       notes: form.notes.trim(),
       is_active: form.is_active,
       profile_photo_url: form.profile_photo_url || null,
@@ -365,6 +369,7 @@ function EditRiderScreenContent() {
                 />
               </View>
             </Row>
+            <Field label="Delivery Deadline Time (HH:MM, 24hr IST)" value={form.delivery_deadline_time} onChange={p('delivery_deadline_time')} placeholder="e.g. 12:00 — leave empty for no limit" />
             <Field label="Internal Notes" value={form.notes} onChange={p('notes')} placeholder="Any additional notes about this rider…" multiline />
             <View style={s.toggleRow}>
               <View style={s.toggleLeft}>

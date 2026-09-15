@@ -69,7 +69,8 @@ export default function VendorLoginScreen() {
         return;
       }
 
-      // Routing is handled by onAuthStateChange in _layout.tsx
+      setLoading(false);
+      router.replace('/(vendor)');
     } catch {
       setError('Something went wrong. Please try again.');
       setLoading(false);

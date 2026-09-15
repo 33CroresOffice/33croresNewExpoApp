@@ -14,6 +14,7 @@ import { supabase } from '@/lib/supabase';
 import { Order } from '@/types/database';
 import StepTracker from '@/components/ui/StepTracker';
 import StatusChip from '@/components/ui/StatusChip';
+import TodaysFlowerPack from '@/components/ui/TodaysFlowerPack';
 import { format } from 'date-fns';
 
 export default function OrderDetailScreen() {
@@ -158,6 +159,10 @@ export default function OrderDetailScreen() {
             </>
           )}
         </View>
+
+        {sub?.plan?.id && (
+          <TodaysFlowerPack planId={sub.plan.id} deliveryDate={selectedDate ?? order.scheduled_date} />
+        )}
 
         {assignment?.rider && (
           <View style={styles.infoCard}>

@@ -25,6 +25,7 @@ interface LedgerEntry {
   description: string;
   party_name: string | null;
   payment_method: string | null;
+  running_balance: number | null;
   created_at: string;
 }
 
@@ -223,6 +224,7 @@ function LedgerScreenContent() {
                 <Text style={[s.thCell, { flex: 2 }]}>Party</Text>
                 <Text style={[s.thCell, { width: 70, textAlign: 'center' }]}>Type</Text>
                 <Text style={[s.thCell, { width: 100, textAlign: 'right' }]}>Amount</Text>
+                <Text style={[s.thCell, { width: 110, textAlign: 'right' }]}>Balance</Text>
               </View>
               {filtered.length === 0 ? (
                 <View style={s.emptyState}>
@@ -254,6 +256,9 @@ function LedgerScreenContent() {
                       </View>
                       <Text style={[s.tdCell, { width: 100, textAlign: 'right', fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: e.entry_type === 'credit' ? Colors.success : Colors.error }]}>
                         {e.entry_type === 'credit' ? '+' : '−'}{fmt(e.amount)}
+                      </Text>
+                      <Text style={[s.tdCell, { width: 110, textAlign: 'right', fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary }]}>
+                        {e.running_balance != null ? fmt(e.running_balance) : '—'}
                       </Text>
                     </View>
                   ))}

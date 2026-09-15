@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -18,6 +18,7 @@ interface Props {
   value: string | null;
   onChange: (url: string | null) => void;
   storagePath: string;
+  bucket?: string;
   aspectRatio?: [number, number];
   hint?: string;
 }
@@ -27,11 +28,19 @@ export default function PhotoUploadField({
   value,
   onChange,
   storagePath,
+  bucket = 'riders',
   aspectRatio = [4, 3],
   hint,
 }: Props) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!value) { setPreviewUrl(null); return; }
+    if (bucket === 'riders') { setPreviewUrl(value); return; }
+    supabase.storage.from(bucket).createSignedUrl(value, 3600).then(({ data }) => setPreviewUrl(data?.signedUrl ?? null));
+  }, [bucket, value]);
 
   const pickAndUpload = async () => {
     setError(null);
@@ -49,6 +58,7 @@ export default function PhotoUploadField({
       allowsEditing: true,
       aspect: aspectRatio,
       quality: 0.8,
+      base64: true,
     });
 
     if (result.canceled || !result.assets?.[0]) return;
@@ -57,24 +67,32 @@ export default function PhotoUploadField({
     setUploading(true);
 
     try {
-      const ext = asset.uri.split('.').pop()?.toLowerCase() ?? 'jpg';
-      const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
-      const filePath = `${storagePath}.${ext}`;
+      const mimeType = asset.mimeType === 'image/png' ? 'image/png' : 'image/jpeg';
+      const ext = mimeType === 'image/png' ? 'png' : 'jpg';
+      const filePath = bucket === 'provider-photos'
+        ? `${storagePath}-${Date.now()}.${ext}`
+        : `${storagePath}.${ext}`;
 
-      const response = await fetch(asset.uri);
-      const blob = await response.blob();
-      const arrayBuffer = await blob.arrayBuffer();
+      const uploadBody = Platform.OS === 'web'
+        ? await (await fetch(asset.uri)).blob()
+        : Uint8Array.from(atob(asset.base64 ?? ''), (character) => character.charCodeAt(0));
 
       const { error: uploadError } = await supabase.storage
-        .from('riders')
-        .upload(filePath, arrayBuffer, { contentType: mimeType, upsert: true });
+        .from(bucket)
+        .upload(filePath, uploadBody, { contentType: mimeType, upsert: bucket !== 'provider-photos' });
 
       if (uploadError) throw uploadError;
 
-      const { data: urlData } = supabase.storage.from('riders').getPublicUrl(filePath);
-      onChange(`${urlData.publicUrl}?t=${Date.now()}`);
-    } catch (e: any) {
-      setError(e?.message ?? 'Upload failed. Please try again.');
+      if (bucket === 'provider-photos') {
+        setPreviewUrl(asset.uri);
+      } else {
+        const { data: signedData } = await supabase.storage.from(bucket).createSignedUrl(filePath, 3600);
+        setPreviewUrl(signedData?.signedUrl ?? null);
+      }
+      onChange(filePath);
+    } catch (e: unknown) {
+      console.error('Photo upload failed', e);
+      setError('Upload failed. Please try again.');
     } finally {
       setUploading(false);
     }
@@ -89,7 +107,7 @@ export default function PhotoUploadField({
 
       {value ? (
         <View style={st.previewWrap}>
-          <Image source={{ uri: value }} style={st.preview} resizeMode="cover" />
+          <Image source={previewUrl ? { uri: previewUrl } : undefined} style={st.preview} resizeMode="cover" />
           <View style={st.previewActions}>
             <TouchableOpacity style={st.replaceBtn} onPress={pickAndUpload} activeOpacity={0.8} disabled={uploading}>
               {uploading ? (

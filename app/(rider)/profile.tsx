@@ -110,6 +110,9 @@ export default function RiderProfile() {
     .filter((p) => p.status === 'paid')
     .reduce((s, p) => s + p.final_amount, 0);
 
+  const hasCompensation = rider !== null && [rider.monthly_salary, rider.per_delivery_rate]
+    .some((value) => typeof value === 'number' && Number.isFinite(value) && value > 0);
+
   const renderInfoRow = (Icon: any, label: string, value: string | null, accent?: string) => {
     if (!value) return null;
     return (
@@ -227,13 +230,15 @@ export default function RiderProfile() {
               </View>
             </View>
 
-            <View style={wStyles.card}>
-              <Text style={wStyles.cardTitle}>Compensation</Text>
-              <View style={wStyles.infoGrid}>
-                {renderInfoRow(CircleDollarSign, 'Monthly Salary', rider.monthly_salary ? formatCurrency(rider.monthly_salary) : null, Colors.accent)}
-                {renderInfoRow(CircleDollarSign, 'Per Delivery Rate', rider.per_delivery_rate ? formatCurrency(rider.per_delivery_rate) : null, Colors.accent)}
+            {hasCompensation && (
+              <View style={wStyles.card}>
+                <Text style={wStyles.cardTitle}>Compensation</Text>
+                <View style={wStyles.infoGrid}>
+                  {renderInfoRow(CircleDollarSign, 'Monthly Salary', rider.monthly_salary ? formatCurrency(rider.monthly_salary) : null, Colors.accent)}
+                  {renderInfoRow(CircleDollarSign, 'Per Delivery Rate', rider.per_delivery_rate ? formatCurrency(rider.per_delivery_rate) : null, Colors.accent)}
+                </View>
               </View>
-            </View>
+            )}
 
             <View style={[wStyles.card, { padding: 0 }]}>
               <Text style={[wStyles.cardTitle, { paddingHorizontal: 20, paddingTop: 20 }]}>Payout History</Text>
@@ -363,13 +368,15 @@ export default function RiderProfile() {
               </View>
             )}
 
-            <View style={mStyles.section}>
-              <Text style={mStyles.sectionTitle}>Compensation</Text>
-              <View style={mStyles.infoCard}>
-                {renderInfoRow(CircleDollarSign, 'Monthly Salary', rider.monthly_salary ? formatCurrency(rider.monthly_salary) : null, Colors.accent)}
-                {renderInfoRow(CircleDollarSign, 'Per Delivery', rider.per_delivery_rate ? formatCurrency(rider.per_delivery_rate) : null, Colors.accent)}
+            {hasCompensation && (
+              <View style={mStyles.section}>
+                <Text style={mStyles.sectionTitle}>Compensation</Text>
+                <View style={mStyles.infoCard}>
+                  {renderInfoRow(CircleDollarSign, 'Monthly Salary', rider.monthly_salary ? formatCurrency(rider.monthly_salary) : null, Colors.accent)}
+                  {renderInfoRow(CircleDollarSign, 'Per Delivery', rider.per_delivery_rate ? formatCurrency(rider.per_delivery_rate) : null, Colors.accent)}
+                </View>
               </View>
-            </View>
+            )}
 
             {payouts.length > 0 && (
               <View style={mStyles.section}>

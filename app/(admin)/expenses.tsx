@@ -6,7 +6,7 @@ import {
   Modal, TextInput, Platform, ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Receipt, Plus, X, Pencil, ArrowLeft, Search, ChevronDown } from 'lucide-react-native';
+import { Receipt, Plus, X, Pencil, Trash2, ArrowLeft, Search, ChevronDown } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { format } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
@@ -93,6 +93,9 @@ function ExpensesScreenContent() {
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState<ExpenseCategory | 'all'>('all');
 
+  const [showDelete, setShowDelete] = useState<Expense | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
   const load = useCallback(async () => {
     try {
       const { data } = await supabase.from('expenses').select('*').order('expense_date', { ascending: false }).order('created_at', { ascending: false });
@@ -136,12 +139,18 @@ function ExpensesScreenContent() {
       notes: form.notes.trim(),
       recorded_by: profile?.id ?? null,
     };
-    const { error: err } = editing
-      ? await supabase.from('expenses').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', editing.id)
-      : await supabase.from('expenses').insert(payload);
+    let expenseId = editing?.id ?? null;
+    let err = null;
+    if (editing) {
+      ({ error: err } = await supabase.from('expenses').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', editing.id));
+    } else {
+      const result = await supabase.from('expenses').insert(payload).select('id').single();
+      err = result.error;
+      expenseId = result.data?.id ?? null;
+    }
     setSaving(false);
     if (err) { setError(err.message); return; }
-    if (!editing) {
+    if (!editing && expenseId) {
       await supabase.from('finance_ledger').insert({
         entry_date: payload.expense_date,
         entry_type: 'debit',
@@ -150,10 +159,33 @@ function ExpensesScreenContent() {
         description: payload.description,
         party_name: payload.vendor_name,
         payment_method: payload.payment_method,
+        reference_id: expenseId,
+        reference_table: 'expenses',
         recorded_by: profile?.id ?? null,
       });
+    } else if (editing) {
+      await supabase.from('finance_ledger')
+        .update({
+          entry_date: payload.expense_date,
+          amount: amt,
+          description: payload.description,
+          party_name: payload.vendor_name,
+          payment_method: payload.payment_method,
+        })
+        .eq('reference_id', editing.id)
+        .eq('reference_table', 'expenses');
     }
     setShowModal(false);
+    load();
+  };
+
+  const confirmDelete = async () => {
+    if (!showDelete) return;
+    setDeleting(true);
+    await supabase.from('finance_ledger').delete().eq('reference_id', showDelete.id).eq('reference_table', 'expenses');
+    await supabase.from('expenses').delete().eq('id', showDelete.id);
+    setDeleting(false);
+    setShowDelete(null);
     load();
   };
 
@@ -266,6 +298,9 @@ function ExpensesScreenContent() {
                       <TouchableOpacity style={[s.tdCell, { width: 40, alignItems: 'center' }]} onPress={() => openEdit(e)}>
                         <Pencil size={14} color={Colors.textTertiary} strokeWidth={1.8} />
                       </TouchableOpacity>
+                      <TouchableOpacity style={[s.tdCell, { width: 40, alignItems: 'center' }]} onPress={() => setShowDelete(e)}>
+                        <Trash2 size={14} color={Colors.error} strokeWidth={1.8} />
+                      </TouchableOpacity>
                     </View>
                   ))}
                   <View style={s.tableFooter}>
@@ -334,6 +369,32 @@ function ExpensesScreenContent() {
               </TouchableOpacity>
               <TouchableOpacity style={s.saveBtn} onPress={save} disabled={saving}>
                 {saving ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={s.saveBtnText}>{editing ? 'Update' : 'Save Expense'}</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={!!showDelete} transparent animationType="fade" onRequestClose={() => setShowDelete(null)}>
+        <View style={s.overlay}>
+          <View style={[s.modal, s.modalWeb, { maxWidth: 400 }]}>
+            <View style={s.modalHeader}>
+              <Text style={s.modalTitle}>Delete Expense</Text>
+              <TouchableOpacity onPress={() => setShowDelete(null)}><X size={18} color={Colors.textSecondary} /></TouchableOpacity>
+            </View>
+            <Text style={s.deleteConfirmText}>Are you sure you want to delete this expense? This will also remove the corresponding ledger entry.</Text>
+            {showDelete && (
+              <View style={s.deletePreview}>
+                <Text style={s.deletePreviewDesc}>{showDelete.description}</Text>
+                <Text style={s.deletePreviewAmt}>{fmt(showDelete.amount)}</Text>
+              </View>
+            )}
+            <View style={s.modalFooter}>
+              <TouchableOpacity style={s.cancelBtn} onPress={() => setShowDelete(null)}>
+                <Text style={s.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[s.saveBtn, { backgroundColor: Colors.error }]} onPress={confirmDelete} disabled={deleting}>
+                {deleting ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={s.saveBtnText}>Delete</Text>}
               </TouchableOpacity>
             </View>
           </View>
@@ -457,4 +518,8 @@ const s = StyleSheet.create({
   cancelBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textSecondary },
   saveBtn: { flex: 2, paddingVertical: Spacing[3], borderRadius: Radius.md, backgroundColor: Colors.primary, alignItems: 'center' },
   saveBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.white },
+  deleteConfirmText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textSecondary, lineHeight: 22, marginBottom: Spacing[3] },
+  deletePreview: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: Colors.neutral[50], borderRadius: Radius.md, padding: Spacing[3], marginBottom: Spacing[3] },
+  deletePreviewDesc: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textPrimary, flex: 1 },
+  deletePreviewAmt: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, color: Colors.error },
 });

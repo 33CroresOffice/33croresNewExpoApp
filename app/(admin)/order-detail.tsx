@@ -406,7 +406,19 @@ const handleAssign = async () => {
   const latestPayment = sub?.payments?.length
     ? sub.payments[0]
     : null;
-  const isPaused = sub?.status === 'paused';
+  const today = new Date().toISOString().split('T')[0];
+  const hasActivePauseInHistory = pauseHistory.some(
+    (ph: any) =>
+      !ph.is_cancelled &&
+      !ph.resumed_at &&
+      ph.pause_start_date <= today &&
+      ph.pause_until >= today
+  );
+  const isPaused = Boolean(
+    sub?.status === 'paused' ||
+    (sub?.pause_start_date && sub?.pause_until && sub.pause_start_date <= today && sub.pause_until >= today) ||
+    hasActivePauseInHistory
+  );
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -525,7 +537,9 @@ const handleAssign = async () => {
                   <View style={styles.summaryRow}>
                     <Text style={styles.summaryLabel}>Paused Until</Text>
                     <Text style={[styles.summaryValue, { color: Colors.warning }]}>
-                      {sub.pause_until ? format(new Date(sub.pause_until), 'dd MMM, yyyy') : '—'}
+                      {(sub.pause_until || pauseHistory.find((ph: any) => !ph.is_cancelled && !ph.resumed_at && ph.pause_start_date <= today && ph.pause_until >= today)?.pause_until)
+                        ? format(new Date(sub.pause_until ?? pauseHistory.find((ph: any) => !ph.is_cancelled && !ph.resumed_at && ph.pause_start_date <= today && ph.pause_until >= today)!.pause_until), 'dd MMM, yyyy')
+                        : '—'}
                     </Text>
                   </View>
                 </>

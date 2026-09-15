@@ -3,7 +3,8 @@ import { View, Text, StyleSheet, TouchableOpacity, Platform, Animated } from 're
 import { Tabs, router, usePathname } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Hop as Home, Package, ClipboardList, User, Layers, IndianRupee, X, Sparkles, Sun } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Hop as Home, Package, ClipboardList, User, Layers, IndianRupee, X, Sparkles, Sun, BriefcaseBusiness } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -11,8 +12,8 @@ import { usePushNotifications } from '@/hooks/usePushNotifications';
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 
-const TAB_BAR_HEIGHT = Platform.OS === 'ios' ? 88 : Platform.OS === 'web' ? 60 : 64;
-const TAB_BAR_PADDING_BOTTOM = Platform.OS === 'ios' ? 28 : Platform.OS === 'web' ? 8 : 10;
+const TAB_BAR_HEIGHT = Platform.OS === 'web' ? 72 : 68;
+const TAB_BAR_PADDING_BOTTOM = Platform.OS === 'web' ? 8 : 8;
 
 type PendingOrder = {
   id: string;
@@ -21,6 +22,7 @@ type PendingOrder = {
 };
 
 function PendingPaymentBanner() {
+  const insets = useSafeAreaInsets();
   const { session } = useAuthStore();
   const pathname = usePathname();
   const [pendingOrder, setPendingOrder] = useState<PendingOrder | null>(null);
@@ -79,7 +81,7 @@ function PendingPaymentBanner() {
     <Animated.View
       style={[
         styles.bannerOuter,
-        { transform: [{ translateY: slideAnim }], opacity: opacityAnim },
+        { bottom: TAB_BAR_HEIGHT + insets.bottom, transform: [{ translateY: slideAnim }], opacity: opacityAnim },
       ]}
     >
       <LinearGradient
@@ -187,6 +189,45 @@ function useLoginLogger() {
   }, [session?.user?.id]);
 }
 
+function CustomerBottomNav() {
+  const pathname = usePathname();
+  const insets = useSafeAreaInsets();
+  const bottomInset = Platform.OS === 'web' ? 0 : insets.bottom;
+  const items = [
+    { name: 'Home', path: '/(customer)', icon: Home },
+    { name: 'Plans', path: '/(customer)/plans', icon: Layers },
+    { name: 'Services', path: '/(customer)/services', icon: BriefcaseBusiness },
+    { name: 'Orders', path: '/(customer)/subscriptions', icon: Package },
+    { name: 'Panji', path: '/(customer)/panji', icon: Sun },
+    { name: 'Profile', path: '/(customer)/profile', icon: User },
+  ];
+
+  return (
+    <View style={[styles.tabBar, { height: TAB_BAR_HEIGHT + bottomInset, paddingBottom: bottomInset }]}>
+      {items.map((item) => {
+        const Icon = item.icon;
+        const isActive = item.name === 'Home'
+          ? pathname === '/(customer)' || pathname === '/'
+          : pathname?.endsWith(item.path.split('/').pop() ?? '');
+        const color = isActive ? Colors.tabBarActive : Colors.tabBarInactive;
+        return (
+          <TouchableOpacity
+            key={item.name}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: isActive }}
+            onPress={() => router.push(item.path as never)}
+            style={styles.tabBarItem}
+            activeOpacity={0.75}
+          >
+            <Icon size={22} color={color} strokeWidth={1.8} />
+            <Text style={[styles.tabBarLabel, { color }]}>{item.name}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
 function usePushTokenRegistration() {
   const { session } = useAuthStore();
   const userId = session?.user?.id;
@@ -210,6 +251,8 @@ function usePushTokenRegistration() {
 }
 
 export default function CustomerLayout() {
+  const insets = useSafeAreaInsets();
+  const bottomInset = Platform.OS === 'web' ? 0 : insets.bottom;
   useLoginLogger();
   usePushTokenRegistration();
   return (
@@ -217,20 +260,7 @@ export default function CustomerLayout() {
       <Tabs
         screenOptions={{
           headerShown: false,
-          tabBarActiveTintColor: Colors.tabBarActive,
-          tabBarInactiveTintColor: Colors.tabBarInactive,
-          tabBarStyle: {
-            backgroundColor: Colors.tabBar,
-            borderTopColor: Colors.tabBarBorder,
-            borderTopWidth: 1,
-            height: TAB_BAR_HEIGHT,
-            paddingBottom: TAB_BAR_PADDING_BOTTOM,
-            paddingTop: 8,
-          },
-          tabBarLabelStyle: {
-            fontFamily: Typography.fontFamily.sansMedium,
-            fontSize: 11,
-          },
+          tabBarStyle: { display: 'none' },
         }}
       >
         <Tabs.Screen
@@ -248,13 +278,20 @@ export default function CustomerLayout() {
           }}
         />
         <Tabs.Screen
+          name="services"
+          options={{
+            title: 'Services',
+            tabBarIcon: ({ color, size }) => <BriefcaseBusiness size={size} color={color} strokeWidth={1.8} />,
+          }}
+        />
+        <Tabs.Screen
           name="subscriptions"
           options={{
             title: 'Orders',
             tabBarIcon: ({ color, size }) => <Package size={size} color={color} strokeWidth={1.8} />,
           }}
         />
-        <Tabs.Screen name="orders" options={{ href: null }} />
+        <Tabs.Screen name="orders" options={{ tabBarButton: () => null }} />
         <Tabs.Screen
           name="panji"
           options={{
@@ -269,35 +306,66 @@ export default function CustomerLayout() {
             tabBarIcon: ({ color, size }) => <User size={size} color={color} strokeWidth={1.8} />,
           }}
         />
-        <Tabs.Screen name="about" options={{ href: null }} />
-        <Tabs.Screen name="custom-order" options={{ href: null }} />
-        <Tabs.Screen name="address-form" options={{ href: null }} />
-        <Tabs.Screen name="addresses" options={{ href: null }} />
-        <Tabs.Screen name="checkout" options={{ href: null }} />
-        <Tabs.Screen name="confirmation" options={{ href: null }} />
-        <Tabs.Screen name="edit-profile" options={{ href: null }} />
-        <Tabs.Screen name="help" options={{ href: null }} />
-        <Tabs.Screen name="notifications" options={{ href: null }} />
-        <Tabs.Screen name="order-detail" options={{ href: null }} />
-        <Tabs.Screen name="plan-detail" options={{ href: null }} />
-        <Tabs.Screen name="privacy" options={{ href: null }} />
-        <Tabs.Screen name="subscription-detail" options={{ href: null }} />
-        <Tabs.Screen name="terms" options={{ href: null }} />
-        <Tabs.Screen name="receipt" options={{ href: null }} />
-        <Tabs.Screen name="payment-callback" options={{ href: null }} />
-        <Tabs.Screen name="custom-order-detail" options={{ href: null }} />
-        <Tabs.Screen name="delivery-history" options={{ href: null }} />
-        <Tabs.Screen name="notification-feed" options={{ href: null }} />
+        <Tabs.Screen name="about" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="custom-order" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="address-form" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="addresses" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="checkout" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="pooja-checkout" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="confirmation" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="edit-profile" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="help" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="notifications" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="order-detail" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="plan-detail" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="privacy" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="subscription-detail" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="terms" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="receipt" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="payment-callback" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="custom-order-detail" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="delivery-history" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="notification-feed" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="pooja-list-view" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="service-provider" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="service-order-details" options={{ tabBarButton: () => null }} />
+        <Tabs.Screen name="provider-booking-payment" options={{ tabBarButton: () => null }} />
       </Tabs>
+      <CustomerBottomNav />
       <PendingPaymentBanner />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  tabBar: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    justifyContent: 'space-around',
+    backgroundColor: Colors.tabBar,
+    borderTopColor: Colors.tabBarBorder,
+    borderTopWidth: 1,
+    paddingTop: 6,
+    width: '100%',
+    overflow: 'hidden',
+  },
+  tabBarItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 0,
+    paddingHorizontal: 2,
+    paddingVertical: 2,
+    gap: 3,
+  },
+  tabBarLabel: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: 11,
+    lineHeight: 14,
+    textAlign: 'center',
+  },
   bannerOuter: {
     position: 'absolute',
-    bottom: TAB_BAR_HEIGHT,
     left: 0,
     right: 0,
     shadowColor: '#000',
