@@ -2,6 +2,13 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
+// Applied only once google-services.json is placed in this folder (see FCM setup:
+// https://docs.expo.dev/push-notifications/fcm-credentials/). Without it, push
+// notifications fail at runtime with "Default FirebaseApp is not initialized".
+if (file("google-services.json").exists()) {
+    apply plugin: "com.google.gms.google-services"
+}
+
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 
 /**
@@ -92,8 +99,8 @@ android {
         applicationId 'com.thirtythreecroresapp'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 49
-        versionName "3.2.5"
+        versionCode 57
+        versionName "3.2.8"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }

@@ -2,7 +2,7 @@
   "expo": {
     "name": "33 Crores",
     "slug": "33-crores",
-    "version": "3.2.5",
+    "version": "3.2.8",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "thirtythreecrores",
@@ -19,7 +19,7 @@
     },
     "android": {
       "package": "com.thirtythreecroresapp",
-      "versionCode": 49,
+      "versionCode": 57,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#FFFFFF"
@@ -44,11 +44,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "cff9a949-5286-4982-bbbf-698b6060e89f"
+        "projectId": "f70f550f-fff1-48f9-8e82-0b81ce65f4a1"
       }
     },
-    "experiments": {
-      "typedRoutes": true
-    }
+    "owner": "33croresdev"
   }
 }
