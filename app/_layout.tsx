@@ -29,6 +29,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import VersionCheck from 'react-native-version-check';
+import * as Notifications from 'expo-notifications';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -115,6 +116,24 @@ export default function RootLayout() {
   useFrameworkReady();
 
   const { setSession, loadProfile, setLoading, isLoading, loadActivePanel } = useAuthStore();
+
+  useEffect(() => {
+    const navigateFromNotification = (response: Notifications.NotificationResponse) => {
+      const role = useAuthStore.getState().profile?.role;
+      if (role === 'admin' || role === 'vendor') return;
+      router.push('/(customer)/notifications');
+    };
+
+    Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (response) navigateFromNotification(response);
+    });
+
+    const subscription = Notifications.addNotificationResponseReceivedListener(
+      navigateFromNotification,
+    );
+
+    return () => subscription.remove();
+  }, []);
   const pathname = usePathname();
   const pathnameRef = React.useRef(pathname);
   pathnameRef.current = pathname;

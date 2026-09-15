@@ -25,8 +25,10 @@
         "backgroundColor": "#FFFFFF"
       },
       "permissions": [
-        "INTERNET"
-      ]
+        "INTERNET",
+        "POST_NOTIFICATIONS"
+      ],
+      "googleServicesFile": "./android/app/google-services.json"
     },
     "web": {
       "bundler": "metro",
@@ -36,7 +38,14 @@
     "plugins": [
       "expo-router",
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#FFFFFF"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

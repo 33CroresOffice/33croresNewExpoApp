@@ -28,6 +28,15 @@ export async function registerForPushNotificationsAsync(userId: string): Promise
   }
 
   try {
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'Default',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#FF231F7C',
+      });
+    }
+
     const { status: existing } = await Notifications.getPermissionsAsync();
     let finalStatus = existing;
 
