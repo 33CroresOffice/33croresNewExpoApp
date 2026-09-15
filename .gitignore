@@ -16,6 +16,7 @@ expo-env.d.ts
 *.mobileprovision
 android/app/google-services.json
 ios/GoogleService-Info.plist
+*firebase-adminsdk*.json
 
 # metro
 .metro-health-check*

@@ -72,6 +72,7 @@ export async function registerForPushNotificationsAsync(userId: string): Promise
       return null;
     }
 
+    console.log('[push] Expo push token:', token);
     return token;
   } catch (err) {
     console.error('[push] Registration failed:', err);
