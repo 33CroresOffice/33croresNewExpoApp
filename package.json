@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "android": "expo run:android",
     "ios": "expo run:ios",
+    "apply-client": "node scripts/apply-client.js",
     "clean:android": "rimraf android/app/build android/build android/app/.cxx android/.gradle",
     "release:apk": "cd android && gradlew.bat assembleRelease --no-daemon",
     "release:aab": "cd android && gradlew.bat bundleRelease --no-daemon"

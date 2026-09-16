@@ -260,7 +260,7 @@ export default function RootLayout() {
         } else {
           setLoading(false);
           initDone = true;
-          const portalPaths = ['/admin/login', '/vendor/login', '/rider/login', '/auth/'];
+          const portalPaths = ['/admin/login', '/vendor/login', '/rider/login', '/provider/login', '/auth/'];
           const isOnPortal = portalPaths.some((p) => pathnameRef.current.startsWith(p));
           if (!isOnPortal) {
             router.replace('/auth/mobile');

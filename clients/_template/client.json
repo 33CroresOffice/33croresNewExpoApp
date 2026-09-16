@@ -1,0 +1,26 @@
+{
+  "id": "your-client-id",
+  "name": "Client App Name",
+  "slug": "client-app-slug",
+  "scheme": "clientappscheme",
+  "version": "1.0.0",
+  "owner": "your-eas-account",
+  "easProjectId": "",
+  "primaryColor": "#2D5A27",
+  "splashBackgroundColor": "#FFFFFF",
+  "initialRoute": "/auth/mobile",
+  "android": {
+    "package": "com.example.clientapp",
+    "versionCode": 1
+  },
+  "ios": {
+    "bundleIdentifier": "com.example.clientapp"
+  },
+  "assets": {
+    "icon": "icon.png",
+    "adaptiveIcon": "icon.png",
+    "splash": "icon.png",
+    "favicon": "favicon.png",
+    "googleServicesFile": "google-services.json"
+  }
+}

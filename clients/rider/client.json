@@ -1,0 +1,26 @@
+{
+  "id": "rider",
+  "name": "33 Crores Rider",
+  "slug": "33-crores-rider",
+  "scheme": "thirtythreecroresrider",
+  "version": "1.0.0",
+  "owner": "33croresdev",
+  "easProjectId": "",
+  "primaryColor": "#3AAFE4",
+  "splashBackgroundColor": "#FFFFFF",
+  "initialRoute": "/rider/login",
+  "android": {
+    "package": "com.thirtythreecroresapp.rider",
+    "versionCode": 1
+  },
+  "ios": {
+    "bundleIdentifier": "com.thirtythreecroresapp.rider"
+  },
+  "assets": {
+    "icon": "icon.png",
+    "adaptiveIcon": "icon.png",
+    "splash": "icon.png",
+    "favicon": "favicon.png",
+    "googleServicesFile": "google-services.json"
+  }
+}

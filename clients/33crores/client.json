@@ -1,0 +1,26 @@
+{
+  "id": "33crores",
+  "name": "33 Crores",
+  "slug": "33-crores",
+  "scheme": "thirtythreecrores",
+  "version": "3.2.8",
+  "owner": "33croresdev",
+  "easProjectId": "f70f550f-fff1-48f9-8e82-0b81ce65f4a1",
+  "primaryColor": "#FF6B35",
+  "splashBackgroundColor": "#FFFFFF",
+  "initialRoute": "/auth/mobile",
+  "android": {
+    "package": "com.thirtythreecroresapp",
+    "versionCode": 57
+  },
+  "ios": {
+    "bundleIdentifier": "com.thirtythreecroresapp"
+  },
+  "assets": {
+    "icon": "icon.png",
+    "adaptiveIcon": "icon.png",
+    "splash": "icon.png",
+    "favicon": "favicon.png",
+    "googleServicesFile": "google-services.json"
+  }
+}

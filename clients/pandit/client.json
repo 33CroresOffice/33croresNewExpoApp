@@ -1,0 +1,26 @@
+{
+  "id": "pandit",
+  "name": "33 Crores Pandit",
+  "slug": "33-crores-pandit",
+  "scheme": "thirtythreecrorespandit",
+  "version": "1.0.0",
+  "owner": "33croresdev",
+  "easProjectId": "",
+  "primaryColor": "#FF6B35",
+  "splashBackgroundColor": "#FFFFFF",
+  "initialRoute": "/provider/login",
+  "android": {
+    "package": "com.thirtythreecroresapp.pandit",
+    "versionCode": 1
+  },
+  "ios": {
+    "bundleIdentifier": "com.thirtythreecroresapp.pandit"
+  },
+  "assets": {
+    "icon": "icon.png",
+    "adaptiveIcon": "icon.png",
+    "splash": "icon.png",
+    "favicon": "favicon.png",
+    "googleServicesFile": "google-services.json"
+  }
+}
