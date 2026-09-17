@@ -1,4 +1,4 @@
-package com.thirtythreecroresapp
+package com.thirtythreecroresapp.rider
 
 import android.app.Application
 import android.content.res.Configuration

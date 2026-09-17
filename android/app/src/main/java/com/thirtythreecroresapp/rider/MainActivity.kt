@@ -1,4 +1,4 @@
-package com.thirtythreecroresapp
+package com.thirtythreecroresapp.rider
 import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build
