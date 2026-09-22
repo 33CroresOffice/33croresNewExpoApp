@@ -209,6 +209,14 @@ export default function OtpVerifyScreen() {
             {error ? <Text style={styles.error}>{error}</Text> : null}
           </View>
 
+          {mobile === '9876543210' && (
+            <View style={styles.demoHint}>
+              <Text style={styles.demoHintText}>
+                Demo account: use OTP 123456 to sign in.
+              </Text>
+            </View>
+          )}
+
           <TouchableOpacity
             style={[styles.verifyBtn, !canVerify && styles.verifyBtnDisabled]}
             onPress={handleVerify}
@@ -361,6 +369,20 @@ const styles = StyleSheet.create({
     fontFamily: Typography.fontFamily.sansRegular,
     fontSize: Typography.size.sm,
     color: Colors.error,
+    textAlign: 'center',
+  },
+  demoHint: {
+    backgroundColor: Colors.primarySurface,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing[4],
+    paddingVertical: Spacing[3],
+    borderWidth: 1,
+    borderColor: Colors.primary + '30',
+  },
+  demoHintText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.sm,
+    color: Colors.primary,
     textAlign: 'center',
   },
   verifyBtn: {

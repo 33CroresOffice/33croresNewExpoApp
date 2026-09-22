@@ -1,14 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, TextInput, RefreshControl } from 'react-native';
 import { router } from 'expo-router';
-import { Search, Sparkles, Flame, Package, CalendarClock, Clock3, IndianRupee, CheckCircle2, Clock, XCircle } from 'lucide-react-native';
+import { Search, Package, CalendarClock, Clock3, IndianRupee, CheckCircle2, Clock } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import ModuleGuard from '@/components/admin/ModuleGuard';
 
 type PoojaOrder = {
   id: string;
-  type: 'pooja_package';
   customer_name: string;
   customer_mobile: string;
   delivery_date: string;
@@ -20,24 +19,6 @@ type PoojaOrder = {
   plan_name: string;
 };
 
-type PanditBooking = {
-  id: string;
-  type: 'pandit_booking';
-  customer_name: string;
-  customer_mobile: string;
-  preferred_date: string;
-  preferred_time: string;
-  status: string;
-  total_amount: number;
-  advance_payment_status: string;
-  remaining_payment_status: string;
-  created_at: string;
-  service_name: string;
-  provider_name: string;
-};
-
-type PackageItem = (PoojaOrder | PanditBooking) & { sortDate: string };
-
 const STATUS_TABS = [
   { key: 'all', label: 'All' },
   { key: 'active', label: 'Active' },
@@ -45,54 +26,57 @@ const STATUS_TABS = [
   { key: 'cancelled', label: 'Cancelled' },
 ] as const;
 
-const ACTIVE_STATUSES = ['pending', 'confirmed', 'processing', 'out_for_delivery', 'request_sent', 'awaiting_advance_payment', 'booking_confirmed', 'pandit_on_the_way', 'pandit_arrived', 'pooja_in_progress'];
+const ACTIVE_STATUSES = ['pending', 'confirmed', 'processing', 'out_for_delivery'];
 
 export default function PackageManagementScreen() {
   return <ModuleGuard module="service_providers"><PackageManagementContent /></ModuleGuard>;
 }
 
 function PackageManagementContent() {
-  const [items, setItems] = useState<PackageItem[]>([]);
+  const [items, setItems] = useState<PoojaOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
 
   const load = useCallback(async () => {
-    const [poojaRes, bookingRes] = await Promise.all([
-      supabase.from('pooja_orders').select('id, delivery_date, delivery_time, status, payment_status, total_price, created_at, plan:subscription_plans(name)').order('created_at', { ascending: false }),
-      supabase.from('provider_bookings').select('id, customer_name, customer_mobile, preferred_date, preferred_time, status, total_amount, advance_payment_status, remaining_payment_status, created_at, provider:service_providers(full_name), provider_services(name), provider_pooja_setups(pooja_type:pooja_types(name))').order('created_at', { ascending: false }),
-    ]);
+    const { data, error } = await supabase
+      .from('pooja_orders')
+      .select('id, user_id, delivery_date, delivery_time, status, payment_status, total_price, created_at, plan:subscription_plans(name)')
+      .not('user_id', 'is', null)
+      .order('created_at', { ascending: false });
 
-    const poojaItems: PoojaOrder[] = (poojaRes.data ?? []).map((o: any) => ({
-      id: o.id, type: 'pooja_package' as const,
-      customer_name: (o as any).customer_name ?? 'Customer',
-      customer_mobile: (o as any).customer_mobile ?? '',
-      delivery_date: o.delivery_date, delivery_time: o.delivery_time,
-      status: o.status, payment_status: o.payment_status,
-      total_price: o.total_price, created_at: o.created_at,
-      plan_name: o.plan?.name ?? 'Pooja Package',
-    }));
+    if (error) { setLoading(false); setRefreshing(false); return; }
 
-    const bookingItems: PanditBooking[] = (bookingRes.data ?? []).map((b: any) => ({
-      id: b.id, type: 'pandit_booking' as const,
-      customer_name: b.customer_name ?? 'Customer',
-      customer_mobile: b.customer_mobile ?? '',
-      preferred_date: b.preferred_date, preferred_time: b.preferred_time,
-      status: b.status, total_amount: b.total_amount,
-      advance_payment_status: b.advance_payment_status,
-      remaining_payment_status: b.remaining_payment_status,
-      created_at: b.created_at,
-      service_name: b.provider_pooja_setups?.pooja_type?.name ?? b.provider_services?.name ?? 'Pandit Service',
-      provider_name: b.provider?.full_name ?? 'Provider',
-    }));
+    const userIds = [...new Set((data ?? []).map((o: any) => o.user_id).filter(Boolean))];
+    let profileMap: Record<string, { full_name: string; mobile: string }> = {};
+    if (userIds.length > 0) {
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, full_name, mobile')
+        .in('id', userIds);
+      for (const p of (profiles ?? [])) {
+        profileMap[p.id] = { full_name: p.full_name ?? 'Customer', mobile: p.mobile ?? '' };
+      }
+    }
 
-    const all: PackageItem[] = [
-      ...poojaItems.map(p => ({ ...p, sortDate: p.created_at })),
-      ...bookingItems.map(b => ({ ...b, sortDate: b.created_at })),
-    ].sort((a, b) => new Date(b.sortDate).getTime() - new Date(a.sortDate).getTime());
+    const poojaItems: PoojaOrder[] = (data ?? []).map((o: any) => {
+      const profile = o.user_id ? profileMap[o.user_id] : null;
+      return {
+        id: o.id,
+        customer_name: profile?.full_name ?? 'Customer',
+        customer_mobile: profile?.mobile ?? '',
+        delivery_date: o.delivery_date,
+        delivery_time: o.delivery_time,
+        status: o.status,
+        payment_status: o.payment_status,
+        total_price: o.total_price,
+        created_at: o.created_at,
+        plan_name: o.plan?.name ?? 'Pooja Package',
+      };
+    });
 
-    setItems(all);
+    setItems(poojaItems);
     setLoading(false);
     setRefreshing(false);
   }, []);
@@ -103,11 +87,10 @@ function PackageManagementContent() {
     return items.filter((item) => {
       if (statusFilter === 'active' && !ACTIVE_STATUSES.includes(item.status)) return false;
       if (statusFilter === 'completed' && ACTIVE_STATUSES.includes(item.status)) return false;
-      if (statusFilter === 'cancelled' && item.status !== 'cancelled' && item.status !== 'declined') return false;
+      if (statusFilter === 'cancelled' && item.status !== 'cancelled') return false;
       if (query.trim()) {
         const q = query.toLowerCase();
-        const name = item.type === 'pooja_package' ? (item as PoojaOrder).plan_name : (item as PanditBooking).service_name;
-        const haystack = `${item.customer_name} ${item.customer_mobile} ${name} ${item.type === 'pandit_booking' ? (item as PanditBooking).provider_name : ''}`.toLowerCase();
+        const haystack = `${item.customer_name} ${item.customer_mobile} ${item.plan_name}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
       return true;
@@ -118,7 +101,7 @@ function PackageManagementContent() {
     const c: Record<string, number> = { all: items.length, active: 0, completed: 0, cancelled: 0 };
     for (const item of items) {
       if (ACTIVE_STATUSES.includes(item.status)) c.active++;
-      else if (item.status === 'cancelled' || item.status === 'declined') c.cancelled++;
+      else if (item.status === 'cancelled') c.cancelled++;
       else c.completed++;
     }
     return c;
@@ -144,7 +127,7 @@ function PackageManagementContent() {
 
       <View style={styles.search}>
         <Search size={16} color={Colors.textTertiary} />
-        <TextInput style={styles.searchInput} value={query} onChangeText={setQuery} placeholder="Search customer, package or pandit" placeholderTextColor={Colors.textDisabled} />
+        <TextInput style={styles.searchInput} value={query} onChangeText={setQuery} placeholder="Search customer or package" placeholderTextColor={Colors.textDisabled} />
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
@@ -159,10 +142,10 @@ function PackageManagementContent() {
         <View style={styles.empty}>
           <Package size={28} color={Colors.primary} />
           <Text style={styles.emptyTitle}>No packages found</Text>
-          <Text style={styles.emptyText}>User pooja packages and pandit bookings will appear here.</Text>
+          <Text style={styles.emptyText}>User pooja packages will appear here.</Text>
         </View>
       ) : (
-        filtered.map((item) => <PackageCard key={item.type + item.id} item={item} onPress={() => router.push({ pathname: '/(admin)/package-detail' as any, params: { type: item.type, id: item.id } })} />)
+        filtered.map((item) => <PackageCard key={item.id} item={item} onPress={() => router.push({ pathname: '/(admin)/package-detail' as any, params: { id: item.id } })} />)
       )}
     </ScrollView>
   );
@@ -177,50 +160,33 @@ function Metric({ label, value, color }: { label: string; value: number; color: 
   );
 }
 
-function PackageCard({ item, onPress }: { item: PackageItem; onPress: () => void }) {
-  const isPooja = item.type === 'pooja_package';
-  const name = isPooja ? (item as PoojaOrder).plan_name : (item as PanditBooking).service_name;
-  const date = isPooja ? (item as PoojaOrder).delivery_date : (item as PanditBooking).preferred_date;
-  const time = isPooja ? (item as PoojaOrder).delivery_time : (item as PanditBooking).preferred_time;
-  const amount = isPooja ? (item as PoojaOrder).total_price : (item as PanditBooking).total_amount;
-  const statusColor = ACTIVE_STATUSES.includes(item.status) ? Colors.primary : item.status === 'cancelled' || item.status === 'declined' ? Colors.error : Colors.success;
+function PackageCard({ item, onPress }: { item: PoojaOrder; onPress: () => void }) {
+  const statusColor = ACTIVE_STATUSES.includes(item.status) ? Colors.primary : item.status === 'cancelled' ? Colors.error : Colors.success;
 
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.cardTop}>
         <View style={styles.cardHeading}>
           <View style={styles.serviceTitleRow}>
-            {isPooja ? <Package size={15} color={Colors.accent} /> : <Flame size={15} color={Colors.primary} />}
-            <Text style={styles.serviceTitle}>{name}</Text>
+            <Package size={15} color={Colors.accent} />
+            <Text style={styles.serviceTitle}>{item.plan_name}</Text>
           </View>
           <Text style={styles.customer}>{item.customer_name}{item.customer_mobile ? ` · ${item.customer_mobile}` : ''}</Text>
-          {!isPooja && (item as PanditBooking).provider_name ? <Text style={styles.provider}>by {(item as PanditBooking).provider_name}</Text> : null}
-          <Text style={styles.packageType}>{isPooja ? 'Pooja Package' : 'Pandit Booking'}</Text>
+          <Text style={styles.packageType}>Pooja Package</Text>
         </View>
         <View style={[styles.statusBadge, { backgroundColor: statusColor + '16' }]}>
           <Text style={[styles.statusText, { color: statusColor }]}>{item.status.replace(/_/g, ' ')}</Text>
         </View>
       </View>
       <View style={styles.detailRow}>
-        <View style={styles.detailItem}><CalendarClock size={13} color={Colors.textTertiary} /><Text style={styles.detailText}>{date}</Text></View>
-        <View style={styles.detailItem}><Clock3 size={13} color={Colors.textTertiary} /><Text style={styles.detailText}>{time}</Text></View>
-        <View style={styles.detailItem}><IndianRupee size={13} color={Colors.textTertiary} /><Text style={styles.detailText}>{(amount / 100).toLocaleString('en-IN')}</Text></View>
+        <View style={styles.detailItem}><CalendarClock size={13} color={Colors.textTertiary} /><Text style={styles.detailText}>{item.delivery_date}</Text></View>
+        <View style={styles.detailItem}><Clock3 size={13} color={Colors.textTertiary} /><Text style={styles.detailText}>{item.delivery_time}</Text></View>
+        <View style={styles.detailItem}><IndianRupee size={13} color={Colors.textTertiary} /><Text style={styles.detailText}>{(item.total_price / 100).toLocaleString('en-IN')}</Text></View>
       </View>
       <View style={styles.paymentRow}>
-        {isPooja ? (
-          (item as PoojaOrder).payment_status === 'paid'
-            ? <View style={styles.paidChip}><CheckCircle2 size={11} color={Colors.success} /><Text style={styles.paidText}>Paid</Text></View>
-            : <View style={styles.unpaidChip}><Clock size={11} color={Colors.warning} /><Text style={styles.unpaidText}>Payment Pending</Text></View>
-        ) : (
-          <>
-            {(item as PanditBooking).advance_payment_status === 'paid'
-              ? <View style={styles.paidChip}><CheckCircle2 size={11} color={Colors.success} /><Text style={styles.paidText}>Advance Paid</Text></View>
-              : <View style={styles.unpaidChip}><Clock size={11} color={Colors.warning} /><Text style={styles.unpaidText}>Advance Pending</Text></View>}
-            {(item as PanditBooking).remaining_payment_status === 'paid'
-              ? <View style={styles.paidChip}><CheckCircle2 size={11} color={Colors.success} /><Text style={styles.paidText}>Fully Paid</Text></View>
-              : null}
-          </>
-        )}
+        {item.payment_status === 'paid'
+          ? <View style={styles.paidChip}><CheckCircle2 size={11} color={Colors.success} /><Text style={styles.paidText}>Paid</Text></View>
+          : <View style={styles.unpaidChip}><Clock size={11} color={Colors.warning} /><Text style={styles.unpaidText}>Payment Pending</Text></View>}
       </View>
     </TouchableOpacity>
   );
@@ -254,7 +220,6 @@ const styles = StyleSheet.create({
   serviceTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   serviceTitle: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.md, color: Colors.textPrimary },
   customer: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textSecondary, marginTop: 2 },
-  provider: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginTop: 1 },
   packageType: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, color: Colors.accent, marginTop: 2, textTransform: 'uppercase', letterSpacing: 0.5 },
   statusBadge: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: Radius.full, alignSelf: 'flex-start' },
   statusText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, textTransform: 'capitalize' },

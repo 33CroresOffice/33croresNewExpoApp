@@ -44,6 +44,7 @@ const EMPTY_FORM = {
   description: '',
   selling_price: '',
   mrp_price: '',
+  per_day_price: '',
   frequency: 'monthly' as string,
   image_url: '',
   image_local_uri: '',
@@ -129,6 +130,7 @@ function AdminPlansScreenContent() {
       description: plan.description,
       selling_price: (plan.price / 100).toString(),
       mrp_price: plan.mrp_price ? (plan.mrp_price / 100).toString() : '',
+      per_day_price: plan.per_day_price ? (plan.per_day_price / 100).toString() : '',
       frequency: plan.frequency,
       image_url: plan.image_url ?? '',
       image_local_uri: '',
@@ -201,6 +203,8 @@ function AdminPlansScreenContent() {
     if (isNaN(sellingRupees) || sellingRupees <= 0) { setFormError('Enter a valid selling price'); return; }
     const mrpRupees = form.mrp_price ? parseFloat(form.mrp_price) : sellingRupees;
     if (isNaN(mrpRupees) || mrpRupees <= 0) { setFormError('Enter a valid MRP'); return; }
+    const perDayRupees = parseFloat(form.per_day_price);
+    if (isNaN(perDayRupees) || perDayRupees <= 0) { setFormError('Enter a valid per day price'); return; }
 
     setSaving(true);
     setFormError('');
@@ -224,6 +228,7 @@ function AdminPlansScreenContent() {
       description: form.description.trim(),
       price: Math.round(sellingRupees * 100),
       mrp_price: Math.round(mrpRupees * 100),
+      per_day_price: Math.round(perDayRupees * 100),
       frequency: form.frequency,
       deliveries_per_month: 1,
       image_url: finalImageUrl,
@@ -416,6 +421,16 @@ function AdminPlansScreenContent() {
                 />
               </View>
             </View>
+
+            <Text style={s.fieldLabel}>Per Day Price (₹) *</Text>
+            <TextInput
+              style={s.field}
+              value={form.per_day_price}
+              onChangeText={v => setForm({ ...form, per_day_price: v })}
+              placeholder="e.g. 33"
+              placeholderTextColor={Colors.textDisabled}
+              keyboardType="numeric"
+            />
 
             <Text style={s.fieldLabel}>Product type</Text>
             <View style={s.freqWrap}>

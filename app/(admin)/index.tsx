@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Package, TrendingUp, Truck, Users, ChevronRight, Flower2, ArrowUpRight, Calendar, LayoutDashboard, Leaf, Store, CircleAlert as AlertCircle, CirclePause as PauseCircle, CalendarClock, UserPlus, RotateCcw, Pencil, Timer, Play, SkipForward, Banknote, ReceiptText, RefreshCw, CalendarX } from 'lucide-react-native';
+import { Package, TrendingUp, Truck, Users, ChevronRight, Flower2, ArrowUpRight, Calendar, LayoutDashboard, Leaf, Store, CircleAlert as AlertCircle, CirclePause as PauseCircle, CalendarClock, UserPlus, RotateCcw, Pencil, Timer, Play, SkipForward, Banknote, ReceiptText, RefreshCw, CalendarX, Bike, UserMinus } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { format } from 'date-fns';
@@ -88,6 +88,8 @@ interface Metrics {
   pendingProcurementOrders: number;
   outstandingVendorPayments: number;
   activeVendors: number;
+  assignedOrders: number;
+  unassignedOrders: number;
 }
 
 export default function AdminDashboard() {
@@ -130,6 +132,8 @@ export default function AdminDashboard() {
     pendingProcurementOrders: 0,
     outstandingVendorPayments: 0,
     activeVendors: 0,
+    assignedOrders: 0,
+    unassignedOrders: 0,
   });
   const [recentOrders, setRecentOrders] = useState<any[]>([]);
   const [recentCustomers, setRecentCustomers] = useState<any[]>([]);
@@ -201,6 +205,10 @@ export default function AdminDashboard() {
         supabase.from('subscriptions').select('id, pause_start_date, pause_until, user:profiles(full_name, mobile), plan:subscription_plans(name)').eq('status', 'active').not('pause_start_date', 'is', null).gte('pause_start_date', today).lte('pause_start_date', next30).order('pause_start_date', { ascending: true }).limit(10),
         supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'customer'),
         supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'customer').gte('created_at', todayStart).lte('created_at', todayEnd),
+        // Assigned orders: orders with active rider assignments (not reassigned/delivered)
+        supabase.from('rider_order_assignments').select('id', { count: 'exact', head: true }).in('status', ['assigned', 'accepted', 'picked_up']),
+        // Unassigned orders: scheduled orders with no active assignment
+        supabase.from('orders').select('id', { count: 'exact', head: true }).eq('status', 'scheduled'),
       ]);
 
       // Helper: extract value from allSettled result, returning fallback on rejection
@@ -219,6 +227,7 @@ export default function AdminDashboard() {
         orders, revenue, newUsers, totalCustomersRes, pending, pendingCustom,
         recent, recentCust, todayReqs, pendingProcurement, vendorOrders, activeVendorsRes, upcomingPausesRes,
         totalCustomerProfilesRes, newCustomersTodayRes,
+        assignedOrdersRes, unassignedOrdersRes,
       ] = settled.map((r) => ok(r as any, fallbackCount));
 
       // Log any failures so they're visible in dev tools
@@ -302,6 +311,8 @@ export default function AdminDashboard() {
         pendingProcurementOrders: pendingProcurement.count ?? 0,
         outstandingVendorPayments: Math.max(0, totalOrdered - totalPaid),
         activeVendors: activeVendorsRes.count ?? 0,
+        assignedOrders: assignedOrdersRes.count ?? 0,
+        unassignedOrders: unassignedOrdersRes.count ?? 0,
       });
 
       if (recent.data) setRecentOrders(recent.data);
@@ -330,6 +341,8 @@ export default function AdminDashboard() {
     { label: 'Monthly Rev.', value: formatPrice(metrics.monthlyRevenue), icon: TrendingUp, color: MD3.secondary, bg: MD3.secondaryContainer, onBg: MD3.onSecondaryContainer },
     { label: 'New Users', value: metrics.newUsersThisMonth.toString(), icon: Users, color: MD3.primary, bg: MD3.primaryContainer, onBg: MD3.onPrimaryContainer },
     { label: 'Custom Orders', value: metrics.pendingCustomOrders.toString(), icon: Flower2, color: '#92400E', bg: '#FEF3C7', onBg: '#78350F' },
+    { label: 'Assigned', value: metrics.assignedOrders.toString(), icon: Bike, color: MD3.primary, bg: MD3.primaryContainer, onBg: MD3.onPrimaryContainer },
+    { label: 'Unassigned', value: metrics.unassignedOrders.toString(), icon: UserMinus, color: MD3.error, bg: MD3.errorContainer, onBg: MD3.onError },
   ];
 
   return (
@@ -359,14 +372,18 @@ export default function AdminDashboard() {
         <View style={mStyles.metricsGrid}>
           {metricCards.map((card) => {
             const Icon = card.icon;
+            const onPress = card.label === 'Assigned' ? () => router.push('/(admin)/rider-assignment-orders?tab=assigned' as any)
+              : card.label === 'Unassigned' ? () => router.push('/(admin)/rider-assignment-orders?tab=unassigned' as any)
+              : undefined;
+            const Wrapper: any = onPress ? TouchableOpacity : View;
             return (
-              <View key={card.label} style={[mStyles.metricCard, { backgroundColor: card.bg }]}>
+              <Wrapper key={card.label} style={[mStyles.metricCard, { backgroundColor: card.bg }]} onPress={onPress} activeOpacity={0.82}>
                 <View style={[mStyles.metricIconWrap, { backgroundColor: 'rgba(255,255,255,0.5)' }]}>
                   <Icon size={20} color={card.color} strokeWidth={1.8} />
                 </View>
                 <Text style={[mStyles.metricValue, { color: card.onBg }]}>{loading ? '—' : card.value}</Text>
                 <Text style={[mStyles.metricLabel, { color: card.color }]}>{card.label}</Text>
-              </View>
+              </Wrapper>
             );
           })}
         </View>
@@ -598,6 +615,17 @@ function WebDashboard({ metrics, recentOrders, recentCustomers, upcomingPauses, 
         <View style={wStyles.cardRow}>
           <DashCard label="Today Delivered" value={val(metrics.deliveryToday)} icon={Truck} accent="#15803D" bg="#DCFCE7" href="/(admin)/orders?subFilter=delivery_today" highlight />
           <DashCard label="Tomorrow Delivery" value={val(metrics.deliveryTomorrow)} icon={Truck} accent="#0369A1" bg="#E0F2FE" href="/(admin)/orders?subFilter=delivery_tomorrow" />
+        </View>
+      </View>
+
+      {/* ── RIDER ASSIGNMENT ── */}
+      <View style={wStyles.groupCard}>
+        <View style={wStyles.groupHeader}>
+          <Text style={wStyles.groupTitle}>RIDER ASSIGNMENT</Text>
+        </View>
+        <View style={wStyles.cardRow}>
+          <DashCard label="Assigned Orders" value={val(metrics.assignedOrders)} icon={Bike} accent="#15803D" bg="#DCFCE7" href="/(admin)/rider-assignment-orders?tab=assigned" highlight={metrics.assignedOrders > 0} />
+          <DashCard label="Unassigned Orders" value={val(metrics.unassignedOrders)} icon={UserMinus} accent="#DC2626" bg="#FEE2E2" href="/(admin)/rider-assignment-orders?tab=unassigned" highlight={metrics.unassignedOrders > 0} />
         </View>
       </View>
 

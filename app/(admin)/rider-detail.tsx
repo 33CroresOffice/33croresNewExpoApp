@@ -14,7 +14,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import StatusChip from '@/components/ui/StatusChip';
 
-type Tab = 'overview' | 'assignments' | 'attendance' | 'payouts' | 'leave' | 'zones';
+type Tab = 'overview' | 'assigned_orders' | 'assignments' | 'attendance' | 'payouts' | 'leave' | 'zones';
 
 const ASSIGN_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
   assigned:   { label: 'Assigned',   color: Colors.primary,      bg: Colors.primarySurface },
@@ -60,6 +60,7 @@ function RiderDetailScreenContent() {
 
   const [rider, setRider] = useState<any>(null);
   const [assignments, setAssignments] = useState<any[]>([]);
+  const [deliveredAssignments, setDeliveredAssignments] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
   const [payouts, setPayouts] = useState<any[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<any[]>([]);
@@ -81,6 +82,8 @@ function RiderDetailScreenContent() {
 
   const [dateFrom, setDateFrom] = useState<Date | null>(null);
   const [dateTo, setDateTo] = useState<Date | null>(null);
+  const [deliveryDatePreset, setDeliveryDatePreset] = useState<'today' | 'yesterday' | 'custom' | null>('today');
+  const [assignedOrdersFilter, setAssignedOrdersFilter] = useState<string>('all');
 
   const [showLeaveModal, setShowLeaveModal] = useState(false);
   const [leaveForm, setLeaveForm] = useState({ leave_date: format(new Date(), 'yyyy-MM-dd'), reason: '', notes: '' });
@@ -93,9 +96,10 @@ function RiderDetailScreenContent() {
 
   const load = useCallback(async () => {
     try {
-      const [riderRes, assignRes, attRes, payoutRes, leaveRes, zoneRes, locRes] = await Promise.all([
+      const [riderRes, assignRes, deliveredRes, attRes, payoutRes, leaveRes, zoneRes, locRes] = await Promise.all([
         supabase.from('riders').select('*').eq('id', id).maybeSingle(),
         supabase.from('rider_order_assignments').select('*, order:orders(id, scheduled_date, status, user:profiles(full_name, mobile))').eq('rider_id', id).order('assigned_at', { ascending: false }).limit(50),
+        supabase.from('rider_order_assignments').select('*, order:orders(id, scheduled_date, status, user:profiles(full_name, mobile))').eq('rider_id', id).eq('status', 'delivered').order('delivered_at', { ascending: false }),
         supabase.from('rider_attendance').select('*').eq('rider_id', id).order('date', { ascending: false }).limit(60),
         supabase.from('rider_payouts').select('*').eq('rider_id', id).order('created_at', { ascending: false }),
         supabase.from('rider_leave_requests').select('*').eq('rider_id', id).order('leave_date', { ascending: false }),
@@ -106,6 +110,7 @@ function RiderDetailScreenContent() {
       setAllLocalities(locRes.data ?? []);
       if (riderRes.data) setRider(riderRes.data);
       setAssignments(assignRes.data ?? []);
+      setDeliveredAssignments(deliveredRes.data ?? []);
       setAttendance(attRes.data ?? []);
       setPayouts(payoutRes.data ?? []);
       setLeaveRequests(leaveRes.data ?? []);
@@ -243,8 +248,9 @@ function RiderDetailScreenContent() {
   }
 
   const TABS: { key: Tab; label: string; count?: number }[] = [
-    { key: 'overview',    label: 'Overview' },
-    { key: 'assignments', label: 'Deliveries', count: assignments.length },
+    { key: 'overview',       label: 'Overview' },
+    { key: 'assigned_orders', label: 'Assigned Orders', count: assignments.length },
+    { key: 'assignments',     label: 'Deliveries', count: assignments.length },
     { key: 'attendance',  label: 'Attendance', count: attendance.length },
     { key: 'payouts',     label: 'Payouts',    count: payouts.length },
     { key: 'leave',       label: 'Leave',      count: leaveRequests.length },
@@ -340,44 +346,190 @@ function RiderDetailScreenContent() {
                 <Text style={s.notesText}>{rider.notes}</Text>
               </View>
             ) : null}
+
+            <View style={s.infoCard}>
+              <View style={s.assignSectionHeader}>
+                <Text style={s.infoCardTitle}>Assigned Orders</Text>
+                <TouchableOpacity onPress={() => setActiveTab('assigned_orders')} style={s.viewAllBtn}>
+                  <Text style={s.viewAllText}>View All</Text>
+                  <ChevronRight size={12} color={Colors.primary} strokeWidth={2} />
+                </TouchableOpacity>
+              </View>
+              {assignments.length === 0 ? (
+                <Text style={s.emptyAssignText}>No orders assigned to this rider yet.</Text>
+              ) : (
+                assignments.slice(0, 5).map(a => {
+                  const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
+                  return (
+                    <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
+                      <View style={[s.assignStatusBar, { backgroundColor: cfg.color }]} />
+                      <View style={s.assignBody}>
+                        <View style={s.assignTop}>
+                          <Text style={s.assignOrderId}>Order #{a.order_id.slice(-8).toUpperCase()}</Text>
+                          <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
+                            <Text style={[s.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
+                          </View>
+                        </View>
+                        {a.order?.user && <Text style={s.assignCustomer}>{a.order.user.full_name ?? a.order.user.mobile}</Text>}
+                        <View style={s.assignMeta}>
+                          <Calendar size={11} color={Colors.textTertiary} strokeWidth={1.8} />
+                          <Text style={s.assignDate}>{format(new Date(a.assigned_at), 'dd MMM · HH:mm')}</Text>
+                          {a.order?.scheduled_date && <><Text style={s.dot}>·</Text><Text style={s.assignDate}>{format(new Date(a.order.scheduled_date), 'dd MMM yyyy')}</Text></>}
+                        </View>
+                      </View>
+                      <ChevronRight size={14} color={Colors.textTertiary} strokeWidth={1.8} />
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </View>
           </>
         )}
+
+        {/* ASSIGNED ORDERS */}
+        {activeTab === 'assigned_orders' && (() => {
+          const statusFilter = assignedOrdersFilter;
+          const filtered = statusFilter === 'all'
+            ? assignments
+            : assignments.filter(a => a.status === statusFilter);
+          return (
+          <>
+            <View style={[s.assignStats, isWeb && s.assignStatsWeb]}>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{assignments.length}</Text><Text style={s.assignStatLabel}>Total</Text></View>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>{assignments.filter(a => ['assigned', 'accepted', 'picked_up'].includes(a.status)).length}</Text><Text style={s.assignStatLabel}>In Progress</Text></View>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.success }]}>{totalDeliveries}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
+              <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.error }]}>{totalFailed}</Text><Text style={s.assignStatLabel}>Failed</Text></View>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
+              {(['all', 'assigned', 'accepted', 'picked_up', 'delivered', 'failed', 'reassigned'] as const).map(st => {
+                const count = st === 'all' ? assignments.length : assignments.filter(a => a.status === st).length;
+                const cfg = st === 'all' ? null : ASSIGN_STATUS_CONFIG[st] ?? ASSIGN_STATUS_CONFIG.assigned;
+                const isActive = statusFilter === st;
+                const label = st === 'all' ? 'All' : cfg!.label;
+                const color = st === 'all' ? Colors.primary : cfg!.color;
+                const bg = st === 'all' ? Colors.primarySurface : cfg!.bg;
+                return (
+                  <TouchableOpacity
+                    key={st}
+                    style={[s.attMonthChip, isActive && { backgroundColor: bg, borderColor: color }]}
+                    onPress={() => setAssignedOrdersFilter(st)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[s.attMonthChipText, isActive && { color, fontFamily: Typography.fontFamily.sansSemiBold }]}>{label}{count > 0 ? ` (${count})` : ''}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            {filtered.length === 0 ? (
+              <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={assignments.length === 0 ? 'No orders assigned yet' : 'No orders match this filter'} sub={assignments.length === 0 ? 'Assign orders to this rider to see them here.' : 'Try a different status filter.'} />
+            ) : (
+              filtered.map(a => {
+                const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
+                return (
+                  <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
+                    <View style={[s.assignStatusBar, { backgroundColor: cfg.color }]} />
+                    <View style={s.assignBody}>
+                      <View style={s.assignTop}>
+                        <Text style={s.assignOrderId}>Order #{a.order_id.slice(-8).toUpperCase()}</Text>
+                        <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
+                          <Text style={[s.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
+                        </View>
+                      </View>
+                      {a.order?.user && <Text style={s.assignCustomer}>{a.order.user.full_name ?? a.order.user.mobile}</Text>}
+                      <View style={s.assignMeta}>
+                        <Calendar size={11} color={Colors.textTertiary} strokeWidth={1.8} />
+                        <Text style={s.assignDate}>{format(new Date(a.assigned_at), 'dd MMM yyyy · HH:mm')}</Text>
+                        {a.order?.scheduled_date && <><Text style={s.dot}>·</Text><Text style={s.assignDate}>Due: {format(new Date(a.order.scheduled_date), 'dd MMM yyyy')}</Text></>}
+                        {a.delivery_fee > 0 && <><Text style={s.dot}>·</Text><Text style={s.assignFee}>{fmt(a.delivery_fee)}</Text></>}
+                        {a.distance_km && <><Text style={s.dot}>·</Text><Text style={s.assignDist}>{a.distance_km} km</Text></>}
+                      </View>
+                      {a.failure_reason ? <Text style={s.failReason}>{a.failure_reason}</Text> : null}
+                      {a.swap_reason ? <Text style={s.swapNote}>Swap: {a.swap_reason}</Text> : null}
+                      {a.notes ? <Text style={s.attNotes}>{a.notes}</Text> : null}
+                    </View>
+                    <ChevronRight size={14} color={Colors.textTertiary} strokeWidth={1.8} />
+                  </TouchableOpacity>
+                );
+              })
+            )}
+          </>
+          );
+        })()}
 
         {/* ASSIGNMENTS / DELIVERIES */}
         {activeTab === 'assignments' && (
           <>
             <View style={[s.assignStats, isWeb && s.assignStatsWeb]}>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.success }]}>{totalDeliveries}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.error }]}>{totalFailed}</Text><Text style={s.assignStatLabel}>Failed</Text></View>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>{assignments.filter(a => ['assigned', 'accepted', 'picked_up'].includes(a.status)).length}</Text><Text style={s.assignStatLabel}>In Progress</Text></View>
-              <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{successRate}%</Text><Text style={s.assignStatLabel}>Success</Text></View>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.success }]}>{deliveredAssignments.length}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.error }]}>0</Text><Text style={s.assignStatLabel}>Failed</Text></View>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>0</Text><Text style={s.assignStatLabel}>In Progress</Text></View>
+              <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{deliveredAssignments.length > 0 ? '100%' : '0%'}</Text><Text style={s.assignStatLabel}>Success</Text></View>
             </View>
 
-            {/* Date Range Filter */}
-            <View style={[s.dateFilterRow, isWeb && s.dateFilterRowWeb]}>
-              <View style={s.dateFilterPicker}>
-                <DatePickerField label="From" value={dateFrom} onChange={setDateFrom} maxDate={dateTo ?? undefined} />
+            {/* Date Preset Chips */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
+              {([
+                { key: 'today', label: 'Today' },
+                { key: 'yesterday', label: 'Yesterday' },
+                { key: 'custom', label: 'Custom Date' },
+              ] as const).map(opt => {
+                const isActive = deliveryDatePreset === opt.key;
+                return (
+                  <TouchableOpacity
+                    key={opt.key}
+                    style={[s.attMonthChip, isActive && s.attMonthChipActive]}
+                    onPress={() => {
+                      if (opt.key === 'custom') {
+                        setDeliveryDatePreset('custom');
+                      } else {
+                        setDeliveryDatePreset(prev => prev === opt.key ? null : opt.key);
+                        setDateFrom(null);
+                        setDateTo(null);
+                      }
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[s.attMonthChipText, isActive && s.attMonthChipTextActive]}>{opt.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            {/* Custom Date Range */}
+            {deliveryDatePreset === 'custom' && (
+              <View style={[s.dateFilterRow, isWeb && s.dateFilterRowWeb]}>
+                <View style={s.dateFilterPicker}>
+                  <DatePickerField label="From" value={dateFrom} onChange={setDateFrom} maxDate={dateTo ?? undefined} />
+                </View>
+                <View style={s.dateFilterPicker}>
+                  <DatePickerField label="To" value={dateTo} onChange={setDateTo} minDate={dateFrom ?? undefined} />
+                </View>
+                {(dateFrom || dateTo) && (
+                  <TouchableOpacity onPress={() => { setDateFrom(null); setDateTo(null); }} style={s.dateFilterClear}>
+                    <X size={13} color={Colors.error} strokeWidth={2} />
+                    <Text style={s.dateFilterClearText}>Clear</Text>
+                  </TouchableOpacity>
+                )}
               </View>
-              <View style={s.dateFilterPicker}>
-                <DatePickerField label="To" value={dateTo} onChange={setDateTo} minDate={dateFrom ?? undefined} />
-              </View>
-              {(dateFrom || dateTo) && (
-                <TouchableOpacity onPress={() => { setDateFrom(null); setDateTo(null); }} style={s.dateFilterClear}>
-                  <X size={13} color={Colors.error} strokeWidth={2} />
-                  <Text style={s.dateFilterClearText}>Clear</Text>
-                </TouchableOpacity>
-              )}
-            </View>
+            )}
 
             {(() => {
-              const filtered = assignments.filter(a => {
-                const d = a.assigned_at ? a.assigned_at.slice(0, 10) : '';
-                if (dateFrom && d < format(dateFrom, 'yyyy-MM-dd')) return false;
-                if (dateTo && d > format(dateTo, 'yyyy-MM-dd')) return false;
+              const todayStr = format(new Date(), 'yyyy-MM-dd');
+              const yesterdayStr = format(subDays(new Date(), 1), 'yyyy-MM-dd');
+              const filtered = deliveredAssignments.filter(a => {
+                const d = a.delivered_at ? a.delivered_at.slice(0, 10) : (a.assigned_at ? a.assigned_at.slice(0, 10) : '');
+                if (deliveryDatePreset === 'today' && d !== todayStr) return false;
+                if (deliveryDatePreset === 'yesterday' && d !== yesterdayStr) return false;
+                if (deliveryDatePreset === 'custom') {
+                  if (dateFrom && d < format(dateFrom, 'yyyy-MM-dd')) return false;
+                  if (dateTo && d > format(dateTo, 'yyyy-MM-dd')) return false;
+                }
                 return true;
               });
               return filtered.length === 0 ? (
-                <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={assignments.length === 0 ? 'No assignments yet' : 'No deliveries in this date range'} sub={assignments.length === 0 ? 'Assign orders to this rider to see delivery history.' : 'Try adjusting the From / To dates.'} />
+                <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={deliveredAssignments.length === 0 ? 'No delivered orders yet' : 'No delivered orders match this filter'} sub={deliveredAssignments.length === 0 ? 'Delivered orders for this rider will appear here.' : 'Try a different date filter.'} />
               ) : (
                 filtered.map(a => {
                 const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
@@ -394,7 +546,7 @@ function RiderDetailScreenContent() {
                       {a.order?.user && <Text style={s.assignCustomer}>{a.order.user.full_name ?? a.order.user.mobile}</Text>}
                       <View style={s.assignMeta}>
                         <Calendar size={11} color={Colors.textTertiary} strokeWidth={1.8} />
-                        <Text style={s.assignDate}>{format(new Date(a.assigned_at), 'dd MMM · HH:mm')}</Text>
+                        <Text style={s.assignDate}>{format(new Date(a.delivered_at ?? a.assigned_at), 'dd MMM · HH:mm')}</Text>
                         {a.delivery_fee > 0 && <><Text style={s.dot}>·</Text><Text style={s.assignFee}>{fmt(a.delivery_fee)}</Text></>}
                         {a.distance_km && <><Text style={s.dot}>·</Text><Text style={s.assignDist}>{a.distance_km} km</Text></>}
                       </View>
@@ -1001,4 +1153,8 @@ const s = StyleSheet.create({
   zoneAddBtns: { flexDirection: 'row', gap: Spacing[1] },
   zoneAddBtn: { paddingVertical: Spacing[1], paddingHorizontal: Spacing[2], borderRadius: Radius.sm },
   zoneAddBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10 },
+  assignSectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing[2] },
+  viewAllBtn: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  viewAllText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.primary },
+  emptyAssignText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary, paddingVertical: Spacing[2] },
 });

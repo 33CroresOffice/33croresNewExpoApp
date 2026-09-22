@@ -22,6 +22,7 @@ import {
   Clock,
   MessageSquare,
   ChevronDown,
+  AlertCircle,
 } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
@@ -375,7 +376,28 @@ export default function CustomOrderScreen() {
     }
 
     setSuccessDate(format(deliveryDate, 'dd MMM yyyy'));
+    resetForm();
     setSuccessModal(true);
+  };
+
+  const resetForm = () => {
+    setOrderType('flower');
+    setSavedFlowers([]);
+    setDraftFlower('');
+    setDraftQuantity('');
+    setDraftUnit('Piece');
+    setSavedGarlands([]);
+    setGDraftFlower('');
+    setGDraftCount('');
+    setGFlowerCount('');
+    setGGarlandSize('');
+    setGMeasureType('flower_count');
+    setDeliveryDate(getMinAllowedDate());
+    setDeliveryTime(isPastCutoffIST() ? '10:00 AM' : '08:00 AM');
+    setSpecialInstructions('');
+    setError('');
+    setShowAddressWarning(false);
+    setShowAllAddresses(false);
   };
 
   const visibleAddresses = showAllAddresses ? addresses : addresses.slice(0, 1);
@@ -787,7 +809,6 @@ export default function CustomOrderScreen() {
           </View>
         </View>
 
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + Spacing[4] }]}>
@@ -843,6 +864,21 @@ export default function CustomOrderScreen() {
         onSelect={setGGarlandSize}
         onClose={() => setShowGSizePicker(false)}
       />
+
+      <Modal visible={!!error} transparent animationType="fade" onRequestClose={() => setError('')}>
+        <View style={styles.errorOverlay}>
+          <View style={styles.errorModal}>
+            <View style={styles.errorIconWrap}>
+              <AlertCircle size={28} color={Colors.error} strokeWidth={2} />
+            </View>
+            <Text style={styles.errorTitle}>Something went wrong</Text>
+            <Text style={styles.errorMessage}>{error}</Text>
+            <TouchableOpacity style={styles.errorButton} onPress={() => setError('')} activeOpacity={0.85}>
+              <Text style={styles.errorButtonText}>Okay</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={successModal} transparent animationType="fade" onRequestClose={() => {}}>
         <View style={styles.modalOverlay}>
@@ -1258,11 +1294,57 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
     paddingTop: 0,
   },
-  errorText: {
-    fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.sm,
-    color: Colors.error,
+  errorOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing[5],
+    backgroundColor: 'rgba(15, 30, 40, 0.48)',
+  },
+  errorModal: {
+    width: '100%',
+    maxWidth: 380,
+    alignItems: 'center',
+    gap: Spacing[3],
+    padding: Spacing[6],
+    borderRadius: Radius.xl,
+    backgroundColor: Colors.white,
+    ...Shadow.lg,
+  },
+  errorIconWrap: {
+    width: 60,
+    height: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.full,
+    backgroundColor: Colors.errorSurface,
+  },
+  errorTitle: {
+    fontFamily: Typography.fontFamily.bold,
+    fontSize: Typography.size.xl,
+    color: Colors.textPrimary,
     textAlign: 'center',
+  },
+  errorMessage: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.base,
+    lineHeight: 23,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+  },
+  errorButton: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: Spacing[2],
+    paddingVertical: Spacing[3],
+    borderRadius: Radius.md,
+    backgroundColor: Colors.primary,
+  },
+  errorButtonText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.base,
+    color: Colors.white,
   },
   footer: {
     paddingHorizontal: Spacing[5],

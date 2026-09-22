@@ -107,6 +107,7 @@ export default function AdminLayout() {
       <Tabs.Screen name="add-rider"            options={{ href: null }} />
       <Tabs.Screen name="rider-assignments"       options={{ href: null }} />
       <Tabs.Screen name="assigned-riders"          options={{ href: null }} />
+      <Tabs.Screen name="rider-assignment-orders"   options={{ href: null }} />
       <Tabs.Screen name="attendance-locations"    options={{ href: null }} />
       <Tabs.Screen name="admin-users"              options={{ href: null }} />
       <Tabs.Screen name="admin-login-logs"          options={{ href: null }} />

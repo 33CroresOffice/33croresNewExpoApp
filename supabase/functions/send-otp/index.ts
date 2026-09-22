@@ -142,6 +142,14 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // Demo account: skip real OTP sending — use fixed OTP 123456
+    if (mobile === "9876543210") {
+      return new Response(
+        JSON.stringify({ success: true }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     if (!["sms", "whatsapp"].includes(channel)) {
       return new Response(
         JSON.stringify({ success: false, error: "Invalid channel" }),

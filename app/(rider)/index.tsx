@@ -1,25 +1,30 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
+  Modal,
   ScrollView,
   TouchableOpacity,
   RefreshControl,
   Platform,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Bike, PackageCheck, Clock, LogOut, MapPin, CircleAlert as AlertCircle, Loader, ShoppingBag, ChevronRight, Navigation, Radio, Package, Sparkles } from 'lucide-react-native';
+import { Bike, PackageCheck, CircleCheck, CircleX, Clock, MapPin, CircleAlert as AlertCircle, Loader, ChevronRight, Navigation, Radio, Award, Trophy, Crown, Medal } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { format } from 'date-fns';
 import StatusChip from '@/components/ui/StatusChip';
-import { useRouter } from 'expo-router';
+import { useRouter, useRootNavigationState } from 'expo-router';
 import { resolveRider } from '@/utils/riderLookup';
 import { todayISTString, performAttendanceCheckIn, getCheckInErrorMessage } from '@/utils/attendanceCheckIn';
+import { getCurrentMonthIST, getMonthRangeIST } from '@/utils/riderPeriod';
+
 
 const GRADIENT_TOP = '#1A2E3A';
 const GRADIENT_MID = '#1E3D50';
@@ -38,50 +43,68 @@ interface RiderInfo {
 }
 
 interface DashboardMetrics {
-  todayAssigned: number;
-  todayDelivered: number;
-  todayPending: number;
-  totalDeliveries: number;
-  successRate: number;
+  deliveries: number;
+  present: number;
+  absent: number;
 }
 
-interface SubOrderItem {
-  assignment_id: string;
-  picked_up_at: string | null;
+interface BonusBreakdown {
+  id: string;
+  name: string;
+  eligibleCount: number;
+  amount: number;
+  total: number;
+  unitLabel: string;
 }
 
-interface CustomOrderItem {
-  assignment_id: string;
-  picked_up_at: string | null;
+interface RankingEntry {
+  rider_id: string;
+  rider_name: string;
+  rank_position: number;
+  score: number;
+  deliveries: number;
+  present_days: number;
+  total_earned: number;
+  profile_photo_url: string | null;
+  is_self: boolean;
 }
 
 export default function RiderDashboard() {
   const insets = useSafeAreaInsets();
-  const { profile, signOut } = useAuthStore();
+  const { profile } = useAuthStore();
   const router = useRouter();
+  const rootNavigationState = useRootNavigationState();
   const isWeb = Platform.OS === 'web';
 
   const [rider, setRider] = useState<RiderInfo | null>(null);
   const [riderId, setRiderId] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<DashboardMetrics>({
-    todayAssigned: 0,
-    todayDelivered: 0,
-    todayPending: 0,
-    totalDeliveries: 0,
-    successRate: 0,
+    deliveries: 0,
+    present: 0,
+    absent: 0,
   });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'subscription' | 'custom'>('subscription');
-  const [subOrders, setSubOrders] = useState<SubOrderItem[]>([]);
-  const [customOrders, setCustomOrders] = useState<CustomOrderItem[]>([]);
-  const [pickingUpAll, setPickingUpAll] = useState(false);
+  const [nowTick, setNowTick] = useState(Date.now());
+  const hasRedirectedRef = useRef(false);
+  const rankingPromptCheckedRef = useRef(false);
+
+  useEffect(() => {
+    const interval = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Attendance state
   const [todayAttendance, setTodayAttendance] = useState<{ status: string; check_in_time: string | null } | null | undefined>(undefined);
   const [attendanceLocations, setAttendanceLocations] = useState<{ id: string; name: string; latitude: number; longitude: number; radius_meters: number }[]>([]);
   const [checkingIn, setCheckingIn] = useState(false);
   const [geoError, setGeoError] = useState('');
+  const [rankings, setRankings] = useState<RankingEntry[]>([]);
+  const [showRankingModal, setShowRankingModal] = useState(false);
+  const [onTimeAttendance, setOnTimeAttendance] = useState(0);
+  const [onTimeDelivery, setOnTimeDelivery] = useState(0);
+  const [bonusBreakdown, setBonusBreakdown] = useState<BonusBreakdown[]>([]);
+  const [referralBonus, setReferralBonus] = useState<{ amount: number; approvedCount: number; eligibleCount: number; pendingCount: number } | null>(null);
 
   const load = useCallback(async () => {
     if (!profile?.id) return;
@@ -102,14 +125,10 @@ export default function RiderDashboard() {
     setRiderId(riderData.id);
 
     const todayStr = todayISTString();
+    const currentMonth = getCurrentMonthIST();
+    const { monthStart, nextMonth, monthStartISO, nextMonthISO } = getMonthRangeIST(currentMonth);
 
-    const [totalRes, attendRes, locRes] = await Promise.all([
-      supabase
-        .from('rider_order_assignments')
-        .select('id, order_id, custom_order_id, status, assigned_at, delivered_at, picked_up_at')
-        .eq('rider_id', riderData.id)
-        .neq('status', 'reassigned')
-        .order('assigned_at', { ascending: false }),
+    const [todayAttendRes, locRes] = await Promise.all([
       supabase
         .from('rider_attendance')
         .select('status, check_in_time')
@@ -122,47 +141,147 @@ export default function RiderDashboard() {
         .eq('is_active', true),
     ]);
 
-    setTodayAttendance(attendRes.data ?? null);
+    setTodayAttendance(todayAttendRes.data ?? null);
     setAttendanceLocations((locRes.data ?? []) as any[]);
 
-    const totalData = (totalRes.data ?? []) as any[];
+    const [rankRes, topRankingsRes, incentivesRes, evaluationsRes, referralsRes, referralConfigRes] = await Promise.all([
+      supabase.from('rider_monthly_rankings').select('rank_position, score, on_time_attendance_days, on_time_delivery_days, total_earned, deliveries, present_days, absent_days').eq('rider_id', riderData.id).eq('month', currentMonth).maybeSingle(),
+      supabase.from('rider_monthly_rankings').select('rider_id, rank_position, score, deliveries, present_days, total_earned').eq('month', currentMonth).order('rank_position', { ascending: true }).limit(3),
+      supabase.from('rider_incentives').select('id, name, amount, type, evaluation_basis, bonus_category').eq('is_active', true),
+      supabase.from('rider_incentive_evaluations').select('incentive_id, status, earned_amount').eq('rider_id', riderData.id).eq('month', currentMonth),
+      supabase.from('rider_referrals').select('id, approval_status, reward_amount, completed_delivery_days, required_delivery_days, referred_name, referred_mobile').eq('referrer_rider_id', riderData.id),
+      supabase.from('referral_config').select('reward_amount, required_completion_days').eq('is_active', true).order('created_at').limit(1).maybeSingle(),
+    ]);
 
-    const subAssignments = totalData.filter((a) => a.order_id && !a.custom_order_id);
-    const customAssignments = totalData.filter((a) => a.custom_order_id);
+    const myRanking = rankRes.data as any;
+    const onTimeAttendCount = Number(myRanking?.on_time_attendance_days ?? 0);
+    const onTimeDeliverCount = Number(myRanking?.on_time_delivery_days ?? 0);
 
-    setSubOrders(subAssignments.map((a: any) => ({ assignment_id: a.id, picked_up_at: a.picked_up_at })));
-    setCustomOrders(customAssignments.map((a: any) => ({ assignment_id: a.id, picked_up_at: a.picked_up_at })));
-
-    const totalDelivered = totalData.filter((a) => a.status === 'delivered').length;
-    const totalClosed = totalData.filter((a) =>
-      ['delivered', 'failed'].includes(a.status)
-    ).length;
-    const successRate = totalClosed > 0 ? Math.round((totalDelivered / totalClosed) * 100) : 0;
-
-    const seenAssignmentKeys = new Set<string>();
-    const todayAssignments = totalData.filter((assignment: any) => {
-      const key = assignment.custom_order_id ?? assignment.order_id;
-      if (!key || seenAssignmentKeys.has(key)) return false;
-      seenAssignmentKeys.add(key);
-      return true;
+    const referralRows = (referralsRes.data ?? []) as any[];
+    const refConfig = referralConfigRes.data as any;
+    const refRewardAmount = Number(refConfig?.reward_amount ?? 0);
+    const approvedReferrals = referralRows.filter((r) => r.approval_status === 'approved');
+    const eligibleReferrals = referralRows.filter((r) => r.approval_status === 'eligible');
+    const pendingReferrals = referralRows.filter((r) => r.approval_status === 'pending');
+    const approvedReferralTotal = approvedReferrals.reduce((sum, r) => sum + Number(r.reward_amount ?? refRewardAmount), 0);
+    const approvedCount = approvedReferrals.length;
+    const eligibleCount = eligibleReferrals.length;
+    const pendingCount = pendingReferrals.length;
+    setReferralBonus({
+      amount: refRewardAmount,
+      approvedCount,
+      eligibleCount,
+      pendingCount,
     });
-    const todayTotal = todayAssignments.length;
-    const todayDelivered = todayAssignments.filter((a: any) => a.status === 'delivered').length;
-    const todayPending = todayTotal - todayDelivered;
 
+    setOnTimeAttendance(onTimeAttendCount);
+    setOnTimeDelivery(onTimeDeliverCount);
     setMetrics({
-      todayAssigned: todayTotal,
-      todayDelivered,
-      todayPending,
-      totalDeliveries: totalDelivered,
-      successRate,
+      deliveries: Number(myRanking?.deliveries ?? 0),
+      present: Number(myRanking?.present_days ?? 0),
+      absent: Number(myRanking?.absent_days ?? 0),
     });
+
+    const evaluationMap = new Map<string, { status: string; earned_amount: number }>();
+    (evaluationsRes.data ?? []).forEach((evaluation: any) => {
+      evaluationMap.set(evaluation.incentive_id, {
+        status: evaluation.status,
+        earned_amount: Number(evaluation.earned_amount ?? 0),
+      });
+    });
+
+    const breakdown = ((incentivesRes.data ?? []) as any[]).map((incentive: any): BonusBreakdown | null => {
+      const amount = Number(incentive.amount ?? 0);
+      const basis = incentive.evaluation_basis ?? incentive.type;
+      const category = incentive.bonus_category;
+      const evaluation = evaluationMap.get(incentive.id);
+      let eligibleCount = 0;
+      let unitLabel = basis === 'per_day' ? 'days' : 'month';
+
+      if (category === 'on_time_attendance') {
+        eligibleCount = onTimeAttendCount;
+        unitLabel = 'days';
+      } else if (category === 'on_time_delivery') {
+        eligibleCount = onTimeDeliverCount;
+        unitLabel = 'days';
+      } else if (evaluation?.status === 'passed' && amount > 0) {
+        eligibleCount = basis === 'per_day'
+          ? Math.round(evaluation.earned_amount / amount)
+          : 1;
+      }
+
+      if (eligibleCount <= 0 || amount <= 0) return null;
+      return {
+        id: incentive.id,
+        name: incentive.name,
+        eligibleCount,
+        amount,
+        total: eligibleCount * amount,
+        unitLabel,
+      };
+    }).filter((entry): entry is BonusBreakdown => entry !== null);
+
+    if (approvedCount > 0 && approvedReferralTotal > 0) {
+      breakdown.push({
+        id: 'referral-approved',
+        name: 'Refer Rider Bonus',
+        eligibleCount: approvedCount,
+        amount: approvedCount > 0 ? Math.round(approvedReferralTotal / approvedCount) : refRewardAmount,
+        total: approvedReferralTotal,
+        unitLabel: 'referrals',
+      });
+    }
+    setBonusBreakdown(breakdown);
+
+    const rankingRows = (topRankingsRes.data ?? []) as any[];
+    if (rankingRows.length > 0) {
+      const riderIds = rankingRows.map((entry: any) => entry.rider_id);
+      const { data: riderNames } = await supabase.from('riders').select('id, full_name, profile_photo_url').in('id', riderIds);
+      const riderMap = new Map<string, { full_name: string; profile_photo_url: string | null }>();
+      (riderNames ?? []).forEach((entry: any) => riderMap.set(entry.id, { full_name: entry.full_name, profile_photo_url: entry.profile_photo_url ?? null }));
+      setRankings(rankingRows.map((entry: any) => ({
+        rider_id: entry.rider_id,
+        rider_name: riderMap.get(entry.rider_id)?.full_name ?? 'Rider',
+        rank_position: entry.rank_position,
+        score: Number(entry.score ?? 0),
+        deliveries: entry.deliveries ?? 0,
+        present_days: entry.present_days ?? 0,
+        total_earned: Number(entry.total_earned ?? 0),
+        profile_photo_url: riderMap.get(entry.rider_id)?.profile_photo_url ?? null,
+        is_self: entry.rider_id === riderData.id,
+      })));
+    } else {
+      setRankings([]);
+    }
 
     setLoading(false);
     setRefreshing(false);
   }, [profile?.id]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (hasRedirectedRef.current) return;
+    if (loading || todayAttendance === undefined || !riderId) return;
+    // Don't navigate until the root navigator has finished settling into
+    // this screen. Firing router.replace here while the root layout is
+    // still navigating into /(rider) races two navigations in the same
+    // tick, which crashed release builds with "Maximum update depth
+    // exceeded" (React Navigation's screen-options cleanup cascading into
+    // an unmount/remount loop).
+    if (!rootNavigationState?.key) return;
+    if (todayAttendance?.status === 'present') {
+      hasRedirectedRef.current = true;
+      router.replace('/(rider)/assignments');
+      return;
+    }
+    if (rankingPromptCheckedRef.current) return;
+    rankingPromptCheckedRef.current = true;
+    const key = `rider-ranking-prompt:${riderId}:${todayISTString()}`;
+    AsyncStorage.getItem(key)
+      .then((shown) => { if (shown !== 'shown') setShowRankingModal(true); })
+      .catch(() => setShowRankingModal(true));
+  }, [loading, todayAttendance, riderId, router, rootNavigationState?.key]);
 
   const onRefresh = () => { setRefreshing(true); load(); };
 
@@ -190,6 +309,112 @@ export default function RiderDashboard() {
     }
   };
 
+
+  const renderPerformanceCard = () => {
+    const perfStats = [
+      { label: 'On-Time Attendance', value: onTimeAttendance, color: Colors.success, bg: Colors.successSurface },
+      { label: 'On-Time Delivery', value: onTimeDelivery, color: ACCENT, bg: 'rgba(58,175,228,0.12)' },
+      { label: 'Absent', value: metrics.absent, color: Colors.error, bg: Colors.errorSurface },
+    ];
+    return (
+      <View style={isWeb ? wStyles.perfCard : mStyles.perfCard}>
+        <View style={isWeb ? wStyles.perfCardHeader : mStyles.perfCardHeader}>
+          <View style={isWeb ? wStyles.perfIconWrap : mStyles.perfIconWrap}>
+            <Award size={isWeb ? 18 : 16} color={Colors.primary} strokeWidth={1.8} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={isWeb ? wStyles.perfTitle : mStyles.perfTitle}>This Month's Performance</Text>
+          </View>
+        </View>
+        <View style={isWeb ? wStyles.perfStatsRow : mStyles.perfStatsRow}>
+          {perfStats.map((stat, i) => (
+            <View key={stat.label} style={[isWeb ? wStyles.perfStatItem : mStyles.perfStatItem, { backgroundColor: stat.bg }]}>
+              <Text style={[isWeb ? wStyles.perfStatValue : mStyles.perfStatValue, { color: stat.color }]}>{stat.value}</Text>
+              <Text style={isWeb ? wStyles.perfStatLabel : mStyles.perfStatLabel}>{stat.label}</Text>
+            </View>
+          ))}
+        </View>
+        {bonusBreakdown.length > 0 && (
+          <View style={bonusStyles.container}>
+            <View style={bonusStyles.headingRow}>
+              <Text style={bonusStyles.heading}>Bonus breakdown</Text>
+              <Text style={bonusStyles.total}>{`₹${bonusBreakdown.reduce((sum, bonus) => sum + bonus.total, 0).toLocaleString('en-IN')}`}</Text>
+            </View>
+            {bonusBreakdown.map((bonus) => (
+              <View key={bonus.id} style={bonusStyles.row}>
+                <Text style={bonusStyles.name} numberOfLines={1}>{bonus.name.replace(/ Bonus$/i, '')}</Text>
+                <Text style={bonusStyles.calculation}>{`${bonus.eligibleCount} ${bonus.unitLabel} × ₹${bonus.amount.toLocaleString('en-IN')} = ₹${bonus.total.toLocaleString('en-IN')}`}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+        {referralBonus && (referralBonus.approvedCount > 0 || referralBonus.eligibleCount > 0 || referralBonus.pendingCount > 0) && (
+          <View style={[bonusStyles.container, { backgroundColor: Colors.primarySurface, borderColor: Colors.primary + '22' }]}>
+            <View style={bonusStyles.headingRow}>
+              <Text style={[bonusStyles.heading, { color: Colors.primary }]}>Refer Rider Bonus</Text>
+              {referralBonus.approvedCount > 0 ? (
+                <Text style={[bonusStyles.total, { color: Colors.primary }]}>{`₹${(referralBonus.approvedCount * referralBonus.amount).toLocaleString('en-IN')}`}</Text>
+              ) : (
+                <Text style={[bonusStyles.total, { color: Colors.textTertiary }]}>₹0</Text>
+              )}
+            </View>
+            <View style={bonusStyles.row}>
+              <Text style={bonusStyles.name}>Approved</Text>
+              <Text style={bonusStyles.calculation}>{`${referralBonus.approvedCount} referrals × ₹${referralBonus.amount.toLocaleString('en-IN')} = ₹${(referralBonus.approvedCount * referralBonus.amount).toLocaleString('en-IN')}`}</Text>
+            </View>
+            {referralBonus.eligibleCount > 0 && (
+              <View style={bonusStyles.row}>
+                <Text style={bonusStyles.name}>Eligible for Approval</Text>
+                <Text style={[bonusStyles.calculation, { color: Colors.warning }]}>{`${referralBonus.eligibleCount} awaiting admin approval`}</Text>
+              </View>
+            )}
+            {referralBonus.pendingCount > 0 && (
+              <View style={bonusStyles.row}>
+                <Text style={bonusStyles.name}>In Progress</Text>
+                <Text style={[bonusStyles.calculation, { color: Colors.textTertiary }]}>{`${referralBonus.pendingCount} referrals · days being counted`}</Text>
+              </View>
+            )}
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderIncentivePlanCard = () => {
+    const slabs = [
+      { orders: 5, amount: 1000 },
+      { orders: 10, amount: 2250 },
+      { orders: 20, amount: 5000 },
+      { orders: 50, amount: 15000 },
+      { orders: 100, amount: 40000 },
+    ];
+    return (
+      <View style={incentivePlanStyles.card}>
+        <View style={incentivePlanStyles.cornerTop} />
+        <View style={incentivePlanStyles.cornerBottom} />
+        <View style={incentivePlanStyles.brandMark}>
+          <Text style={incentivePlanStyles.brandWord}>33 crores</Text>
+          <Text style={incentivePlanStyles.brandTagline}>PATH TO SPIRITUALITY</Text>
+        </View>
+        <Text style={incentivePlanStyles.title}>Incentive Plan for New Subscription</Text>
+        <View style={incentivePlanStyles.titleUnderline} />
+        <View style={incentivePlanStyles.slabList}>
+          {slabs.map((slab) => (
+            <View key={slab.orders} style={incentivePlanStyles.slabRow}>
+              <Text style={incentivePlanStyles.bullet}>•</Text>
+              <Text style={incentivePlanStyles.slabText}>{`${slab.orders} Orders - ₹${slab.amount.toLocaleString('en-IN')} /-`}</Text>
+            </View>
+          ))}
+        </View>
+        <View style={incentivePlanStyles.footer}>
+          <TouchableOpacity onPress={() => router.push('/(rider)/terms')} activeOpacity={0.7}>
+            <Text style={incentivePlanStyles.terms}>*T&C APPLY</Text>
+          </TouchableOpacity>
+          <Text style={incentivePlanStyles.website}>www.33crores.com</Text>
+        </View>
+      </View>
+    );
+  };
 
   const renderAttendanceCard = () => {
     const checkedIn = todayAttendance?.status === 'present';
@@ -263,122 +488,61 @@ export default function RiderDashboard() {
   };
 
   const metricCards = [
-    { label: "Today's", value: metrics.todayAssigned, icon: Bike, color: ACCENT, bg: 'rgba(58,175,228,0.12)', filter: '' },
-    { label: 'Delivered', value: metrics.todayDelivered, icon: PackageCheck, color: Colors.success, bg: Colors.successSurface, filter: 'delivered' },
-    { label: 'Pending', value: metrics.todayPending, icon: Clock, color: Colors.warning, bg: Colors.warningSurface, filter: 'assigned' },
+    { label: 'Deliveries', value: metrics.deliveries, icon: PackageCheck, color: ACCENT, bg: 'rgba(58,175,228,0.12)', filter: 'delivered' },
+    { label: 'Present', value: metrics.present, icon: CircleCheck, color: Colors.success, bg: Colors.successSurface, filter: '' },
+    { label: 'Absent', value: metrics.absent, icon: CircleX, color: Colors.error, bg: Colors.errorSurface, filter: '' },
   ];
 
-  const navigateToAssignments = (filter: string, date?: string) => {
-    router.push({ pathname: '/(rider)/assignments', params: { filter, ...(date ? { date } : {}) } });
+  const closeRankingModal = async () => {
+    setShowRankingModal(false);
+    if (riderId) await AsyncStorage.setItem(`rider-ranking-prompt:${riderId}:${todayISTString()}`, 'shown');
   };
 
-  const handlePickUpAll = async (tab: 'subscription' | 'custom') => {
-    if (todayAttendance?.status !== 'present') return;
-
-    const orders = tab === 'subscription' ? subOrders : customOrders;
-    const pendingIds = orders.filter((o) => !o.picked_up_at).map((o) => o.assignment_id);
-    if (pendingIds.length === 0) {
-      return;
-    }
-    setPickingUpAll(true);
-    const now = new Date().toISOString();
-    const { error } = await supabase
-      .from('rider_order_assignments')
-      .update({ picked_up_at: now })
-      .in('id', pendingIds)
-      .eq('rider_id', riderId!);
-    if (!error) {
-      if (tab === 'subscription') {
-        setSubOrders((prev) => prev.map((o) =>
-          o.picked_up_at ? o : { ...o, picked_up_at: now }
-        ));
-      } else {
-        setCustomOrders((prev) => prev.map((o) =>
-          o.picked_up_at ? o : { ...o, picked_up_at: now }
-        ));
-      }
-      setPickingUpAll(false);
-      navigateToAssignments('');
-      return;
-    }
-    setPickingUpAll(false);
-  };
-
-  const renderTabContent = (tab: 'subscription' | 'custom') => {
-    const orders = tab === 'subscription' ? subOrders : customOrders;
-    const pendingCount = orders.filter((o) => !o.picked_up_at).length;
-    const allPickedUp = orders.length > 0 && pendingCount === 0;
-    const attendanceCheckedIn = todayAttendance?.status === 'present';
-    return (
-      <View style={isWeb ? wStyles.tabContent : mStyles.tabContent}>
-        <View style={isWeb ? wStyles.tabCountRow : mStyles.tabCountRow}>
-          <Text style={isWeb ? wStyles.tabCountLabel : mStyles.tabCountLabel}>
-            {orders.length} order{orders.length !== 1 ? 's' : ''} assigned
-          </Text>
-          {allPickedUp && (
-            <View style={[isWeb ? wStyles.pickedUpBadge : mStyles.pickedUpBadge]}>
-              <PackageCheck size={isWeb ? 13 : 12} color={Colors.success} strokeWidth={2} />
-              <Text style={isWeb ? wStyles.pickedUpText : mStyles.pickedUpText}>All Picked Up</Text>
+  const renderRankingModal = () => (
+    <Modal visible={showRankingModal} transparent animationType="fade" onRequestClose={closeRankingModal}>
+      <View style={rankingModalStyles.overlay}>
+        <View style={rankingModalStyles.container}>
+          <View style={rankingModalStyles.header}>
+            <View style={rankingModalStyles.headerIcon}><Trophy size={18} color={Colors.white} strokeWidth={2} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={rankingModalStyles.title}>Rider Ranking</Text>
+              <Text style={rankingModalStyles.subtitle}>Top 3 riders · {format(new Date(), 'MMMM yyyy')}</Text>
             </View>
-          )}
+          </View>
+          <ScrollView style={rankingModalStyles.body} showsVerticalScrollIndicator={false}>
+            {rankings.length === 0 ? (
+              <View style={rankingModalStyles.empty}>
+                <Award size={28} color={Colors.textTertiary} strokeWidth={1.5} />
+                <Text style={rankingModalStyles.emptyText}>Rankings will appear after this month's performance is calculated.</Text>
+              </View>
+            ) : rankings.map((entry, index) => {
+              const meta = entry.rank_position === 1
+                ? { label: 'Gold', color: '#B77900', bg: '#FFF8E1', border: '#FFD166' }
+                : entry.rank_position === 2
+                  ? { label: 'Silver', color: '#607D8B', bg: '#ECEFF1', border: '#B0BEC5' }
+                  : { label: 'Bronze', color: '#9A5635', bg: '#FBE9E7', border: '#E6A28B' };
+              const isFirst = entry.rank_position === 1;
+              return (
+                <View key={entry.rider_id} style={[rankingModalStyles.row, isFirst && rankingModalStyles.firstRow, entry.is_self && rankingModalStyles.selfRow, index < rankings.length - 1 && rankingModalStyles.rowBorder]}>
+                  <View style={[rankingModalStyles.medal, { backgroundColor: meta.bg, borderColor: meta.border }, isFirst && rankingModalStyles.firstMedal]}>
+                    {isFirst ? <Crown size={18} color={meta.color} strokeWidth={2.2} /> : <Medal size={14} color={meta.color} strokeWidth={2.2} />}
+                    <Text style={[rankingModalStyles.medalText, { color: meta.color }]}>{meta.label}</Text>
+                  </View>
+                  {entry.profile_photo_url ? <Image source={{ uri: entry.profile_photo_url }} style={[rankingModalStyles.photo, isFirst && rankingModalStyles.firstPhoto]} /> : <View style={[rankingModalStyles.photo, isFirst && rankingModalStyles.firstPhoto, { backgroundColor: meta.bg }]}><Text style={[rankingModalStyles.initial, { color: meta.color }]}>{entry.rider_name.charAt(0).toUpperCase()}</Text></View>}
+                  <View style={rankingModalStyles.info}>
+                    <View style={rankingModalStyles.nameRow}><Text style={rankingModalStyles.name} numberOfLines={1}>{entry.rider_name}</Text>{entry.is_self && <View style={rankingModalStyles.youBadge}><Text style={rankingModalStyles.youText}>You</Text></View>}</View>
+                    <View style={rankingModalStyles.stats}><Text style={[rankingModalStyles.stat, { color: meta.color, backgroundColor: `${meta.color}18` }]}>{entry.deliveries} deliveries</Text><Text style={[rankingModalStyles.stat, { color: meta.color, backgroundColor: `${meta.color}18` }]}>{entry.present_days} present</Text>{entry.total_earned > 0 && <Text style={[rankingModalStyles.stat, { color: Colors.success, backgroundColor: Colors.successSurface }]}>{`₹${entry.total_earned.toLocaleString('en-IN')} earned`}</Text>}</View>
+                  </View>
+                  <View style={rankingModalStyles.score}><Text style={[rankingModalStyles.scoreValue, { color: meta.color }]}>{Math.round(entry.score)}</Text><Text style={rankingModalStyles.scoreLabel}>points</Text></View>
+                </View>
+              );
+            })}
+          </ScrollView>
+          <TouchableOpacity style={rankingModalStyles.closeButton} onPress={closeRankingModal} activeOpacity={0.85}><Text style={rankingModalStyles.closeText}>Continue to Attendance</Text></TouchableOpacity>
         </View>
-        {orders.length > 0 && (
-          <TouchableOpacity
-            style={[
-              isWeb ? wStyles.pickUpAllBtn : mStyles.pickUpAllBtn,
-              (!attendanceCheckedIn || pickingUpAll || allPickedUp) && (isWeb ? wStyles.pickUpAllBtnDisabled : mStyles.pickUpAllBtnDisabled),
-            ]}
-            onPress={() => handlePickUpAll(tab)}
-            disabled={pickingUpAll || allPickedUp || !attendanceCheckedIn}
-            activeOpacity={0.8}
-          >
-            {pickingUpAll
-              ? <ActivityIndicator size="small" color={Colors.white} />
-              : <ShoppingBag size={isWeb ? 16 : 15} color={Colors.white} strokeWidth={2} />}
-            <Text style={isWeb ? wStyles.pickUpAllBtnText : mStyles.pickUpAllBtnText}>
-              {pickingUpAll ? 'Picking Up...' : allPickedUp ? 'Picked Up' : !attendanceCheckedIn ? 'Mark Present to Pick Up' : 'Pick Up'}
-            </Text>
-          </TouchableOpacity>
-        )}
       </View>
-    );
-  };
-
-  const renderTabs = () => {
-    return (
-      <View style={isWeb ? wStyles.tabsContainer : mStyles.tabsContainer}>
-        <View style={isWeb ? wStyles.tabBar : mStyles.tabBar}>
-          <TouchableOpacity
-            style={[isWeb ? wStyles.tabBtn : mStyles.tabBtn, activeTab === 'subscription' && (isWeb ? wStyles.tabBtnActive : mStyles.tabBtnActive)]}
-            onPress={() => setActiveTab('subscription')}
-            activeOpacity={0.7}
-          >
-            <Package size={isWeb ? 16 : 14} color={activeTab === 'subscription' ? Colors.primary : Colors.textTertiary} strokeWidth={1.8} />
-            <Text style={[isWeb ? wStyles.tabBtnText : mStyles.tabBtnText, { color: activeTab === 'subscription' ? Colors.primary : Colors.textTertiary }]}>
-              Subscription Orders
-            </Text>
-            <View style={[isWeb ? wStyles.tabCountBadge : mStyles.tabCountBadge, { backgroundColor: activeTab === 'subscription' ? Colors.primarySurface : Colors.neutral[100] }]}>
-              <Text style={[isWeb ? wStyles.tabCountText : mStyles.tabCountText, { color: activeTab === 'subscription' ? Colors.primary : Colors.textTertiary }]}>{subOrders.length}</Text>
-            </View>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[isWeb ? wStyles.tabBtn : mStyles.tabBtn, activeTab === 'custom' && (isWeb ? wStyles.tabBtnActive : mStyles.tabBtnActive)]}
-            onPress={() => setActiveTab('custom')}
-            activeOpacity={0.7}
-          >
-            <Sparkles size={isWeb ? 16 : 14} color={activeTab === 'custom' ? Colors.primary : Colors.textTertiary} strokeWidth={1.8} />
-            <Text style={[isWeb ? wStyles.tabBtnText : mStyles.tabBtnText, { color: activeTab === 'custom' ? Colors.primary : Colors.textTertiary }]}>
-              Customize Orders
-            </Text>
-            <View style={[isWeb ? wStyles.tabCountBadge : mStyles.tabCountBadge, { backgroundColor: activeTab === 'custom' ? Colors.primarySurface : Colors.neutral[100] }]}>
-              <Text style={[isWeb ? wStyles.tabCountText : mStyles.tabCountText, { color: activeTab === 'custom' ? Colors.primary : Colors.textTertiary }]}>{customOrders.length}</Text>
-            </View>
-          </TouchableOpacity>
-        </View>
-        {activeTab === 'subscription' ? renderTabContent('subscription') : renderTabContent('custom')}
-      </View>
-    );
-  };
+    </Modal>
+  );
 
   if (isWeb) {
     return (
@@ -396,55 +560,19 @@ export default function RiderDashboard() {
         >
           <View style={wStyles.headerInner}>
             <View style={wStyles.headerLeft}>
-              <View style={wStyles.headerIconWrap}>
-                <Bike size={22} color={ACCENT} strokeWidth={1.8} />
-              </View>
+              {rider?.profile_photo_url ? (
+                <Image source={{ uri: rider.profile_photo_url }} style={wStyles.headerPhoto} />
+              ) : (
+                <View style={wStyles.headerIconWrap}>
+                  <Text style={wStyles.headerIconText}>{rider ? rider.full_name[0].toUpperCase() : 'R'}</Text>
+                </View>
+              )}
               <View>
-                <Text style={wStyles.headerEyebrow}>Rider Portal</Text>
                 <Text style={wStyles.headerTitle}>{rider ? rider.full_name : 'Dashboard'}</Text>
                 <Text style={wStyles.headerDate}>{format(new Date(), 'EEEE, dd MMMM yyyy')}</Text>
               </View>
             </View>
-            <TouchableOpacity style={wStyles.signOutBtn} onPress={signOut} activeOpacity={0.8}>
-              <LogOut size={16} color='rgba(255,255,255,0.75)' strokeWidth={1.8} />
-              <Text style={wStyles.signOutText}>Sign out</Text>
-            </TouchableOpacity>
           </View>
-
-          {rider && (
-            <View style={wStyles.profileCard}>
-              <View style={wStyles.profileLeft}>
-                <View style={wStyles.avatarCircle}>
-                  <Text style={wStyles.avatarText}>{rider.full_name[0].toUpperCase()}</Text>
-                </View>
-                <View>
-                  <Text style={wStyles.profileName}>{rider.full_name}</Text>
-                  <Text style={wStyles.profileMeta}>
-                    {rider.vehicle_type ? rider.vehicle_type.charAt(0).toUpperCase() + rider.vehicle_type.slice(1) : 'Rider'}
-                    {rider.vehicle_number ? ` · ${rider.vehicle_number}` : ''}
-                  </Text>
-                  {rider.zone && <Text style={wStyles.profileCity}>{rider.zone} Zone</Text>}
-                </View>
-              </View>
-              <View style={wStyles.statsRight}>
-                <View style={wStyles.statItem}>
-                  <Text style={wStyles.statValue}>{loading ? '—' : metrics.totalDeliveries}</Text>
-                  <Text style={wStyles.statLabel}>Deliveries</Text>
-                </View>
-                <View style={wStyles.statDivider} />
-                <View style={wStyles.statItem}>
-                  <Text style={wStyles.statValue}>{loading ? '—' : `${metrics.successRate}%`}</Text>
-                  <Text style={wStyles.statLabel}>Success</Text>
-                </View>
-                <View style={[wStyles.statusPill, { backgroundColor: rider.is_active ? 'rgba(46,160,67,0.2)' : 'rgba(198,40,40,0.2)' }]}>
-                  <View style={[wStyles.statusDot, { backgroundColor: rider.is_active ? '#4CAF50' : Colors.error }]} />
-                  <Text style={[wStyles.statusPillText, { color: rider.is_active ? '#4CAF50' : Colors.error }]}>
-                    {rider.is_active ? 'Active' : 'Inactive'}
-                  </Text>
-                </View>
-              </View>
-            </View>
-          )}
         </LinearGradient>
 
         {!rider && !loading && (
@@ -457,36 +585,19 @@ export default function RiderDashboard() {
 
         {rider && (
           <View style={wStyles.body}>
-            <View style={wStyles.metricsGrid}>
-              {metricCards.map((card) => {
-                const Icon = card.icon;
-                return (
-                  <TouchableOpacity
-                    key={card.label}
-                    style={wStyles.metricCard}
-                    onPress={() => navigateToAssignments(card.filter)}
-                    activeOpacity={0.75}
-                  >
-                    <View style={[wStyles.metricIconWrap, { backgroundColor: card.bg }]}>
-                      <Icon size={20} color={card.color} strokeWidth={1.8} />
-                    </View>
-                    <Text style={wStyles.metricValue}>{loading ? '—' : card.value}</Text>
-                    <Text style={wStyles.metricLabel}>{card.label}</Text>
-                    <ChevronRight size={14} color={Colors.neutral[300]} style={{ position: 'absolute', top: 16, right: 16 } as any} />
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            {/* Performance section */}
+            {!loading && renderPerformanceCard()}
 
             {/* Attendance check-in card */}
             {!loading && todayAttendance !== undefined && renderAttendanceCard()}
 
-            {/* Order tabs */}
-            {!loading && rider && renderTabs()}
+            {/* Monthly incentive plan */}
+            {!loading && renderIncentivePlanCard()}
 
           </View>
         )}
 
+        {renderRankingModal()}
       </ScrollView>
       </>
     );
@@ -494,6 +605,7 @@ export default function RiderDashboard() {
 
   return (
     <View style={mStyles.container}>
+
       <LinearGradient
         colors={[GRADIENT_TOP, GRADIENT_MID, GRADIENT_BOT]}
         start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
@@ -501,38 +613,18 @@ export default function RiderDashboard() {
       >
         <View style={mStyles.headerTopRow}>
           <View style={mStyles.headerLeft}>
-            <View style={mStyles.bikeIconWrap}>
-              <Bike size={18} color={ACCENT} strokeWidth={1.8} />
-            </View>
+            {rider?.profile_photo_url ? (
+              <Image source={{ uri: rider.profile_photo_url }} style={mStyles.headerPhoto} />
+            ) : (
+              <View style={mStyles.bikeIconWrap}>
+                <Text style={mStyles.bikeIconText}>{rider ? rider.full_name[0].toUpperCase() : 'R'}</Text>
+              </View>
+            )}
             <View>
-              <Text style={mStyles.headerEyebrow}>Rider Portal</Text>
               <Text style={mStyles.headerTitle} numberOfLines={1}>{rider ? rider.full_name : 'Dashboard'}</Text>
             </View>
           </View>
-          <TouchableOpacity style={mStyles.signOutBtn} onPress={signOut} activeOpacity={0.7}>
-            <LogOut size={16} color='rgba(255,255,255,0.7)' strokeWidth={1.8} />
-          </TouchableOpacity>
         </View>
-
-        {rider && (
-          <View style={mStyles.riderRow}>
-            <View style={mStyles.riderAvatarSmall}>
-              <Text style={mStyles.riderAvatarText}>{rider.full_name[0].toUpperCase()}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={mStyles.riderContact}>
-                {rider.vehicle_type ? rider.vehicle_type.charAt(0).toUpperCase() + rider.vehicle_type.slice(1) : 'Rider'}
-                {rider.vehicle_number ? ` · ${rider.vehicle_number}` : ''}
-              </Text>
-              {rider.zone && <Text style={mStyles.riderZone}><MapPin size={10} color='rgba(255,255,255,0.5)' strokeWidth={1.8} /> {rider.zone} Zone</Text>}
-            </View>
-            <View style={[mStyles.activePill, { backgroundColor: rider.is_active ? 'rgba(76,175,80,0.2)' : 'rgba(198,40,40,0.2)' }]}>
-              <Text style={[mStyles.activePillText, { color: rider.is_active ? '#4CAF50' : Colors.error }]}>
-                {rider.is_active ? 'Active' : 'Inactive'}
-              </Text>
-            </View>
-          </View>
-        )}
 
         <Text style={mStyles.dateText}>{format(new Date(), 'EEEE, dd MMMM yyyy')}</Text>
       </LinearGradient>
@@ -551,40 +643,19 @@ export default function RiderDashboard() {
 
         {rider && (
           <>
-            <View style={mStyles.metricsGrid}>
-              {metricCards.map((card) => {
-                const Icon = card.icon;
-                return (
-                  <TouchableOpacity
-                    key={card.label}
-                    style={mStyles.metricCard}
-                    onPress={() => navigateToAssignments(card.filter)}
-                    activeOpacity={0.75}
-                  >
-                    <View style={[mStyles.metricAccentBar, { backgroundColor: card.color }]} />
-                    <View style={mStyles.metricCardInner}>
-                      <View style={[mStyles.metricIconWrap, { backgroundColor: card.bg }]}>
-                        <Icon size={18} color={card.color} strokeWidth={1.8} />
-                      </View>
-                      <Text style={[mStyles.metricValue, { color: card.color }]}>
-                        {loading ? '—' : card.value}
-                      </Text>
-                      <Text style={mStyles.metricLabel}>{card.label}</Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            {/* Performance section */}
+            {!loading && renderPerformanceCard()}
 
             {/* Attendance check-in card */}
             {!loading && todayAttendance !== undefined && renderAttendanceCard()}
 
-            {/* Order tabs */}
-            {!loading && rider && renderTabs()}
+            {/* Monthly incentive plan */}
+            {!loading && renderIncentivePlanCard()}
 
           </>
         )}
       </ScrollView>
+      {renderRankingModal()}
     </View>
   );
 }
@@ -604,6 +675,13 @@ const mStyles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
   },
+  bikeIconText: {
+    fontFamily: Typography.fontFamily.bold, fontSize: 18, color: ACCENT,
+  },
+  headerPhoto: {
+    width: 40, height: 40, borderRadius: 12,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
+  },
   headerEyebrow: {
     fontFamily: Typography.fontFamily.sansRegular,
     fontSize: Typography.size.xs, color: 'rgba(255,255,255,0.6)', letterSpacing: 0.8,
@@ -612,12 +690,6 @@ const mStyles = StyleSheet.create({
   headerTitle: {
     fontFamily: Typography.fontFamily.bold,
     fontSize: Typography.size['2xl'], color: '#FFFFFF', letterSpacing: -0.3,
-  },
-  signOutBtn: {
-    width: 38, height: 38, borderRadius: 19,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
   },
   riderRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing[3],
@@ -760,6 +832,73 @@ const mStyles = StyleSheet.create({
     fontFamily: Typography.fontFamily.sansRegular,
     fontSize: Typography.size.xs, color: Colors.textTertiary,
   },
+  // Performance card
+  perfCard: {
+    backgroundColor: Colors.white, borderRadius: 16, padding: Spacing[4],
+    borderWidth: 1, borderColor: Colors.border, gap: Spacing[3], ...Shadow.sm,
+  },
+  perfCardHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3] },
+  perfIconWrap: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: Colors.primarySurface, alignItems: 'center', justifyContent: 'center',
+  },
+  perfTitle: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textPrimary,
+  },
+  perfSub: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginTop: 2,
+  },
+  perfAmountBadge: {
+    backgroundColor: Colors.successSurface, borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 4,
+  },
+  perfAmountText: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11, color: Colors.success,
+  },
+  perfStatsRow: { flexDirection: 'row', gap: Spacing[2] },
+  perfStatItem: {
+    flex: 1, borderRadius: Radius.md, padding: Spacing[3], alignItems: 'center', gap: 4,
+  },
+  perfStatValue: {
+    fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.xl, letterSpacing: -0.3,
+  },
+  perfStatLabel: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: 10, color: Colors.textTertiary,
+  },
+  perfIncentiveList: { gap: Spacing[1], borderTopWidth: 1, borderTopColor: Colors.divider, paddingTop: Spacing[2] },
+  perfIncentiveItem: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  perfIncentiveName: {
+    flex: 1, fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.textPrimary,
+  },
+  perfIncentiveAmt: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.success,
+  },
+  // Incentive card
+  incentiveCard: {
+    backgroundColor: Colors.white, borderRadius: 16, padding: Spacing[4],
+    borderWidth: 1, borderColor: Colors.border, gap: Spacing[3], ...Shadow.sm,
+  },
+  incentiveHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3] },
+  incentiveIconWrap: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: '#E8F5E9', alignItems: 'center', justifyContent: 'center',
+  },
+  incentiveTitle: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textPrimary,
+  },
+  incentiveSub: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginTop: 2,
+  },
+  incentiveTotal: {
+    fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.lg, color: Colors.success,
+  },
+  incentiveList: { gap: Spacing[2] },
+  incentiveItem: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  incentiveItemName: {
+    flex: 1, fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textPrimary,
+  },
+  incentiveItemAmount: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.success,
+  },
   // Attendance card
   attendanceCard: {
     backgroundColor: Colors.white, borderRadius: 16, padding: Spacing[4],
@@ -804,21 +943,6 @@ const mStyles = StyleSheet.create({
   checkInBtnText: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.white,
   },
-  tabsContainer: { backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden', ...Shadow.sm },
-  tabBar: { flexDirection: 'row', gap: Spacing[2], padding: 4, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  tabBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, borderRadius: Radius.md },
-  tabBtnActive: { backgroundColor: Colors.primarySurface },
-  tabBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs },
-  tabCountBadge: { borderRadius: Radius.full, paddingHorizontal: 7, paddingVertical: 2 },
-  tabCountText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10 },
-  tabContent: { padding: Spacing[3], gap: Spacing[3] },
-  tabCountRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  tabCountLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textSecondary },
-  pickUpAllBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#0891b2', borderRadius: Radius.md, paddingVertical: 14 },
-  pickUpAllBtnDisabled: { backgroundColor: Colors.neutral[300], opacity: 0.8 },
-  pickUpAllBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white },
-  pickedUpBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.successSurface, borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 5, flexShrink: 0 },
-  pickedUpText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, color: Colors.success },
 });
 
 const wStyles = StyleSheet.create({
@@ -835,6 +959,13 @@ const wStyles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
   },
+  headerIconText: {
+    fontFamily: Typography.fontFamily.bold, fontSize: 24, color: ACCENT,
+  },
+  headerPhoto: {
+    width: 52, height: 52, borderRadius: 16,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
+  },
   headerEyebrow: {
     fontFamily: Typography.fontFamily.sansRegular, fontSize: 11,
     color: 'rgba(255,255,255,0.55)', letterSpacing: 1, textTransform: 'uppercase',
@@ -846,15 +977,6 @@ const wStyles = StyleSheet.create({
   headerDate: {
     fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm,
     color: 'rgba(255,255,255,0.5)', marginTop: 3,
-  },
-  signOutBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 14, paddingVertical: 8,
-    borderRadius: Radius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)',
-    backgroundColor: 'rgba(255,255,255,0.08)',
-  },
-  signOutText: {
-    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: 'rgba(255,255,255,0.75)',
   },
   profileCard: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
@@ -978,6 +1100,73 @@ const wStyles = StyleSheet.create({
   emptyText: {
     fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary,
   },
+  // Performance card (web)
+  perfCard: {
+    backgroundColor: Colors.white, borderRadius: 16, padding: 20,
+    borderWidth: 1, borderColor: Colors.border, gap: 16, ...Shadow.sm,
+  },
+  perfCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  perfIconWrap: {
+    width: 44, height: 44, borderRadius: 14,
+    backgroundColor: Colors.primarySurface, alignItems: 'center', justifyContent: 'center',
+  },
+  perfTitle: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textPrimary,
+  },
+  perfSub: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginTop: 2,
+  },
+  perfAmountBadge: {
+    backgroundColor: Colors.successSurface, borderRadius: Radius.full, paddingHorizontal: 12, paddingVertical: 5,
+  },
+  perfAmountText: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 12, color: Colors.success,
+  },
+  perfStatsRow: { flexDirection: 'row', gap: 10 },
+  perfStatItem: {
+    flex: 1, borderRadius: Radius.md, padding: 14, alignItems: 'center', gap: 6,
+  },
+  perfStatValue: {
+    fontFamily: Typography.fontFamily.bold, fontSize: Typography.size['2xl'], letterSpacing: -0.3,
+  },
+  perfStatLabel: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.textTertiary,
+  },
+  perfIncentiveList: { gap: 6, borderTopWidth: 1, borderTopColor: Colors.divider, paddingTop: 12 },
+  perfIncentiveItem: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  perfIncentiveName: {
+    flex: 1, fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textPrimary,
+  },
+  perfIncentiveAmt: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.success,
+  },
+  // Incentive card (web)
+  incentiveCard: {
+    backgroundColor: Colors.white, borderRadius: 16, padding: 20,
+    borderWidth: 1, borderColor: Colors.border, gap: Spacing[3], ...Shadow.sm,
+  },
+  incentiveHeader: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  incentiveIconWrap: {
+    width: 44, height: 44, borderRadius: 14,
+    backgroundColor: '#E8F5E9', alignItems: 'center', justifyContent: 'center',
+  },
+  incentiveTitle: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textPrimary,
+  },
+  incentiveSub: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginTop: 2,
+  },
+  incentiveTotal: {
+    fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.xl, color: Colors.success,
+  },
+  incentiveList: { gap: Spacing[2] },
+  incentiveItem: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  incentiveItemName: {
+    flex: 1, fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textPrimary,
+  },
+  incentiveItemAmount: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.success,
+  },
   // Attendance card (web)
   attendanceCard: {
     backgroundColor: Colors.white, borderRadius: 16, padding: 20,
@@ -1022,19 +1211,148 @@ const wStyles = StyleSheet.create({
   checkInBtnText: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white,
   },
-  tabsContainer: { backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden', ...Shadow.sm },
-  tabBar: { flexDirection: 'row', gap: 10, padding: 6, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  tabBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: Radius.md, cursor: 'pointer' as any },
-  tabBtnActive: { backgroundColor: Colors.primarySurface },
-  tabBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm },
-  tabCountBadge: { borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 2 },
-  tabCountText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11 },
-  tabContent: { padding: 20, gap: 16 },
-  tabCountRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  tabCountLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textSecondary },
-  pickUpAllBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: '#0891b2', borderRadius: Radius.md, paddingVertical: 16, cursor: 'pointer' as any },
-  pickUpAllBtnDisabled: { backgroundColor: Colors.neutral[300], cursor: 'not-allowed' as any, opacity: 0.8 },
-  pickUpAllBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.white },
-  pickedUpBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: Colors.successSurface, borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 6, flexShrink: 0 },
-  pickedUpText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 12, color: Colors.success },
+});
+
+const rankingModalStyles = StyleSheet.create({
+  overlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', alignItems: 'center', padding: 20,
+  },
+  container: {
+    backgroundColor: Colors.white, borderRadius: 20, overflow: 'hidden',
+    width: '100%', maxWidth: 420, ...Shadow.lg,
+  },
+  header: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing[3],
+    paddingHorizontal: Spacing[5], paddingVertical: Spacing[4],
+    backgroundColor: GRADIENT_TOP,
+  },
+  headerIcon: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center',
+  },
+  title: {
+    fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.lg, color: '#FFFFFF',
+  },
+  subtitle: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: 'rgba(255,255,255,0.6)', marginTop: 2,
+  },
+  body: { maxHeight: 380, padding: Spacing[2] },
+  empty: { paddingVertical: Spacing[6], alignItems: 'center', gap: Spacing[3] },
+  emptyText: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary, textAlign: 'center', maxWidth: 280,
+  },
+  row: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing[3], paddingVertical: Spacing[3], gap: Spacing[3],
+    borderRadius: 12,
+  },
+  rowBorder: { borderBottomWidth: 1, borderBottomColor: Colors.divider },
+  selfRow: { backgroundColor: '#EBF5FF' },
+  firstRow: { paddingVertical: Spacing[4], backgroundColor: '#FFFDF5' },
+  medal: {
+    width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.5, flexShrink: 0, gap: 1,
+  },
+  firstMedal: { width: 50, height: 50, borderRadius: 25, borderWidth: 2 },
+  medalText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 9, letterSpacing: 0.5 },
+  photo: { width: 40, height: 40, borderRadius: 20, flexShrink: 0 },
+  firstPhoto: { width: 48, height: 48, borderRadius: 24 },
+  initial: { fontFamily: Typography.fontFamily.bold, fontSize: 16 },
+  info: { flex: 1, gap: 4 },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  name: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary, flexShrink: 1 },
+  youBadge: { backgroundColor: Colors.primarySurface, borderRadius: Radius.full, paddingHorizontal: 6, paddingVertical: 1 },
+  youText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 9, color: Colors.primary },
+  stats: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
+  stat: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, paddingHorizontal: 8, paddingVertical: 2, borderRadius: Radius.full },
+  score: { alignItems: 'center', flexShrink: 0 },
+  scoreValue: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.xl, letterSpacing: -0.3 },
+  scoreLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 9, color: Colors.textTertiary, marginTop: 1 },
+  closeButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: Colors.primary, borderRadius: 12, paddingVertical: 14, marginHorizontal: Spacing[4], marginBottom: Spacing[4],
+  },
+  closeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.white },
+});
+
+const bonusStyles = StyleSheet.create({
+  container: {
+    marginTop: Spacing[3], padding: Spacing[3], gap: Spacing[2],
+    backgroundColor: Colors.successSurface, borderRadius: Radius.md,
+  borderWidth: 1, borderColor: Colors.success + '22',
+  },
+  headingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  heading: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.success, letterSpacing: 0.3 },
+  total: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.sm, color: Colors.success },
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  name: { flex: 1, fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.textSecondary },
+  calculation: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11, color: Colors.textPrimary },
+});
+
+const incentivePlanStyles = StyleSheet.create({
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E8B4B4',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  cornerTop: {
+    position: 'absolute', top: -28, right: -28,
+    width: 56, height: 56, borderRadius: 28,
+    backgroundColor: '#FDE8E8',
+  },
+  cornerBottom: {
+    position: 'absolute', bottom: -28, left: -28,
+    width: 56, height: 56, borderRadius: 28,
+    backgroundColor: '#FDE8E8',
+  },
+  brandMark: {
+    alignItems: 'center', paddingTop: 16, paddingBottom: 8, gap: 2,
+  },
+  brandWord: {
+    fontFamily: Typography.fontFamily.bold,
+    fontSize: 18, color: '#C53030', letterSpacing: 0.5,
+  },
+  brandTagline: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: 8, color: '#C53030', letterSpacing: 2, textTransform: 'uppercase',
+  },
+  title: {
+    textAlign: 'center',
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: 13, color: Colors.textPrimary,
+    marginTop: 4, paddingHorizontal: 20,
+  },
+  titleUnderline: {
+    width: 50, height: 2, backgroundColor: '#C53030',
+    alignSelf: 'center', marginTop: 6, borderRadius: 1,
+  },
+  slabList: {
+    paddingHorizontal: 20, paddingVertical: 14, gap: 10,
+  },
+  slabRow: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+  },
+  bullet: {
+    fontSize: 14, color: '#C53030', lineHeight: 18, fontWeight: 'bold',
+  },
+  slabText: {
+    flex: 1,
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: 13, color: Colors.textPrimary, lineHeight: 18,
+  },
+  footer: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingBottom: 14, paddingTop: 4,
+  },
+  terms: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: 9, color: Colors.textTertiary, letterSpacing: 0.5,
+  },
+  website: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: 9, color: '#C53030',
+  },
 });

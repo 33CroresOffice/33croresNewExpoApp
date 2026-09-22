@@ -13,7 +13,7 @@ import {
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, MapPin, Phone, Bike, User, X, Search, CircleCheck, CreditCard, CalendarDays, CirclePause as PauseCircle, Pencil, History, PackageCheck, Truck, Clock, PackageX, Receipt, RefreshCw, Wallet } from 'lucide-react-native';
+import { ArrowLeft, MapPin, Phone, Bike, User, X, Search, CircleCheck, CreditCard, CalendarDays, CirclePause as PauseCircle, Pencil, History, PackageCheck, Truck, Clock, PackageX, Receipt, RefreshCw, Wallet, UserMinus } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { OrderStatus } from '@/types/database';
@@ -22,6 +22,7 @@ import Button from '@/components/ui/Button';
 import DatePickerField from '@/components/ui/DatePickerField';
 import { format } from 'date-fns';
 import { dedupePauseHistory } from '@/utils/pauseHistory';
+import { getEffectiveStatus } from '@/utils/subscriptionStatus';
 
 const STATUSES: { label: string; value: OrderStatus }[] = [
   { label: 'Scheduled', value: 'scheduled' },
@@ -36,6 +37,7 @@ const SUB_STATUSES = [
   { value: 'expired',  label: 'Expired',  color: Colors.error },
   { value: 'pending',  label: 'Pending',  color: Colors.warning },
   { value: 'cancelled',label: 'Cancelled',color: Colors.textSecondary },
+  { value: 'scheduled_pause', label: 'Pause Scheduled', color: '#7C3AED' },
 ];
 
 const ORDER_STATUS_CONFIG = {
@@ -101,6 +103,8 @@ function AdminOrderDetailScreenContent() {
   const [assignNotes, setAssignNotes] = useState('');
   const [assigning, setAssigning] = useState(false);
   const [reassignMode, setReassignMode] = useState(false);
+  const [unassigning, setUnassigning] = useState(false);
+  const [showUnassignModal, setShowUnassignModal] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) {
@@ -239,6 +243,21 @@ const handleAssign = async () => {
     setAssignNotes('');
     setReassignMode(false);
     load();
+  };
+
+  const handleUnassign = async () => {
+    if (!assignment?.id) return;
+    setUnassigning(true);
+    const { error } = await supabase
+      .from('rider_order_assignments')
+      .update({ status: 'reassigned', is_reassigned: true })
+      .eq('id', assignment.id);
+    if (!error) {
+      await supabase.from('orders').update({ status: 'scheduled' }).eq('id', id);
+    }
+    setUnassigning(false);
+    setShowUnassignModal(false);
+    if (!error) load();
   };
 
   const toDateObj = (s: string | null | undefined): Date | null => {
@@ -448,10 +467,15 @@ const handleAssign = async () => {
           <Text style={styles.cardTitle}>Customer</Text>
           <View style={styles.infoRow}>
             <Phone size={16} color={Colors.primary} />
-            <View>
-              <Text style={styles.infoValue}>{order.user?.full_name ?? 'Unknown'}</Text>
+            <TouchableOpacity
+              style={styles.customerLink}
+              onPress={() => order.user_id && router.push({ pathname: '/(admin)/customer-detail', params: { id: order.user_id } } as any)}
+              activeOpacity={0.7}
+              disabled={!order.user_id}
+            >
+              <Text style={styles.customerName}>{order.user?.full_name ?? 'Unknown'}</Text>
               <Text style={styles.infoSub}>+91 {order.user?.mobile}</Text>
-            </View>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -529,7 +553,7 @@ const handleAssign = async () => {
               <View style={styles.summaryDivider} />
               <View style={styles.summaryRow}>
                 <Text style={styles.summaryLabel}>Status</Text>
-                <StatusChip status={isPaused ? 'paused' : ((sub.new_end_date ?? sub.end_date) && (sub.new_end_date ?? sub.end_date) < new Date().toISOString().split('T')[0]) ? 'expired' : sub.status} />
+                <StatusChip status={getEffectiveStatus(sub)} />
               </View>
               {isPaused && (
                 <>
@@ -696,6 +720,14 @@ const handleAssign = async () => {
                 >
                   <RefreshCw size={13} color={Colors.primary} />
                   <Text style={styles.reassignBtnText}>Reassign</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.unassignBtn}
+                  onPress={() => setShowUnassignModal(true)}
+                  disabled={unassigning}
+                >
+                  <UserMinus size={13} color={Colors.error} />
+                  <Text style={styles.unassignBtnText}>Unassign</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -997,6 +1029,26 @@ const handleAssign = async () => {
         </View>
       </Modal>
 
+      <Modal visible={showUnassignModal} animationType="fade" transparent onRequestClose={() => setShowUnassignModal(false)}>
+        <View style={styles.unassignOverlay}>
+          <View style={styles.unassignDialog}>
+            <View style={styles.unassignIconCircle}>
+              <UserMinus size={28} color={Colors.error} />
+            </View>
+            <Text style={styles.unassignDialogTitle}>Unassign Rider?</Text>
+            <Text style={styles.unassignDialogText}>This will remove {rider?.full_name ?? 'the rider'} from this order. The order will be moved back to scheduled status and can be assigned to another rider.</Text>
+            <View style={styles.unassignDialogActions}>
+              <TouchableOpacity style={styles.unassignCancelBtn} onPress={() => setShowUnassignModal(false)} disabled={unassigning}>
+                <Text style={styles.unassignCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.unassignConfirmBtn} onPress={handleUnassign} disabled={unassigning}>
+                {unassigning ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={styles.unassignConfirmText}>Unassign</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={showAssignModal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowAssignModal(false)}>
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
@@ -1193,6 +1245,22 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     lineHeight: 18,
   },
+  customerLink: {
+    flex: 1,
+  flexDirection: 'column',
+  gap: 2,
+  paddingVertical: 2,
+  paddingHorizontal: Spacing[1],
+    marginHorizontal: -Spacing[1],
+    borderRadius: Radius.sm,
+  },
+  customerName: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.sm,
+    color: Colors.primary,
+    lineHeight: 18,
+  textDecorationLine: 'underline',
+  },
   infoSub: {
     fontFamily: Typography.fontFamily.sansRegular,
     fontSize: Typography.size.xs,
@@ -1304,6 +1372,21 @@ const styles = StyleSheet.create({
     fontSize: Typography.size.xs,
     color: Colors.primary,
   },
+  unassignBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    padding: Spacing[3],
+    borderLeftWidth: 1,
+    borderLeftColor: Colors.border,
+  },
+  unassignBtnText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    color: Colors.error,
+  },
   reassignNotice: {
     backgroundColor: '#FEF3C7',
     borderRadius: Radius.sm,
@@ -1319,6 +1402,74 @@ const styles = StyleSheet.create({
     fontFamily: Typography.fontFamily.sansMedium,
     fontSize: Typography.size.xs,
     color: Colors.primary,
+  },
+  unassignOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing[5],
+  },
+  unassignDialog: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: Colors.white,
+    borderRadius: Radius.xl,
+    padding: Spacing[6],
+    alignItems: 'center',
+    gap: Spacing[3],
+  },
+  unassignIconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#FEE2E2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing[1],
+  },
+  unassignDialogTitle: {
+    fontFamily: Typography.fontFamily.bold,
+    fontSize: Typography.size.lg,
+    color: Colors.textPrimary,
+  },
+  unassignDialogText: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  unassignDialogActions: {
+    flexDirection: 'row',
+    gap: Spacing[3],
+    marginTop: Spacing[2],
+    width: '100%',
+  },
+  unassignCancelBtn: {
+    flex: 1,
+    paddingVertical: Spacing[3],
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+  },
+  unassignCancelText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.base,
+    color: Colors.textSecondary,
+  },
+  unassignConfirmBtn: {
+    flex: 1,
+    paddingVertical: Spacing[3],
+    borderRadius: Radius.md,
+    backgroundColor: Colors.error,
+    alignItems: 'center',
+  },
+  unassignConfirmText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.base,
+    color: Colors.white,
   },
   noRiderBox: {
     alignItems: 'center',

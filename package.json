@@ -1,7 +1,7 @@
 {
   "name": "bolt-expo-starter",
   "main": "expo-router/entry",
-  "version": "1.0.0",
+  "version": "3.2.9",
   "private": true,
   "scripts": {
     "dev": "EXPO_NO_TELEMETRY=1 expo start",
@@ -10,7 +10,6 @@
     "typecheck": "tsc --noEmit",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "apply-client": "node scripts/apply-client.js",
     "clean:android": "rimraf android/app/build android/build android/app/.cxx android/.gradle",
     "release:apk": "cd android && gradlew.bat assembleRelease --no-daemon",
     "release:aab": "cd android && gradlew.bat bundleRelease --no-daemon"
@@ -21,6 +20,7 @@
     "@expo/vector-icons": "^15.0.2",
     "@lucide/lab": "^0.1.2",
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-community/datetimepicker": "8.4.4",
     "@react-navigation/bottom-tabs": "^7.2.0",
     "@react-navigation/native": "^7.0.14",
     "@supabase/supabase-js": "^2.58.0",

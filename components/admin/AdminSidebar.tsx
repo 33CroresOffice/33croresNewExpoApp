@@ -7,7 +7,7 @@ import {
   Receipt, CreditCard, ChartPie as PieChart, Tag, MessageSquare, Bike,
   MapPin, ShieldCheck, Activity, CirclePlus as PlusCircle, Smartphone, Building2,
   Bell, Send, FileText, UserCog, Shield, CalendarDays, ShieldCheck as LoginLogIcon,
-  KeyRound, Truck, CircleDollarSign, Zap, SlidersHorizontal, Wallet, Clock, Sparkles, Flame, Inbox,
+  KeyRound, Truck, CircleDollarSign, Zap, SlidersHorizontal, Wallet, Clock, Sparkles, Flame, Inbox, Award,
 } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius } from '@/constants/theme';
 import { useAuthStore } from '@/store/authStore';
@@ -102,9 +102,11 @@ const NAV_SECTIONS: NavSection[] = [
       { label: 'Riders',               icon: Bike,        href: '/(admin)/riders' },
       { label: 'Assignment System',    icon: Zap,         href: '/(admin)/rider-assignment-system' },
       { label: 'Assigned Riders',      icon: ClipboardList, href: '/(admin)/assigned-riders' },
+      { label: 'Assignment Orders',     icon: ClipboardList, href: '/(admin)/rider-assignment-orders' },
       { label: 'Assignments',          icon: MapPin,      href: '/(admin)/rider-assignments' },
       { label: 'Attendance Locations', icon: ShieldCheck, href: '/(admin)/attendance-locations' },
       { label: 'Delivery Time',       icon: Clock,       href: '/(admin)/rider-delivery-time' },
+      { label: 'Incentives',          icon: Award,        href: '/(admin)/rider-incentives' },
     ],
   },
   {

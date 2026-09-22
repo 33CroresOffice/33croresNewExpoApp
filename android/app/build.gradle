@@ -94,13 +94,13 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.thirtythreecroresapp.rider'
+    namespace 'com.thirtythreecroresapp'
     defaultConfig {
-        applicationId 'com.thirtythreecroresapp.rider'
+        applicationId 'com.thirtythreecroresapp'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0.0"
+        versionCode 58
+        versionName "3.2.9"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }

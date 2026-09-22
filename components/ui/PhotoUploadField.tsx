@@ -35,12 +35,23 @@ export default function PhotoUploadField({
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [localUri, setLocalUri] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!value) { setPreviewUrl(null); return; }
-    if (bucket === 'riders') { setPreviewUrl(value); return; }
-    supabase.storage.from(bucket).createSignedUrl(value, 3600).then(({ data }) => setPreviewUrl(data?.signedUrl ?? null));
-  }, [bucket, value]);
+    if (!value) {
+      if (!localUri) setPreviewUrl(null);
+      return;
+    }
+    if (value.startsWith('http')) {
+      setPreviewUrl(value);
+      return;
+    }
+    let cancelled = false;
+    supabase.storage.from(bucket).createSignedUrl(value, 3600).then(({ data }) => {
+      if (!cancelled) setPreviewUrl(data?.signedUrl ?? null);
+    });
+    return () => { cancelled = true; };
+  }, [bucket, localUri, value]);
 
   const pickAndUpload = async () => {
     setError(null);
@@ -64,6 +75,8 @@ export default function PhotoUploadField({
     if (result.canceled || !result.assets?.[0]) return;
 
     const asset = result.assets[0];
+    setLocalUri(asset.uri);
+    setPreviewUrl(asset.uri);
     setUploading(true);
 
     try {
@@ -83,31 +96,43 @@ export default function PhotoUploadField({
 
       if (uploadError) throw uploadError;
 
-      if (bucket === 'provider-photos') {
-        setPreviewUrl(asset.uri);
-      } else {
+      let remotePreviewUrl: string | null = null;
+      if (bucket !== 'provider-photos') {
         const { data: signedData } = await supabase.storage.from(bucket).createSignedUrl(filePath, 3600);
-        setPreviewUrl(signedData?.signedUrl ?? null);
+        remotePreviewUrl = signedData?.signedUrl ?? null;
+      }
+      if (remotePreviewUrl) {
+        setPreviewUrl(remotePreviewUrl);
+        setLocalUri(null);
       }
       onChange(filePath);
     } catch (e: unknown) {
       console.error('Photo upload failed', e);
       setError('Upload failed. Please try again.');
+      setLocalUri(null);
     } finally {
       setUploading(false);
     }
   };
 
-  const remove = () => onChange(null);
+  const remove = () => { setLocalUri(null); setPreviewUrl(null); onChange(null); };
 
   return (
     <View style={st.wrapper}>
       <Text style={st.label}>{label}</Text>
       {hint && <Text style={st.hint}>{hint}</Text>}
 
-      {value ? (
+      {(value || localUri) ? (
         <View style={st.previewWrap}>
-          <Image source={previewUrl ? { uri: previewUrl } : undefined} style={st.preview} resizeMode="cover" />
+          <View style={st.previewImageWrap}>
+            <Image source={(previewUrl ?? localUri) ? { uri: previewUrl ?? localUri! } : undefined} style={st.preview} resizeMode="cover" />
+            {uploading && (
+              <View style={st.uploadingOverlay}>
+                <ActivityIndicator size="large" color={Colors.white} />
+                <Text style={st.uploadingText}>Uploading...</Text>
+              </View>
+            )}
+          </View>
           <View style={st.previewActions}>
             <TouchableOpacity style={st.replaceBtn} onPress={pickAndUpload} activeOpacity={0.8} disabled={uploading}>
               {uploading ? (
@@ -115,11 +140,11 @@ export default function PhotoUploadField({
               ) : (
                 <>
                   <Upload size={13} color={Colors.primary} strokeWidth={2} />
-                  <Text style={st.replaceBtnText}>Replace</Text>
+                  <Text style={st.replaceBtnText}>Change</Text>
                 </>
               )}
             </TouchableOpacity>
-            <TouchableOpacity style={st.removeBtn} onPress={remove} activeOpacity={0.8}>
+            <TouchableOpacity style={st.removeBtn} onPress={remove} activeOpacity={0.8} disabled={uploading}>
               <X size={13} color={Colors.error} strokeWidth={2} />
               <Text style={st.removeBtnText}>Remove</Text>
             </TouchableOpacity>
@@ -198,11 +223,28 @@ const st = StyleSheet.create({
     color: Colors.textTertiary,
   },
   previewWrap: { gap: Spacing[2] },
+  previewImageWrap: {
+    position: 'relative',
+  },
   preview: {
     width: '100%',
     height: 140,
     borderRadius: Radius.md,
     backgroundColor: Colors.neutral[100],
+  },
+  uploadingOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    borderRadius: Radius.md,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing[1],
+  },
+  uploadingText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    color: Colors.white,
   },
   previewActions: { flexDirection: 'row', gap: Spacing[2] },
   replaceBtn: {

@@ -10,7 +10,7 @@ import {
   Platform,
   ActivityIndicator,
 } from 'react-native';
-import { Stack, router, usePathname } from 'expo-router';
+import { Stack, router, usePathname, useRootNavigationState } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -116,11 +116,23 @@ export default function RootLayout() {
   useFrameworkReady();
 
   const { setSession, loadProfile, setLoading, isLoading, loadActivePanel } = useAuthStore();
+  const rootNavigationState = useRootNavigationState();
 
   useEffect(() => {
+    // Wait for the root navigator to be ready before acting on a
+    // notification tap. Calling router.push here unconditionally on mount
+    // (previously with no readiness check) raced against the root layout's
+    // own session-restore navigation during the unstable initial-mount
+    // window and was the actual cause of the "Maximum update depth
+    // exceeded" crash on reopen — Android re-delivers the cached "last
+    // notification response" on every cold start, so this fired every time.
+    if (!rootNavigationState?.key) return;
+
     const navigateFromNotification = (response: Notifications.NotificationResponse) => {
       const role = useAuthStore.getState().profile?.role;
-      if (role === 'admin' || role === 'vendor') return;
+      // Only customers have a notifications screen; admins, vendors, and
+      // riders don't, so there's nowhere valid to route them.
+      if (role !== 'customer') return;
       router.push('/(customer)/notifications');
     };
 
@@ -133,7 +145,7 @@ export default function RootLayout() {
     );
 
     return () => subscription.remove();
-  }, []);
+  }, [rootNavigationState?.key]);
   const pathname = usePathname();
   const pathnameRef = React.useRef(pathname);
   pathnameRef.current = pathname;
@@ -155,9 +167,19 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (fontsLoaded || fontError) {
-      SplashScreen.hideAsync();
+      SplashScreen.hideAsync().catch(() => {});
     }
   }, [fontsLoaded, fontError]);
+
+  // Safety net: never let the splash screen hang forever. If font loading
+  // stalls on a device (no fontsLoaded and no fontError fired), force it
+  // closed after a few seconds so the app doesn't appear stuck/killed.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      SplashScreen.hideAsync().catch(() => {});
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, []);
 
   const checkAppUpdate = async () => {
     if (Platform.OS === 'web') return;
@@ -203,8 +225,22 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (!fontsLoaded && !fontError) return;
+    // Don't navigate until the root navigator has actually mounted and
+    // emitted its first state. Calling router.replace before that (or in
+    // the same tick a child screen's own effect also navigates) is what
+    // produced "Maximum update depth exceeded" crashes on Android release
+    // builds — React Navigation's screen-options cleanup (`clearOptions`)
+    // cascades into an unmount/remount loop when two navigations race
+    // during the initial, unstable mount phase.
+    if (!rootNavigationState?.key) return;
 
-    checkAppUpdate();
+    // Defer the store-version check slightly so it never competes with the
+    // critical cold-start path (session restore/navigation). It's wrapped
+    // in try/catch internally, but on some devices the underlying native
+    // version-check module can be flaky right at process start.
+    const updateCheckTimer = setTimeout(() => {
+      checkAppUpdate();
+    }, 1500);
 
     let initDone = false;
 
@@ -215,6 +251,32 @@ export default function RootLayout() {
         router.replace('/(admin)');
       } else if (profile.role === 'vendor') {
         router.replace('/(vendor)');
+        return;
+      }
+
+      if (profile.role === 'rider') {
+        router.replace('/(rider)');
+        return;
+      }
+
+      const { data: riderByProfile } = await supabase
+        .from('riders')
+        .select('id, approval_status')
+        .eq('profile_id', profile.id)
+        .maybeSingle();
+
+      let approvedRider = riderByProfile?.approval_status === 'approved';
+      if (!approvedRider && profile.mobile) {
+        const { data: riderByMobile } = await supabase
+          .from('riders')
+          .select('id, approval_status')
+          .eq('mobile', profile.mobile)
+          .maybeSingle();
+        approvedRider = riderByMobile?.approval_status === 'approved';
+      }
+
+      if (approvedRider) {
+        router.replace('/(rider)');
       } else if (!profile.full_name) {
         router.replace('/auth/profile-setup');
       } else {
@@ -276,21 +338,23 @@ export default function RootLayout() {
 
     initSession();
 
-    return () => subscription.unsubscribe();
-  }, [fontsLoaded, fontError]);
+    return () => {
+      clearTimeout(updateCheckTimer);
+      subscription.unsubscribe();
+    };
+  }, [fontsLoaded, fontError, rootNavigationState?.key]);
 
   if (!fontsLoaded && !fontError) {
     return null;
   }
 
-  if (isLoading) {
-    return (
-      <View style={styles.splashContainer}>
-        <ActivityIndicator size="large" color="#2D5A27" />
-      </View>
-    );
-  }
-
+  // The Stack must always be mounted before `initSession`'s effect can call
+  // router.replace/push — calling navigation before the root navigator is
+  // mounted throws (and can crash release builds on Android). We used to
+  // return the loading indicator in place of the Stack, which meant every
+  // reopen with a persisted session (i.e. almost every reopen) navigated
+  // before the Stack existed. Render the Stack unconditionally and overlay
+  // the loading indicator on top instead.
   const storeName = Platform.OS === 'ios' ? 'App Store' : 'Play Store';
 
   return (
@@ -306,6 +370,12 @@ export default function RootLayout() {
         <Stack.Screen name="(rider)" />
         <Stack.Screen name="+not-found" />
       </Stack>
+
+      {isLoading && (
+        <View style={[styles.splashContainer, StyleSheet.absoluteFill]}>
+          <ActivityIndicator size="large" color="#2D5A27" />
+        </View>
+      )}
 
       <StatusBar style="dark" />
 

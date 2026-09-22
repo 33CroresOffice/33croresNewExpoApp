@@ -48,6 +48,71 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // Demo account: accept fixed OTP 123456 without database lookup
+    if (mobile === "9876543210" && String(otp) === "123456") {
+      const secret = (await getSecret(supabase, "OTP_SECRET")) ?? "";
+      const password = `petal_${mobile}_${secret}`;
+      const email = `${mobile}@petal.app`;
+
+      let userId: string | null = null;
+
+      try {
+        const { data: authUserRows } = await supabase.rpc("get_auth_user_by_email", { p_email: email });
+        if (authUserRows && authUserRows.length > 0) {
+          userId = authUserRows[0].id;
+        }
+      } catch (e) {
+        console.error("Demo get_auth_user_by_email error:", e);
+      }
+
+      if (!userId) {
+        const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
+          email,
+          password,
+          email_confirm: true,
+          user_metadata: { mobile },
+        });
+
+        if (createError || !newUser?.user) {
+          console.error("Demo createUser error:", createError);
+          return new Response(
+            JSON.stringify({ success: false, error: `createUser failed: ${createError?.message}` }),
+            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        userId = newUser.user.id;
+      } else {
+        const { error: updateError } = await supabase.auth.admin.updateUserById(userId, { password });
+        if (updateError) {
+          console.error("Demo password update error:", updateError);
+        }
+      }
+
+      const { data: profileById } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", userId)
+        .maybeSingle();
+
+      if (!profileById) {
+        const { error: profileError } = await supabase.from("profiles").insert({
+          id: userId,
+          mobile,
+          full_name: "Demo User",
+          role: "customer",
+          is_verified: true,
+        });
+        if (profileError) {
+          console.error("Demo profile creation error:", profileError);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, email, password }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const otpHash = await hashOtp(supabase, String(otp));
     const now = new Date().toISOString();
 

@@ -81,6 +81,12 @@ export default function RiderLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="terms"
+        options={{
+          href: null,
+        }}
+      />
     </Tabs>
   );
 }

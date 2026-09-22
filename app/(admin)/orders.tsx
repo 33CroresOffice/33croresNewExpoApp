@@ -84,6 +84,8 @@ function AdminOrdersScreenContent() {
   const [currentPage, setCurrentPage] = useState(1);
   const [monthStatusCounts, setMonthStatusCounts] = useState<{ active: number; paused: number; expired: number; pending: number }>({ active: 0, paused: 0, expired: 0, pending: 0 });
   const [customStatusCounts, setCustomStatusCounts] = useState<{ all: number; pending: number; paid: number; cancelled: number }>({ all: 0, pending: 0, paid: 0, cancelled: 0 });
+  const [subTotalCount, setSubTotalCount] = useState(0);
+  const [customTotalCount, setCustomTotalCount] = useState(0);
   const PAGE_SIZE = 15;
 
   useEffect(() => {
@@ -220,7 +222,50 @@ function AdminOrdersScreenContent() {
         .select('status, payment_status')
         .limit(1000);
 
-      const [{ data: subData }, { data: customData, error: customErr }, activeIdsRes, priorSubsRes, riderAssignRes, monthSubsRes, customCountsRes, activeCountRes, pausedSubscriptionsRes] = await Promise.all([
+      // Head-only count queries that mirror subQuery/customQuery filters but bypass the .limit(200) cap
+      let subCountQuery = supabase.from('subscriptions').select('*', { count: 'exact', head: true });
+      if (subFilter === 'delivery_today') {
+        subCountQuery = subCountQuery.eq('status', 'active').lte('start_date', today).or(`new_end_date.gte.${today},and(new_end_date.is.null,or(end_date.is.null,end_date.gte.${today}))`).or(`pause_until.is.null,pause_until.lt.${today}`);
+      } else if (subFilter === 'delivery_tomorrow') {
+        subCountQuery = subCountQuery.eq('status', 'active').lte('start_date', tomorrowStr).or(`new_end_date.gte.${tomorrowStr},and(new_end_date.is.null,or(end_date.is.null,end_date.gte.${tomorrowStr}))`).or(`pause_until.is.null,pause_until.lt.${tomorrowStr}`);
+      } else if (subFilter === 'active') {
+        subCountQuery = subCountQuery.eq('status', 'active').or(`pause_until.is.null,pause_until.lt.${today}`);
+      } else if (subFilter === 'pending') {
+        subCountQuery = subCountQuery.eq('status', 'pending');
+      } else if (subFilter === 'expired') {
+        subCountQuery = subCountQuery.eq('status', 'expired');
+      } else if (subFilter === 'expiring_soon') {
+        subCountQuery = subCountQuery.eq('status', 'active').gte('new_end_date', today).lte('new_end_date', next5Str);
+      } else if (subFilter === 'resumed_today') {
+        subCountQuery = subCountQuery.eq('status', 'active').eq('pause_until', yesterdayStr);
+      } else if (subFilter === 'resumed_tomorrow') {
+        subCountQuery = subCountQuery.eq('status', 'active').eq('pause_until', today);
+      } else if (subFilter === 'end_today') {
+        subCountQuery = subCountQuery.in('status', ['active', 'pending']).or(`new_end_date.eq.${today},and(new_end_date.is.null,end_date.eq.${today})`);
+      } else if (subFilter === 'new_today' || subFilter === 'renewed_today') {
+        const todayStart = `${today}T00:00:00.000Z`;
+        const todayEnd = `${today}T23:59:59.999Z`;
+        subCountQuery = subCountQuery.gte('created_at', todayStart).lte('created_at', todayEnd);
+      }
+      // 'all', 'paused', 'paused_today', 'paused_tomorrow' — no server-side filter; count all rows
+      // (paused filters are applied client-side, so the count won't be exact for those, but 'all' is exact)
+
+      let customCountQuery = supabase.from('custom_orders').select('*', { count: 'exact', head: true });
+      if (customFilter === 'today') {
+        customCountQuery = customCountQuery.eq('delivery_date', today);
+      } else if (customFilter === 'next5') {
+        customCountQuery = customCountQuery.gt('delivery_date', today).lte('delivery_date', next5Str);
+      } else if (customFilter === 'unpaid') {
+        customCountQuery = customCountQuery.eq('status', 'confirmed').neq('payment_status', 'paid');
+      } else if (customFilter === 'pending') {
+        customCountQuery = customCountQuery.eq('status', 'pending');
+      } else if (customFilter === 'paid') {
+        customCountQuery = customCountQuery.in('payment_status', ['paid', 'captured']);
+      } else if (customFilter === 'cancelled') {
+        customCountQuery = customCountQuery.eq('status', 'cancelled');
+      }
+
+      const [{ data: subData }, { data: customData, error: customErr }, activeIdsRes, priorSubsRes, riderAssignRes, monthSubsRes, customCountsRes, activeCountRes, pausedSubscriptionsRes, subCountRes, customCountRes] = await Promise.all([
         subQuery,
         customQuery,
         activeIdsQuery ?? Promise.resolve({ data: null }),
@@ -230,7 +275,11 @@ function AdminOrdersScreenContent() {
         customCountsQuery,
         activeCountQuery,
         pausedSubscriptionsQuery,
+        subCountQuery,
+        customCountQuery,
       ]);
+      setSubTotalCount(subCountRes.count ?? 0);
+      setCustomTotalCount(customCountRes.count ?? 0);
 
       // Count active subscriptions per address (each address counted separately);
       // paused, expired, and pending are counted per customer.
@@ -564,21 +613,21 @@ function AdminOrdersScreenContent() {
             <Text style={webStyles.pageSubtitle}>
               {activeTab === 'subscription'
                 ? subFilter === 'paused'
-                  ? `${filteredSubs.length} currently paused subscription${filteredSubs.length !== 1 ? 's' : ''}`
+                  ? `${subTotalCount} currently paused subscription${subTotalCount !== 1 ? 's' : ''}`
                   : subFilter === 'paused_today'
-                  ? `${filteredSubs.length} subscription${filteredSubs.length !== 1 ? 's' : ''} paused today`
+                  ? `${subTotalCount} subscription${subTotalCount !== 1 ? 's' : ''} paused today`
                   : subFilter === 'paused_tomorrow'
-                  ? `${filteredSubs.length} subscription${filteredSubs.length !== 1 ? 's' : ''} pausing tomorrow`
+                  ? `${subTotalCount} subscription${subTotalCount !== 1 ? 's' : ''} pausing tomorrow`
                   : subFilter === 'resumed_today'
-                  ? `${filteredSubs.length} subscription${filteredSubs.length !== 1 ? 's' : ''} resuming today`
+                  ? `${subTotalCount} subscription${subTotalCount !== 1 ? 's' : ''} resuming today`
                   : subFilter === 'resumed_tomorrow'
-                  ? `${filteredSubs.length} subscription${filteredSubs.length !== 1 ? 's' : ''} resuming tomorrow`
+                  ? `${subTotalCount} subscription${subTotalCount !== 1 ? 's' : ''} resuming tomorrow`
                   : subFilter === 'new_today'
-                  ? `${filteredSubs.length} first-time subscription${filteredSubs.length !== 1 ? 's' : ''} started today`
+                  ? `${subTotalCount} first-time subscription${subTotalCount !== 1 ? 's' : ''} started today`
                   : subFilter === 'renewed_today'
-                  ? `${filteredSubs.length} renewed subscription${filteredSubs.length !== 1 ? 's' : ''} started today`
-                  : `${filteredSubs.length} subscription${filteredSubs.length !== 1 ? 's' : ''}`
-                : `${filteredCustom.length} custom order${filteredCustom.length !== 1 ? 's' : ''}`}
+                  ? `${subTotalCount} renewed subscription${subTotalCount !== 1 ? 's' : ''} started today`
+                  : `${subTotalCount} subscription${subTotalCount !== 1 ? 's' : ''}`
+                : `${customTotalCount} custom order${customTotalCount !== 1 ? 's' : ''}`}
             </Text>
           </View>
           <TouchableOpacity style={webStyles.exportBtn} onPress={exportCsv} activeOpacity={0.8}>
@@ -886,7 +935,7 @@ function AdminOrdersScreenContent() {
             : 'Orders'}
         </Text>
         <Text style={styles.count}>
-          {activeTab === 'subscription' ? `${filteredSubs.length}` : `${filteredCustom.length}`}
+          {activeTab === 'subscription' ? `${subTotalCount}` : `${customTotalCount}`}
           {activeTab === 'subscription' && (subFilter === 'paused' || subFilter === 'paused_today' || subFilter === 'paused_tomorrow') ? ' paused'
             : activeTab === 'subscription' && (subFilter === 'resumed_today' || subFilter === 'resumed_tomorrow') ? ' resuming'
             : ' orders'}

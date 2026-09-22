@@ -222,6 +222,7 @@ export interface SubscriptionPlan {
   description: string;
   price: number;
   mrp_price: number;
+  per_day_price: number;
   frequency: DeliveryFrequency;
   image_url: string | null;
   is_active: boolean;

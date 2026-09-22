@@ -151,7 +151,7 @@ export default function RiderLoginScreen() {
           showsVerticalScrollIndicator={false}
         >
           <Image
-            source={{ uri: 'https://images.pexels.com/photos/1402787/pexels-photo-1402787.jpeg?auto=compress&cs=tinysrgb&w=800' }}
+            source={require('./rider.png')}
             style={s.heroImage}
             resizeMode="cover"
           />
@@ -200,7 +200,7 @@ export default function RiderLoginScreen() {
     <View style={w.container}>
       <View style={w.left}>
         <Image
-          source={{ uri: 'https://images.pexels.com/photos/1402787/pexels-photo-1402787.jpeg?auto=compress&cs=tinysrgb&w=1200' }}
+          source={require('./rider.png')}
           style={w.leftImage}
           resizeMode="cover"
         />

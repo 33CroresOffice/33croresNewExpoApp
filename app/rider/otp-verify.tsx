@@ -189,7 +189,7 @@ export default function RiderOtpVerifyScreen() {
         </View>
 
         <Image
-          source={{ uri: 'https://images.pexels.com/photos/1402787/pexels-photo-1402787.jpeg?auto=compress&cs=tinysrgb&w=800' }}
+          source={require('./rider.png')}
           style={styles.heroImage}
           resizeMode="cover"
         />

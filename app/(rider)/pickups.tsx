@@ -99,6 +99,30 @@ export default function RiderPickups() {
   const [priceSaved, setPriceSaved] = useState(false);
   const [markingPickedUp, setMarkingPickedUp] = useState(false);
   const [pickupError, setPickupError] = useState<string | null>(null);
+  const [pickupCutoffTime, setPickupCutoffTime] = useState<string | null>(null);
+  const [nowTick, setNowTick] = useState(Date.now());
+
+  useEffect(() => {
+    const interval = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const formatCutoffAMPM = (raw: string): string => {
+    const clean = raw.slice(0, 5);
+    const [h, m] = clean.split(':').map(Number);
+    const period = h >= 12 ? 'PM' : 'AM';
+    const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${displayH}:${m.toString().padStart(2, '0')} ${period}`;
+  };
+
+  const isPickupCutoffPassed = (): boolean => {
+    if (!pickupCutoffTime) return false;
+    const nowIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+    const [dh, dm] = pickupCutoffTime.split(':').map(Number);
+    const cutoffMinutes = dh * 60 + dm;
+    const nowMinutes = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
+    return nowMinutes > cutoffMinutes;
+  };
 
   const load = useCallback(async () => {
     if (!profile?.id) return;
@@ -113,6 +137,8 @@ export default function RiderPickups() {
       }
       rId = riderData.id;
       setRiderId(rId);
+      const { data: cutoff } = await supabase.rpc('get_pickup_cutoff_time');
+      setPickupCutoffTime(cutoff ?? null);
     }
 
     const { data, error } = await supabase
@@ -157,6 +183,10 @@ export default function RiderPickups() {
 
   const markPickedUp = async () => {
     if (!selected) return;
+    if (isPickupCutoffPassed()) {
+      setPickupError('Pickup time is already over.');
+      return;
+    }
     const allPriced = selected.items?.every((it) => it.price_per_unit != null && it.price_per_unit > 0);
     if (!allPriced) {
       setPickupError('Enter and save prices for all items before marking as picked up');
@@ -171,7 +201,12 @@ export default function RiderPickups() {
       .eq('id', selected.id);
     setMarkingPickedUp(false);
     if (error) {
-      setPickupError('Failed to mark as picked up. Try again.');
+      const msg = error.message || '';
+      if (msg.includes('cutoff') || msg.includes('check_violation')) {
+        setPickupError('Pickup time is already over.');
+      } else {
+        setPickupError('Failed to mark as picked up. Try again.');
+      }
       return;
     }
     const updated = { ...selected, status: 'fulfilled', picked_up_at: now };
@@ -377,26 +412,36 @@ export default function RiderPickups() {
         {isPickupActive(o.status) && (
           <View style={mStyles.pickupActionWrap}>
             {pickupError && <Text style={mStyles.priceErrorText}>{pickupError}</Text>}
-            <TouchableOpacity
-              style={[
-                mStyles.pickupBtn,
-                (!priceSaved || !allPriced) && mStyles.pickupBtnDisabled,
-                markingPickedUp && mStyles.pickupBtnDisabled,
-              ]}
-              onPress={markPickedUp}
-              disabled={!priceSaved || !allPriced || markingPickedUp}
-            >
-              {markingPickedUp ? (
-                <ActivityIndicator size="small" color="#FFF" />
-              ) : (
-                <>
-                  <CheckCircle2 size={16} color="#FFF" strokeWidth={2} />
-                  <Text style={mStyles.pickupBtnText}>Picked Up</Text>
-                </>
-              )}
-            </TouchableOpacity>
-            {!priceSaved && (
+            {isPickupCutoffPassed() ? (
+              <View style={[mStyles.pickupBtn, mStyles.pickupBtnDisabled]}>
+                <CheckCircle2 size={16} color="#FFF" strokeWidth={2} />
+                <Text style={mStyles.pickupBtnText}>Pickup time is already over</Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[
+                  mStyles.pickupBtn,
+                  (!priceSaved || !allPriced) && mStyles.pickupBtnDisabled,
+                  markingPickedUp && mStyles.pickupBtnDisabled,
+                ]}
+                onPress={markPickedUp}
+                disabled={!priceSaved || !allPriced || markingPickedUp}
+              >
+                {markingPickedUp ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <>
+                    <CheckCircle2 size={16} color="#FFF" strokeWidth={2} />
+                    <Text style={mStyles.pickupBtnText}>Picked Up</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+            {!priceSaved && !isPickupCutoffPassed() && (
               <Text style={mStyles.pickupHintText}>Save prices to enable pickup confirmation</Text>
+            )}
+            {pickupCutoffTime && !isPickupCutoffPassed() && (
+              <Text style={mStyles.pickupCutoffHintText}>Pickup cutoff: {formatCutoffAMPM(pickupCutoffTime)} IST</Text>
             )}
           </View>
         )}
@@ -942,6 +987,9 @@ const mStyles = StyleSheet.create({
   },
   pickupHintText: {
     fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, textAlign: 'center',
+  },
+  pickupCutoffHintText: {
+    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.warning, textAlign: 'center', marginTop: 4,
   },
   pickedUpInfoRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: Spacing[2] },
   pickedUpInfoText: {

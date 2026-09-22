@@ -5,12 +5,13 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Modal,
   Platform,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, MapPin, Calendar, ChevronLeft, ChevronRight, RotateCcw, Clock } from 'lucide-react-native';
+import { AlertCircle, ArrowLeft, MapPin, Calendar, ChevronLeft, ChevronRight, RotateCcw, Clock } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -487,7 +488,6 @@ export default function CheckoutScreen() {
           <Text style={styles.billingNote}>Billed monthly. Cancel anytime.</Text>
         </View>
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + Spacing[4] }]}>
@@ -508,6 +508,21 @@ export default function CheckoutScreen() {
           onCancel={() => { setWebViewUrl(null); setPaying(false); }}
         />
       )}
+
+      <Modal visible={!!error} transparent animationType="fade" onRequestClose={() => setError('')}>
+        <View style={styles.errorOverlay}>
+          <View style={styles.errorModal}>
+            <View style={styles.errorIconWrap}>
+              <AlertCircle size={28} color={Colors.error} strokeWidth={2} />
+            </View>
+            <Text style={styles.errorTitle}>Something went wrong</Text>
+            <Text style={styles.errorMessage}>{error}</Text>
+            <TouchableOpacity style={styles.errorButton} onPress={() => setError('')} activeOpacity={0.85}>
+              <Text style={styles.errorButtonText}>Okay</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -738,11 +753,57 @@ const styles = StyleSheet.create({
     fontSize: Typography.size.sm,
     color: Colors.primaryDark,
   },
-  error: {
-    fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.sm,
-    color: Colors.error,
+  errorOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing[5],
+    backgroundColor: 'rgba(15, 30, 40, 0.48)',
+  },
+  errorModal: {
+    width: '100%',
+    maxWidth: 380,
+    alignItems: 'center',
+    gap: Spacing[3],
+    padding: Spacing[6],
+    borderRadius: Radius.xl,
+    backgroundColor: Colors.white,
+    ...Shadow.lg,
+  },
+  errorIconWrap: {
+    width: 60,
+    height: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.full,
+    backgroundColor: Colors.errorSurface,
+  },
+  errorTitle: {
+    fontFamily: Typography.fontFamily.bold,
+    fontSize: Typography.size.xl,
+    color: Colors.textPrimary,
     textAlign: 'center',
+  },
+  errorMessage: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.base,
+    lineHeight: 23,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+  },
+  errorButton: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: Spacing[2],
+    paddingVertical: Spacing[3],
+    borderRadius: Radius.md,
+    backgroundColor: Colors.primary,
+  },
+  errorButtonText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.base,
+    color: Colors.white,
   },
   footer: {
     padding: Spacing[5],
