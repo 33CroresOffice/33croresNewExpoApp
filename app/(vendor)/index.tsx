@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Platform,
   RefreshControl,
+  useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -37,6 +38,8 @@ export default function VendorDashboard() {
   const router = useRouter();
   const { profile, signOut } = useAuthStore();
   const isWeb = Platform.OS === 'web';
+  const { width: winWidth } = useWindowDimensions();
+  const isNarrowWeb = isWeb && winWidth < 768;
   const [vendor, setVendor] = useState<any>(null);
   const [metrics, setMetrics] = useState<VendorMetrics>({
     totalOrders: 0, pendingOrders: 0, completedOrders: 0,
@@ -114,7 +117,7 @@ export default function VendorDashboard() {
           start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
           style={wStyles.gradientHeader}
         >
-          <View style={wStyles.headerInner}>
+          <View style={[wStyles.headerInner, isNarrowWeb && wStyles.headerInnerNarrow]}>
             <View style={wStyles.headerLeft}>
               <View style={wStyles.headerIconWrap}>
                 <Store size={22} color={ACCENT_GOLD} strokeWidth={1.8} />
@@ -137,7 +140,7 @@ export default function VendorDashboard() {
           </View>
 
           {vendor && (
-            <View style={wStyles.profileCard}>
+            <View style={[wStyles.profileCard, isNarrowWeb && wStyles.profileCardNarrow]}>
               <View style={wStyles.profileLeft}>
                 <View style={wStyles.avatarCircle}>
                   <Text style={wStyles.avatarText}>{(vendor.business_name ?? 'V')[0].toUpperCase()}</Text>
@@ -159,8 +162,8 @@ export default function VendorDashboard() {
         </LinearGradient>
 
         {!vendor && !loading && (
-          <View style={{ padding: 32 }}>
-            <View style={wStyles.noVendorCard}>
+          <View style={{ padding: isNarrowWeb ? 16 : 32 }}>
+            <View style={[wStyles.noVendorCard, isNarrowWeb && wStyles.noVendorCardNarrow]}>
               <AlertCircle size={36} color={Colors.textTertiary} strokeWidth={1.5} />
               <Text style={wStyles.noVendorTitle}>No vendor profile linked</Text>
               <Text style={wStyles.noVendorSub}>Your account is not associated with a vendor profile. Please contact the admin team.</Text>
@@ -169,7 +172,7 @@ export default function VendorDashboard() {
         )}
 
         {vendor && (
-          <View style={{ padding: 32, gap: 24 }}>
+          <View style={{ padding: isNarrowWeb ? 16 : 32, gap: 24 }}>
             <View style={wStyles.metricsGrid}>
               {[
                 { label: 'Total Orders', value: metrics.totalOrders.toString(), icon: Package, color: Colors.primary, bg: Colors.primarySurface, route: '/(vendor)/procurement-orders', params: {} },
@@ -193,8 +196,8 @@ export default function VendorDashboard() {
               })}
             </View>
 
-            <View style={wStyles.tablesRow}>
-              <View style={wStyles.tableCard}>
+            <View style={[wStyles.tablesRow, isNarrowWeb && { flexDirection: 'column' }]}>
+              <View style={[wStyles.tableCard, isNarrowWeb && wStyles.tableCardNarrow]}>
                 <View style={wStyles.tableHeader}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                     <Package size={16} color={Colors.primary} strokeWidth={1.8} />
@@ -204,7 +207,7 @@ export default function VendorDashboard() {
                     <Text style={wStyles.viewAllBtn}>View all</Text>
                   </TouchableOpacity>
                 </View>
-                <View style={wStyles.tableHead}>
+                <View style={[wStyles.tableHead, isNarrowWeb && { display: 'none' }]}>
                   <Text style={[wStyles.thCell, { flex: 1 }]}>Date</Text>
                   <Text style={[wStyles.thCell, { flex: 1 }]}>Required By</Text>
                   <Text style={[wStyles.thCell, { flex: 1.5 }]}>Items</Text>
@@ -216,8 +219,7 @@ export default function VendorDashboard() {
                   recentOrders.map((order: any, i: number) => (
                     <TouchableOpacity
                       key={order.id}
-                      style={[wStyles.tableRow, i % 2 === 1 && wStyles.tableRowAlt]}
-                      onPress={() => router.push({ pathname: '/(vendor)/procurement-order-detail', params: { id: order.id } })}
+                      style={[wStyles.tableRow, i % 2 === 1 && wStyles.tableRowAlt, isNarrowWeb && { flexDirection: 'column', alignItems: 'stretch', gap: 6, paddingVertical: 12 }]}
                       activeOpacity={0.7}
                     >
                       <Text style={[wStyles.tdCell, { flex: 1 }]}>{order.created_at ? format(new Date(order.created_at), 'dd MMM yyyy') : '—'}</Text>
@@ -245,7 +247,7 @@ export default function VendorDashboard() {
                 )}
               </View>
 
-              <View style={[wStyles.tableCard, { flex: 1 }]}>
+              <View style={[wStyles.tableCard, { flex: 1 }, isNarrowWeb && wStyles.tableCardNarrow]}>
                 <View style={wStyles.tableHeader}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                     <CircleDollarSign size={16} color={ACCENT_GOLD} strokeWidth={1.8} />
@@ -255,7 +257,7 @@ export default function VendorDashboard() {
                     <Text style={wStyles.viewAllBtn}>View all</Text>
                   </TouchableOpacity>
                 </View>
-                <View style={wStyles.tableHead}>
+                <View style={[wStyles.tableHead, isNarrowWeb && { display: 'none' }]}>
                   <Text style={[wStyles.thCell, { flex: 1 }]}>Date</Text>
                   <Text style={[wStyles.thCell, { flex: 1 }]}>Amount</Text>
                   <Text style={[wStyles.thCell, { flex: 1 }]}>Status</Text>
@@ -264,7 +266,7 @@ export default function VendorDashboard() {
                   <View style={wStyles.emptyState}><Text style={wStyles.emptyText}>No payments yet</Text></View>
                 ) : (
                   recentPayments.map((pmt: any, i: number) => (
-                    <View key={pmt.id} style={[wStyles.tableRow, i % 2 === 1 && wStyles.tableRowAlt]}>
+                    <View key={pmt.id} style={[wStyles.tableRow, i % 2 === 1 && wStyles.tableRowAlt, isNarrowWeb && { flexDirection: 'column', alignItems: 'stretch', gap: 6, paddingVertical: 12 }]}>
                       <Text style={[wStyles.tdCell, { flex: 1 }]}>{pmt.payment_date ? format(new Date(pmt.payment_date), 'dd MMM yyyy') : '—'}</Text>
                       <Text style={[wStyles.tdCell, { flex: 1, fontFamily: Typography.fontFamily.sansSemiBold }]}>{formatCurrency(Number(pmt.amount))}</Text>
                       <View style={{ flex: 1 }}><StatusChip status={pmt.status} /></View>
@@ -355,8 +357,7 @@ export default function VendorDashboard() {
               })}
             </View>
 
-            {recentOrders.length > 0 && (
-              <View style={mStyles.section}>
+            <View style={mStyles.section}>
                 <View style={mStyles.sectionHeader}>
                   <Text style={mStyles.sectionTitle}>Recent Orders</Text>
                   <TouchableOpacity onPress={() => router.push('/(vendor)/procurement-orders' as any)} style={mStyles.seeAllBtn}>
@@ -365,7 +366,10 @@ export default function VendorDashboard() {
                   </TouchableOpacity>
                 </View>
                 <View style={mStyles.listCard}>
-                  {recentOrders.map((order: any, i: number) => (
+                  {recentOrders.length === 0 ? (
+                    <View style={mStyles.emptyList}><Text style={mStyles.emptyListText}>No procurement orders yet</Text></View>
+                  ) : (
+                  recentOrders.map((order: any, i: number) => (
                     <TouchableOpacity
                       key={order.id}
                       style={[mStyles.listRow, i === recentOrders.length - 1 && mStyles.listRowLast]}
@@ -402,13 +406,12 @@ export default function VendorDashboard() {
                       <StatusChip status={order.status} />
                       <ChevronRight size={14} color={Colors.neutral[300]} />
                     </TouchableOpacity>
-                  ))}
+                  ))
+                  )}
                 </View>
-              </View>
-            )}
+            </View>
 
-            {recentPayments.length > 0 && (
-              <View style={mStyles.section}>
+            <View style={mStyles.section}>
                 <View style={mStyles.sectionHeader}>
                   <Text style={mStyles.sectionTitle}>Recent Payments</Text>
                   <TouchableOpacity onPress={() => router.push('/(vendor)/payments' as any)} style={mStyles.seeAllBtn}>
@@ -417,7 +420,10 @@ export default function VendorDashboard() {
                   </TouchableOpacity>
                 </View>
                 <View style={mStyles.listCard}>
-                  {recentPayments.map((pmt: any, i: number) => (
+                  {recentPayments.length === 0 ? (
+                    <View style={mStyles.emptyList}><Text style={mStyles.emptyListText}>No payments yet</Text></View>
+                  ) : (
+                  recentPayments.map((pmt: any, i: number) => (
                     <View key={pmt.id} style={[mStyles.listRow, i === recentPayments.length - 1 && mStyles.listRowLast]}>
                       <View style={[mStyles.listIconWrap, { backgroundColor: Colors.accentSurface }]}>
                         <CircleDollarSign size={16} color={ACCENT_GOLD} strokeWidth={1.8} />
@@ -430,10 +436,10 @@ export default function VendorDashboard() {
                       </View>
                       <StatusChip status={pmt.status} />
                     </View>
-                  ))}
+                  ))
+                  )}
                 </View>
-              </View>
-            )}
+            </View>
           </>
         )}
       </ScrollView>
@@ -527,8 +533,8 @@ const mStyles = StyleSheet.create({
     fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs,
     color: Colors.textTertiary, letterSpacing: 0.2,
   },
-  section: { gap: Spacing[2] },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  section: { gap: Spacing[2], minHeight: 92 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minHeight: 24 },
   sectionTitle: {
     fontFamily: Typography.fontFamily.sansSemiBold,
     fontSize: Typography.size.base, color: Colors.textPrimary,
@@ -539,7 +545,7 @@ const mStyles = StyleSheet.create({
   },
   listCard: {
     backgroundColor: Colors.white, borderRadius: Radius.lg,
-    borderWidth: 1, borderColor: Colors.border, overflow: 'hidden', ...Shadow.sm,
+    borderWidth: 1, borderColor: Colors.border, overflow: 'hidden', minHeight: 56, ...Shadow.sm,
   },
   listRow: {
     flexDirection: 'row', alignItems: 'center', padding: Spacing[4],
@@ -557,6 +563,8 @@ const mStyles = StyleSheet.create({
   listSecondary: {
     fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary,
   },
+  emptyList: { minHeight: 56, paddingVertical: Spacing[4], alignItems: 'center', justifyContent: 'center' },
+  emptyListText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary },
 });
 
 const wStyles = StyleSheet.create({
@@ -567,6 +575,9 @@ const wStyles = StyleSheet.create({
   headerInner: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start',
     paddingHorizontal: 32, paddingTop: 32, paddingBottom: 20,
+  },
+  headerInnerNarrow: {
+    flexDirection: 'column', gap: 16, paddingHorizontal: 16, paddingTop: 24, paddingBottom: 16,
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   headerIconWrap: {
@@ -610,6 +621,12 @@ const wStyles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: Radius.lg,
     padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
   },
+  profileCardNarrow: {
+    flexDirection: 'column', gap: 12, alignItems: 'stretch',
+    marginHorizontal: 16, marginBottom: 20,
+    backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: Radius.lg,
+    padding: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+  },
   profileLeft: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   avatarCircle: {
     width: 52, height: 52, borderRadius: 16,
@@ -629,21 +646,29 @@ const wStyles = StyleSheet.create({
     backgroundColor: Colors.white, borderRadius: 20, padding: 40,
     alignItems: 'center', gap: 12, borderWidth: 1, borderColor: Colors.border, ...Shadow.sm,
   },
+  noVendorCardNarrow: {
+    backgroundColor: Colors.white, borderRadius: 16, padding: 24,
+    alignItems: 'center', gap: 12, borderWidth: 1, borderColor: Colors.border, ...Shadow.sm,
+  },
   noVendorTitle: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.lg, color: Colors.textPrimary },
   noVendorSub: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary, textAlign: 'center', maxWidth: 400 },
   metricsGrid: { flexDirection: 'row', gap: 14, flexWrap: 'wrap' },
   metricCard: {
-    flex: 1, minWidth: 160, backgroundColor: Colors.white, borderRadius: Radius.lg,
+    flex: 1, minWidth: 140, backgroundColor: Colors.white, borderRadius: Radius.lg,
     padding: 20, borderWidth: 1, borderColor: Colors.border, gap: 8, ...Shadow.sm,
   },
   metricIconWrap: {
     width: 42, height: 42, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
   },
-  metricValue: { fontFamily: Typography.fontFamily.bold, fontSize: 26, color: Colors.textPrimary, letterSpacing: -0.3 },
+  metricValue: { fontFamily: Typography.fontFamily.bold, fontSize: 22, color: Colors.textPrimary, letterSpacing: -0.3 },
   metricLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary },
   tablesRow: { flexDirection: 'row', gap: 18 },
   tableCard: {
     flex: 2, backgroundColor: Colors.white, borderRadius: Radius.lg,
+    borderWidth: 1, borderColor: Colors.border, overflow: 'hidden', ...Shadow.sm,
+  },
+  tableCardNarrow: {
+    flex: 0, backgroundColor: Colors.white, borderRadius: Radius.lg,
     borderWidth: 1, borderColor: Colors.border, overflow: 'hidden', ...Shadow.sm,
   },
   tableHeader: {

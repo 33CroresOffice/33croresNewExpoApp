@@ -94,6 +94,15 @@ interface ReferralConfig {
   is_active: boolean;
 }
 
+interface IncentivePlan {
+  id: string;
+  name: string;
+  amount: number;
+  type: string;
+  evaluation_basis: string | null;
+  bonus_category: string | null;
+}
+
 export default function RiderProfile() {
   const insets = useSafeAreaInsets();
   const { profile, signOut } = useAuthStore();
@@ -103,6 +112,7 @@ export default function RiderProfile() {
   const [payouts, setPayouts] = useState<Payout[]>([]);
   const [rankings, setRankings] = useState<RankEntry[]>([]);
   const [referralConfig, setReferralConfig] = useState<ReferralConfig | null>(null);
+  const [incentives, setIncentives] = useState<IncentivePlan[]>([]);
   const [monthlyEarned, setMonthlyEarned] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -121,7 +131,7 @@ export default function RiderProfile() {
 
       const currentMonth = getCurrentMonthIST();
 
-      const [payoutRes, rankRes, myRankRes, refConfigRes] = await Promise.all([
+      const [payoutRes, rankRes, myRankRes, refConfigRes, incentivesRes] = await Promise.all([
         supabase
           .from('rider_payouts')
           .select('id, period_start, period_end, total_deliveries, final_amount, status, payment_method, paid_at')
@@ -141,7 +151,9 @@ export default function RiderProfile() {
           .eq('month', currentMonth)
           .maybeSingle(),
         supabase.from('referral_config').select('*').eq('is_active', true).order('created_at').limit(1).maybeSingle(),
+        supabase.from('rider_incentives').select('id, name, amount, type, evaluation_basis, bonus_category').eq('is_active', true).order('name', { ascending: true }),
       ]);
+      setIncentives((incentivesRes.data ?? []) as IncentivePlan[]);
 
       if (payoutRes.data) setPayouts(payoutRes.data as Payout[]);
       setReferralConfig((refConfigRes.data as any) ?? null);
@@ -184,8 +196,18 @@ export default function RiderProfile() {
 
   const totalEarned = monthlyEarned;
 
-  const hasCompensation = rider !== null && [rider.monthly_salary, rider.per_delivery_rate]
-    .some((value) => typeof value === 'number' && Number.isFinite(value) && value > 0);
+  const hasCompensation = rider !== null && (
+    [rider.monthly_salary, rider.per_delivery_rate]
+      .some((value) => typeof value === 'number' && Number.isFinite(value) && value > 0) ||
+    incentives.length > 0
+  );
+
+  const formatIncentiveType = (inc: IncentivePlan): string => {
+    const basis = inc.evaluation_basis ?? inc.type;
+    if (basis === 'per_day') return 'per day';
+    if (basis === 'per_month') return 'per month';
+    return basis ?? '';
+  };
 
   const RANK_META: Record<number, { label: string; color: string; bg: string; border: string; row: string }> = {
     1: { label: 'Gold', color: '#B77900', bg: '#FFF8E1', border: '#FFD166', row: '#FFFDF5' },
@@ -545,6 +567,20 @@ Join us and earn with just a few hours of work every morning!
                   {renderInfoRow(CircleDollarSign, 'Monthly Salary', rider.monthly_salary ? formatCurrency(rider.monthly_salary) : null, Colors.accent)}
                   {renderInfoRow(CircleDollarSign, 'Per Delivery Rate', rider.per_delivery_rate ? formatCurrency(rider.per_delivery_rate) : null, Colors.accent)}
                 </View>
+                {incentives.length > 0 && (
+                  <View style={{ marginTop: Spacing[4], gap: Spacing[2] }}>
+                    <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textSecondary, marginBottom: Spacing[1] }}>Active Incentive Plans</Text>
+                    {incentives.map((inc) => (
+                      <View key={inc.id} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: Spacing[2], borderBottomWidth: 1, borderBottomColor: Colors.border }}>
+                        <View style={{ flex: 1, gap: 2 }}>
+                          <Text style={{ fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textPrimary }} numberOfLines={1}>{inc.name}</Text>
+                          <Text style={{ fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, textTransform: 'capitalize' }}>{formatIncentiveType(inc)}</Text>
+                        </View>
+                        <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.accent }}>{formatCurrency(inc.amount)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
               </View>
             )}
 
@@ -687,6 +723,20 @@ Join us and earn with just a few hours of work every morning!
                   {renderInfoRow(CircleDollarSign, 'Monthly Salary', rider.monthly_salary ? formatCurrency(rider.monthly_salary) : null, Colors.accent)}
                   {renderInfoRow(CircleDollarSign, 'Per Delivery', rider.per_delivery_rate ? formatCurrency(rider.per_delivery_rate) : null, Colors.accent)}
                 </View>
+                {incentives.length > 0 && (
+                  <View style={[mStyles.infoCard, { gap: Spacing[2] }]}>
+                    <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textSecondary }}>Active Incentive Plans</Text>
+                    {incentives.map((inc) => (
+                      <View key={inc.id} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: Spacing[2], borderBottomWidth: 1, borderBottomColor: Colors.border }}>
+                        <View style={{ flex: 1, gap: 2 }}>
+                          <Text style={{ fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textPrimary }} numberOfLines={1}>{inc.name}</Text>
+                          <Text style={{ fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, textTransform: 'capitalize' }}>{formatIncentiveType(inc)}</Text>
+                        </View>
+                        <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.accent }}>{formatCurrency(inc.amount)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
               </View>
             )}
 

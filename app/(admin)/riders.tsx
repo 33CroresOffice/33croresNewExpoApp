@@ -76,9 +76,17 @@ function RidersScreenContent() {
         supabase.from('rider_order_assignments').select('rider_id').in('status', ['assigned', 'accepted', 'picked_up']),
       ]);
       const r = ridersRes.data ?? [];
+      const ridersWithPhotoUrls = await Promise.all(r.map(async (rider: any) => {
+        const photoPath = rider.profile_photo_url as string | null;
+        if (!photoPath || photoPath.startsWith('http')) {
+          return { ...rider, profile_photo_display_url: photoPath };
+        }
+        const { data } = await supabase.storage.from('riders').createSignedUrl(photoPath, 3600);
+        return { ...rider, profile_photo_display_url: data?.signedUrl ?? null };
+      }));
       const leaveSet = new Set((leaveRes.data ?? []).map((l: any) => l.rider_id as string));
       const busySet = new Set((activeAssignRes.data ?? []).map((a: any) => a.rider_id as string));
-      setRiders(r);
+      setRiders(ridersWithPhotoUrls);
       setOnLeaveToday(leaveSet);
       setBusyRiderIds(busySet);
       setMetrics({
@@ -297,8 +305,8 @@ function RidersScreenContent() {
               <TouchableOpacity key={rider.id} style={[s.tableRow, idx % 2 === 1 && s.tableRowAlt]} onPress={() => router.push({ pathname: '/(admin)/rider-detail' as any, params: { id: rider.id } })} activeOpacity={0.8}>
                 <View style={[s.td, { flex: 3, flexDirection: 'row', alignItems: 'center', gap: Spacing[3] }]}>
                   <View style={[s.avatar, { backgroundColor: rider.is_active ? Colors.primarySurface : Colors.neutral[100] }]}>
-                    {rider.profile_photo_url ? (
-                      <Image source={{ uri: rider.profile_photo_url }} style={s.avatarImg} />
+                    {rider.profile_photo_display_url ? (
+                      <Image source={{ uri: rider.profile_photo_display_url }} style={s.avatarImg} />
                     ) : (
                       <Text style={[s.avatarText, { color: rider.is_active ? Colors.primary : Colors.textTertiary }]}>{rider.full_name.charAt(0).toUpperCase()}</Text>
                     )}
@@ -336,8 +344,8 @@ function RidersScreenContent() {
             <TouchableOpacity key={rider.id} style={s.riderCard} onPress={() => router.push({ pathname: '/(admin)/rider-detail' as any, params: { id: rider.id } })} activeOpacity={0.8}>
               <View style={s.cardLeft}>
                 <View style={[s.avatar, { backgroundColor: rider.is_active ? Colors.primarySurface : Colors.neutral[100] }]}>
-                  {rider.profile_photo_url ? (
-                    <Image source={{ uri: rider.profile_photo_url }} style={s.avatarImg} />
+                  {rider.profile_photo_display_url ? (
+                    <Image source={{ uri: rider.profile_photo_display_url }} style={s.avatarImg} />
                   ) : (
                     <Text style={[s.avatarText, { color: rider.is_active ? Colors.primary : Colors.textTertiary }]}>{rider.full_name.charAt(0).toUpperCase()}</Text>
                   )}

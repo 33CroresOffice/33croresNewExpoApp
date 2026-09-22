@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Platform,
   RefreshControl,
+  useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -37,6 +38,8 @@ export default function VendorProcurementOrders() {
   const { statusFilter: initialFilter } = useLocalSearchParams<{ statusFilter?: string }>();
   const { profile } = useAuthStore();
   const isWeb = Platform.OS === 'web';
+  const { width: winWidth } = useWindowDimensions();
+  const isNarrowWeb = isWeb && winWidth < 600;
 
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -112,7 +115,7 @@ export default function VendorProcurementOrders() {
     setEndDate(null);
   };
 
-  const containerPadding = isWeb ? 32 : Spacing[4];
+  const containerPadding = isNarrowWeb ? Spacing[4] : isWeb ? 32 : Spacing[4];
 
   return (
     <View style={styles.container}>
@@ -313,6 +316,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: Radius.lg,
     padding: Spacing[3], gap: Spacing[3],
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+    flexWrap: 'wrap',
   },
   statItem: { flex: 1, alignItems: 'center', gap: 2 },
   statValue: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size['2xl'], color: '#FFFFFF' },
@@ -323,6 +327,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing[3],
     backgroundColor: Colors.white,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
+    flexWrap: 'wrap',
   },
   filterBtn: {
     paddingHorizontal: 14, paddingVertical: 7,
@@ -373,8 +378,8 @@ const styles = StyleSheet.create({
     fontSize: Typography.size.xs,
     color: Colors.primary,
   },
-  dateFields: { flexDirection: 'row', gap: Spacing[3] },
-  dateField: { flex: 1 },
+  dateFields: { flexDirection: 'row', gap: Spacing[3], flexWrap: 'wrap' },
+  dateField: { flex: 1, minWidth: 140 },
   scrollContent: { gap: Spacing[3], paddingBottom: Spacing[10] },
   emptyState: { paddingVertical: 60, alignItems: 'center', gap: Spacing[3] },
   emptyTitle: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textPrimary },

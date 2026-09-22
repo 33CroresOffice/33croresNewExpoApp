@@ -30,6 +30,12 @@ const ACCENT = '#3AAFE4';
 
 type AssignmentStatus = 'assigned' | 'accepted' | 'picked_up' | 'delivered' | 'failed';
 
+interface CustomOrderItem {
+  flower_name: string;
+  quantity: number;
+  unit: string;
+}
+
 interface OrderDetail {
   id: string;
   order_type: 'subscription' | 'custom';
@@ -45,6 +51,7 @@ interface OrderDetail {
   addr_pincode: string | null;
   addr_apartment: string | null;
   per_day_price: number | null;
+  custom_items: CustomOrderItem[] | null;
 }
 
 interface Assignment {
@@ -97,6 +104,7 @@ export default function RiderAssignments() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [viewItemsId, setViewItemsId] = useState<string | null>(null);
   const [attendanceCheckedIn, setAttendanceCheckedIn] = useState(false);
   const [deliveringId, setDeliveringId] = useState<string | null>(null);
   const [deliveryError, setDeliveryError] = useState<string | null>(null);
@@ -219,6 +227,7 @@ export default function RiderAssignments() {
           addr_pincode: addr?.pincode ?? null,
           addr_apartment: addr?.apartment_name ?? null,
           per_day_price: plan?.per_day_price ?? null,
+          custom_items: null,
         };
       });
     }
@@ -228,7 +237,7 @@ export default function RiderAssignments() {
     if (customOrderIds.length > 0) {
       const { data: customOrdersData } = await supabase
         .from('custom_orders')
-        .select('id, user_id, order_type, delivery_date, delivery_time, address_id, status')
+        .select('id, user_id, order_type, delivery_date, delivery_time, address_id, status, items')
         .in('id', customOrderIds);
 
       const customUserIds = (customOrdersData ?? []).map((co: any) => co.user_id).filter(Boolean);
@@ -260,6 +269,7 @@ export default function RiderAssignments() {
           plan_name: co.order_type === 'garland' ? 'Custom Garlands' : 'Custom Flowers',
           subscription_status: co.status ?? null,
           per_day_price: null,
+          custom_items: Array.isArray(co.items) ? co.items as CustomOrderItem[] : null,
           addr_label: addr?.label ?? null,
           addr_street: addr?.street ?? null,
           addr_city: addr?.city ?? null,
@@ -385,6 +395,39 @@ export default function RiderAssignments() {
     if (!d) return '—';
     const parts = [d.addr_apartment, d.addr_street, d.addr_city, d.addr_state, d.addr_pincode];
     return parts.filter(Boolean).join(', ') || '—';
+  };
+
+  const renderCustomItems = (d?: OrderDetail) => {
+    if (!d?.custom_items || d.custom_items.length === 0) return null;
+    return (
+      <View style={{ marginTop: 6, gap: 4 }}>
+        <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11, color: Colors.textTertiary, textTransform: 'uppercase', letterSpacing: 0.4 }}>Items</Text>
+        {d.custom_items.map((item, idx) => (
+          <View key={idx} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={{ fontFamily: Typography.fontFamily.sansMedium, fontSize: 13, color: Colors.textPrimary, flex: 1 }} numberOfLines={1}>{item.flower_name}</Text>
+            <Text style={{ fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 13, color: Colors.primary }}>{item.quantity} {item.unit}</Text>
+          </View>
+        ))}
+      </View>
+    );
+  };
+
+  const renderViewItemsButton = (a: Assignment, style: 'mobile' | 'web') => {
+    const d = a.orderDetail;
+    if (!d?.custom_items || d.custom_items.length === 0) return null;
+    const show = viewItemsId === a.id;
+    const btnStyle = style === 'mobile' ? mStyles.viewItemsBtn : wStyles.viewItemsBtn;
+    const txtStyle = style === 'mobile' ? mStyles.viewItemsBtnText : wStyles.viewItemsBtnText;
+    return (
+      <TouchableOpacity
+        style={[btnStyle, show && (style === 'mobile' ? mStyles.viewItemsBtnActive : wStyles.viewItemsBtnActive)]}
+        onPress={() => setViewItemsId(show ? null : a.id)}
+        activeOpacity={0.7}
+      >
+        <Text style={txtStyle}>{show ? 'Hide Items' : 'View Items'}</Text>
+        <ChevronDown size={12} color={show ? Colors.primary : Colors.textTertiary} strokeWidth={2} style={{ transform: [{ rotate: show ? '180deg' : '0deg' }] }} />
+      </TouchableOpacity>
+    );
   };
 
   const formatPickupTime = (pickedUpAt: string | null) => {
@@ -606,9 +649,12 @@ export default function RiderAssignments() {
                   </Text>
                 </View>
                 {(() => { const ss = subStatusStyle(d?.subscription_status); return (
-                  <View style={[mStyles.subStatusBadge, { backgroundColor: ss.bg }]}>
-                    <View style={[mStyles.subStatusDot, { backgroundColor: ss.color }]} />
-                    <Text style={[mStyles.subStatusText, { color: ss.color }]}>{ss.label}</Text>
+                  <View style={mStyles.cardStatusRow}>
+                    <View style={[mStyles.subStatusBadge, { backgroundColor: ss.bg }]}>
+                      <View style={[mStyles.subStatusDot, { backgroundColor: ss.color }]} />
+                      <Text style={[mStyles.subStatusText, { color: ss.color }]}>{ss.label}</Text>
+                    </View>
+                    {d?.order_type === 'custom' && renderViewItemsButton(a, 'mobile')}
                   </View>
                 ); })()}
                 </View>
@@ -635,13 +681,14 @@ export default function RiderAssignments() {
                 <Text style={mStyles.pickupTimeValue}>{formatPickupTime(a.picked_up_at)}</Text>
               </View>
             )}
-            {expanded && deliveryDeadlineTime && (
+            {expanded && d?.order_type === 'custom' && d?.scheduled_date && (
               <View style={[mStyles.pickupTimeRow, { marginTop: 2 }]}>
-                <Clock size={13} color={isDeadlinePassed() ? Colors.error : Colors.warning} strokeWidth={1.8} />
-                <Text style={mStyles.pickupTimeLabel}>Delivery Deadline:</Text>
-                <Text style={[mStyles.pickupTimeValue, { color: isDeadlinePassed() ? Colors.error : Colors.warning }]}>{formatDeadlineAMPM(deliveryDeadlineTime)} IST</Text>
+                <Clock size={13} color={Colors.accent} strokeWidth={1.8} />
+                <Text style={mStyles.pickupTimeLabel}>Delivery Date:</Text>
+                <Text style={[mStyles.pickupTimeValue, { color: Colors.accent }]}>{format(new Date(d.scheduled_date), 'dd MMM yyyy')}</Text>
               </View>
             )}
+            {expanded && viewItemsId === a.id && renderCustomItems(d)}
           </View>
           </TouchableOpacity>
           <View style={mStyles.actionRow}>
@@ -824,9 +871,12 @@ export default function RiderAssignments() {
                         <Text style={wStyles.deliveryCardPlan} numberOfLines={1}>{d?.plan_name ?? 'Subscription Order'}</Text>
                       </View>
                       {(() => { const ss = subStatusStyle(d?.subscription_status); return (
-                        <View style={[wStyles.subStatusBadge, { backgroundColor: ss.bg }]}>
-                          <View style={[wStyles.subStatusDot, { backgroundColor: ss.color }]} />
-                          <Text style={[wStyles.subStatusText, { color: ss.color }]}>{ss.label}</Text>
+                        <View style={wStyles.cardStatusRow}>
+                          <View style={[wStyles.subStatusBadge, { backgroundColor: ss.bg }]}>
+                            <View style={[wStyles.subStatusDot, { backgroundColor: ss.color }]} />
+                            <Text style={[wStyles.subStatusText, { color: ss.color }]}>{ss.label}</Text>
+                          </View>
+                          {d?.order_type === 'custom' && renderViewItemsButton(a, 'web')}
                         </View>
                       ); })()}
                       <View style={[wStyles.chevronWrap, expanded && wStyles.chevronExpanded]}>
@@ -845,13 +895,14 @@ export default function RiderAssignments() {
                         <Text style={wStyles.pickupTimeValue}>{formatPickupTime(a.picked_up_at)}</Text>
                       </View>
                     )}
-                    {expanded && deliveryDeadlineTime && (
+                    {expanded && d?.order_type === 'custom' && d?.scheduled_date && (
                       <View style={wStyles.pickupTimeRow}>
-                        <Clock size={12} color={isDeadlinePassed() ? Colors.error : Colors.warning} strokeWidth={1.8} />
-                        <Text style={wStyles.pickupTimeLabel}>Delivery Deadline:</Text>
-                        <Text style={[wStyles.pickupTimeValue, { color: isDeadlinePassed() ? Colors.error : Colors.warning }]}>{formatDeadlineAMPM(deliveryDeadlineTime)} IST</Text>
+                        <Clock size={12} color={Colors.accent} strokeWidth={1.8} />
+                        <Text style={wStyles.pickupTimeLabel}>Delivery Date:</Text>
+                        <Text style={[wStyles.pickupTimeValue, { color: Colors.accent }]}>{format(new Date(d.scheduled_date), 'dd MMM yyyy')}</Text>
                       </View>
                     )}
+                    {expanded && viewItemsId === a.id && renderCustomItems(d)}
                     </TouchableOpacity>
                     <View style={wStyles.actionRow}>
                       {expanded && (
@@ -1080,6 +1131,16 @@ const mStyles = StyleSheet.create({
   subStatusText: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11,
   },
+  cardStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 },
+  viewItemsBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: Radius.full,
+    backgroundColor: Colors.neutral[100], flexShrink: 0,
+  },
+  viewItemsBtnActive: { backgroundColor: Colors.primarySurface },
+  viewItemsBtnText: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, color: Colors.textTertiary,
+  },
   summaryContainer: {
     backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 16,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)', padding: Spacing[3],
@@ -1218,6 +1279,17 @@ const wStyles = StyleSheet.create({
   subStatusDot: { width: 7, height: 7, borderRadius: 4 },
   subStatusText: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11,
+  },
+  cardStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 },
+  viewItemsBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: Radius.full,
+    backgroundColor: Colors.neutral[100], flexShrink: 0,
+    cursor: 'pointer' as any,
+  },
+  viewItemsBtnActive: { backgroundColor: Colors.primarySurface },
+  viewItemsBtnText: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, color: Colors.textTertiary,
   },
   deliveryCardAddrRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
   deliveryCardAddr: {

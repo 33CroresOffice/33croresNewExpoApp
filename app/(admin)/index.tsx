@@ -157,8 +157,8 @@ export default function AdminDashboard() {
       const todayEnd = `${today}T23:59:59.999Z`;
 
       const settled = await Promise.allSettled([
-        // Active subs exclude subscriptions currently covered by a pause period
-        supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active').or(`pause_until.is.null,pause_until.lt.${today}`),
+        // Active subs: status='active', start_date not in future, not currently in a pause window (aligned with getEffectiveStatus)
+        supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active').or(`pause_until.is.null,pause_until.lt.${today}`).or(`start_date.is.null,start_date.lte.${today}`),
         // Total subs (all statuses)
         supabase.from('subscriptions').select('*', { count: 'exact', head: true }),
         // Pending subs (paid, future start_date)

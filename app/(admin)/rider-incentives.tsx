@@ -444,7 +444,7 @@ function RiderIncentivesScreenContent() {
     setShowDeleteModal(false);
     setIncentiveToDelete(null);
     load();
-  };
+  }; 
 
   const saveReferral = async () => {
     setSavingReferral(true);
@@ -949,21 +949,21 @@ function RiderIncentivesScreenContent() {
                       </View>
                       <View style={[s.refTd, { flex: 1 }]}>
                         <View style={[s.refStatusBadge,
-                        ref.approval_status === 'approved' && s.refStatusApproved,
-                        ref.approval_status === 'eligible' && s.refStatusEligible,
-                        ref.approval_status === 'rejected' && s.refStatusRejected,
-                        ref.approval_status === 'pending' && s.refStatusPending,
+                          ref.approval_status === 'approved' && s.refStatusApproved,
+                          ref.approval_status === 'eligible' && s.refStatusEligible,
+                          ref.approval_status === 'rejected' && s.refStatusRejected,
+                          ref.approval_status === 'pending' && s.refStatusPending,
                         ]}>
                           <Text style={[s.refStatusText,
-                          ref.approval_status === 'approved' && s.refStatusTextApproved,
-                          ref.approval_status === 'eligible' && s.refStatusTextEligible,
-                          ref.approval_status === 'rejected' && s.refStatusTextRejected,
-                          ref.approval_status === 'pending' && s.refStatusTextPending,
+                            ref.approval_status === 'approved' && s.refStatusTextApproved,
+                            ref.approval_status === 'eligible' && s.refStatusTextEligible,
+                            ref.approval_status === 'rejected' && s.refStatusTextRejected,
+                            ref.approval_status === 'pending' && s.refStatusTextPending,
                           ]}>
                             {ref.approval_status === 'approved' ? 'Approved'
                               : ref.approval_status === 'eligible' ? 'Eligible'
-                                : ref.approval_status === 'rejected' ? 'Rejected'
-                                  : 'Pending'}
+                              : ref.approval_status === 'rejected' ? 'Rejected'
+                              : 'Pending'}
                           </Text>
                         </View>
                       </View>

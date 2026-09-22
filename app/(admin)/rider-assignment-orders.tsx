@@ -1,15 +1,16 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, ActivityIndicator, RefreshControl, Modal, TextInput,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Bike, UserMinus, Square, CheckSquare, ChevronRight, Truck, MapPin, User, RefreshCw, AlertCircle, Filter, ChevronDown, ArrowUp, ArrowDown, ListOrdered } from 'lucide-react-native';
+import { ArrowLeft, Bike, UserMinus, Square, CheckSquare, ChevronRight, Truck, MapPin, User, RefreshCw, AlertCircle, Filter, ChevronDown, ArrowUp, ArrowDown, ListOrdered, ArrowRightLeft, Zap, CircleCheck as CheckCircle } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { usePageVisibility } from '@/hooks/usePageVisibility';
-import { format } from 'date-fns';
+import { format, parseISO, startOfToday } from 'date-fns';
 import ModuleGuard from '@/components/admin/ModuleGuard';
+import DatePickerField from '@/components/ui/DatePickerField';
 import { getEffectiveStatus } from '@/utils/subscriptionStatus';
 
 type Tab = 'assigned' | 'unassigned';
@@ -23,6 +24,7 @@ interface AssignedOrder {
   rider_name: string;
   rider_mobile: string;
   customer_name: string;
+  customer_mobile: string;
   plan_name: string;
   address_apartment: string;
   address_street: string;
@@ -32,6 +34,9 @@ interface AssignedOrder {
   address_pincode: string;
   delivery_sequence: number | null;
   rider_id: string;
+  swapped_from_rider_id: string | null;
+  swap_reason: string | null;
+  auto_assigned: boolean;
 }
 
 interface UnassignedOrder {
@@ -88,6 +93,7 @@ function RiderAssignmentOrdersContent() {
 
   const [assignedOrders, setAssignedOrders] = useState<AssignedOrder[]>([]);
   const [unassignedOrders, setUnassignedOrders] = useState<UnassignedOrder[]>([]);
+  const [totalActiveSubs, setTotalActiveSubs] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,16 +102,37 @@ function RiderAssignmentOrdersContent() {
   const [showBulkConfirm, setShowBulkConfirm] = useState(false);
   const [bulkUnassigning, setBulkUnassigning] = useState(false);
   const [bulkResult, setBulkResult] = useState<{ success: number; failed: number } | null>(null);
+  const [riders, setRiders] = useState<any[]>([]);
+  const [leaveSet, setLeaveSet] = useState<Set<string>>(new Set());
+  const [activeCountMap, setActiveCountMap] = useState<Map<string, number>>(new Map());
+  const [showReassignedOnly, setShowReassignedOnly] = useState(false);
+
+  const [redistributing, setRedistributing] = useState(false);
+  const [redistributeResult, setRedistributeResult] = useState<{ redistributed: number; failed: number } | null>(null);
+  const [showRedistributeResult, setShowRedistributeResult] = useState(false);
+
+  const [showManualReassignModal, setShowManualReassignModal] = useState(false);
+  const [manualReassignRider, setManualReassignRider] = useState<any | null>(null);
+  const [manualReassignStartDate, setManualReassignStartDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [manualReassignEndDate, setManualReassignEndDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [manualReassignOrders, setManualReassignOrders] = useState<any[]>([]);
+  const [manualAllOrders, setManualAllOrders] = useState<any[]>([]);
+  const [manualSelectedIds, setManualSelectedIds] = useState<Set<string>>(new Set());
+  const [manualReplacementRider, setManualReplacementRider] = useState<any | null>(null);
+  const [manualRiderSearch, setManualRiderSearch] = useState('');
+  const [manualLoadingOrders, setManualLoadingOrders] = useState(false);
+  const [manualReassigning, setManualReassigning] = useState(false);
+  const [showManualConfirm, setShowManualConfirm] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [assignedRes, unassignedRes] = await Promise.all([
+      const [assignedRes, unassignedRes, ridersRes, leaveRes] = await Promise.all([
         supabase
           .from('rider_order_assignments')
           .select(`
-            id, order_id, status, assigned_at, delivery_sequence, rider_id,
+            id, order_id, status, assigned_at, delivery_sequence, rider_id, swapped_from_rider_id, swap_reason, auto_assigned,
             order:orders(
               id, scheduled_date, status,
               user:profiles(full_name, mobile),
@@ -124,10 +151,32 @@ function RiderAssignmentOrdersContent() {
           `)
           .eq('status', 'scheduled')
           .order('scheduled_date', { ascending: true }),
+        supabase.from('riders').select('id, full_name, mobile, zone, vehicle_type, is_active').eq('is_active', true).order('full_name'),
+        supabase.from('rider_leave_requests').select('rider_id, leave_date, end_date').eq('status', 'approved'),
       ]);
 
       if (assignedRes.error) throw new Error(assignedRes.error.message);
       if (unassignedRes.error) throw new Error(unassignedRes.error.message);
+
+      setRiders(ridersRes.data ?? []);
+      const today = new Date().toISOString().split('T')[0];
+      const leaves = new Set((leaveRes.data ?? []).filter((l: any) => l.leave_date <= today && l.end_date >= today).map((l: any) => l.rider_id as string));
+      setLeaveSet(leaves);
+
+      const countMap = new Map<string, number>();
+      (assignedRes.data ?? []).filter((a: any) => ['assigned', 'accepted', 'picked_up'].includes(a.status)).forEach((a: any) => {
+        countMap.set(a.rider_id, (countMap.get(a.rider_id) ?? 0) + 1);
+      });
+      setActiveCountMap(countMap);
+
+      const todayStr = new Date().toISOString().split('T')[0];
+      const activeSubsRes = await supabase
+        .from('subscriptions')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'active')
+        .or(`pause_until.is.null,pause_until.lt.${todayStr}`)
+        .or(`start_date.is.null,start_date.lte.${todayStr}`);
+      setTotalActiveSubs(activeSubsRes.count ?? null);
 
       const assigned: AssignedOrder[] = (assignedRes.data ?? []).map((row: any) => ({
         assignment_id: row.id,
@@ -135,11 +184,15 @@ function RiderAssignmentOrdersContent() {
         status: row.status,
         delivery_sequence: row.delivery_sequence ?? null,
         rider_id: row.rider_id ?? '',
+        swapped_from_rider_id: row.swapped_from_rider_id ?? null,
+        swap_reason: row.swap_reason ?? null,
+        auto_assigned: row.auto_assigned ?? false,
         subscription_status: row.order?.subscription ? getEffectiveStatus(row.order.subscription) : 'active',
         scheduled_date: row.order?.scheduled_date ?? '',
         rider_name: row.rider?.full_name ?? 'Unknown',
         rider_mobile: row.rider?.mobile ?? '',
         customer_name: row.order?.user?.full_name ?? row.order?.user?.mobile ?? 'Unknown',
+        customer_mobile: row.order?.user?.mobile ?? '',
         plan_name: row.order?.subscription?.plan?.name ?? '',
         address_apartment: row.order?.subscription?.delivery_address?.apartment_name ?? '',
         address_street: row.order?.subscription?.delivery_address?.street ?? '',
@@ -220,6 +273,94 @@ function RiderAssignmentOrdersContent() {
     setTimeout(() => setBulkResult(null), 5000);
   };
 
+  const redistributeNow = async () => {
+    const target = format(new Date(), 'yyyy-MM-dd');
+    setRedistributing(true);
+    const { data, error } = await supabase.rpc('redistribute_planned_leave', { target_date: target });
+    setRedistributing(false);
+    if (error) { setError(error.message); return; }
+    const result = data as any;
+    setRedistributeResult({ redistributed: result?.redistributed ?? 0, failed: result?.failed ?? 0 });
+    setShowRedistributeResult(true);
+    load();
+  };
+
+  const openManualReassign = (rider?: any) => {
+    setManualReassignRider(rider ?? null);
+    setManualReassignStartDate(format(new Date(), 'yyyy-MM-dd'));
+    setManualReassignEndDate(format(new Date(), 'yyyy-MM-dd'));
+    setManualReassignOrders([]);
+    setManualAllOrders([]);
+    setManualSelectedIds(new Set());
+    setManualReplacementRider(null);
+    setManualRiderSearch('');
+    setShowManualReassignModal(true);
+  };
+
+  const loadManualOrders = async () => {
+    if (!manualReassignRider) return;
+    setManualLoadingOrders(true);
+    const { data } = await supabase
+      .from('rider_order_assignments')
+      .select('*, order:orders(id, scheduled_date, status, user:profiles(full_name, mobile), subscription:subscriptions(plan:subscription_plans(name), status, start_date, end_date, delivery_address:addresses(apartment_name, street, landmark, city, state, pincode)))')
+      .eq('rider_id', manualReassignRider.id)
+      .in('status', ['assigned', 'accepted', 'picked_up'])
+      .order('assigned_at', { ascending: false });
+    const rows = (data ?? []).map((a: any) => ({
+      ...a,
+      order: Array.isArray(a.order) ? a.order[0] : a.order,
+    }));
+    setManualAllOrders(rows);
+    setManualLoadingOrders(false);
+  };
+
+  useEffect(() => {
+    if (showManualReassignModal && manualReassignRider) loadManualOrders();
+  }, [manualReassignRider, showManualReassignModal]);
+
+  useEffect(() => {
+    const inRange = (a: any) => {
+      const sub = a.order?.subscription ? (Array.isArray(a.order.subscription) ? a.order.subscription[0] : a.order.subscription) : null;
+      if (sub?.start_date) {
+        const subEnd = sub.end_date ?? '9999-12-31';
+        return sub.start_date <= manualReassignEndDate && subEnd >= manualReassignStartDate;
+      }
+      const d = a.order?.scheduled_date;
+      if (!d) return false;
+      return d >= manualReassignStartDate && d <= manualReassignEndDate;
+    };
+    setManualReassignOrders(manualAllOrders.filter(inRange));
+    setManualSelectedIds(prev => new Set([...prev].filter(id => manualAllOrders.some((a: any) => a.id === id && inRange(a)))));
+  }, [manualAllOrders, manualReassignStartDate, manualReassignEndDate]);
+
+  const toggleManualSelect = (id: string) => {
+    setManualSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const doManualReassign = async () => {
+    if (!manualReplacementRider || manualSelectedIds.size === 0) return;
+    setManualReassigning(true);
+    const { data, error } = await supabase.rpc('manual_reassign_orders', {
+      p_assignment_ids: Array.from(manualSelectedIds),
+      p_new_rider_id: manualReplacementRider.id,
+      p_reason: `Manual reassignment: ${manualReassignRider?.full_name ?? 'rider'} on leave`,
+      p_start_date: manualReassignStartDate,
+      p_end_date: manualReassignEndDate,
+    });
+    setManualReassigning(false);
+    if (error) { setError(error.message); return; }
+    setShowManualConfirm(false);
+    setShowManualReassignModal(false);
+    const result = data as any;
+    setBulkResult({ success: result?.reassigned ?? 0, failed: result?.failed ?? 0 });
+    setTimeout(() => setBulkResult(null), 5000);
+    load();
+  };
+
   const riderOptions = useMemo(() => {
     const riders = new Map<string, string>();
     assignedOrders.forEach((order) => {
@@ -239,6 +380,9 @@ function RiderAssignmentOrdersContent() {
     if (subStatusFilter) {
       result = result.filter((order) => order.subscription_status === subStatusFilter);
     }
+    if (showReassignedOnly) {
+      result = result.filter((order) => order.swapped_from_rider_id !== null);
+    }
     if (selectedRiderId) {
       result = [...result].sort((a, b) => {
         const aSeq = a.delivery_sequence ?? 9999;
@@ -247,7 +391,7 @@ function RiderAssignmentOrdersContent() {
       });
     }
     return result;
-  }, [assignedOrders, selectedRiderId, subStatusFilter]);
+  }, [assignedOrders, selectedRiderId, subStatusFilter, showReassignedOnly]);
 
   const [sequencing, setSequencing] = useState(false);
   const [sequenceError, setSequenceError] = useState<string | null>(null);
@@ -364,11 +508,21 @@ function RiderAssignmentOrdersContent() {
   };
 
   const riderAssignmentSummary = useMemo(() => {
-    const counts = new Map<string, number>();
+    const counts = new Map<string, { riderName: string; total: number; activeCustomerKeys: Set<string> }>();
     assignedOrders.forEach((order) => {
-      counts.set(order.rider_name, (counts.get(order.rider_name) ?? 0) + 1);
+      const riderId = order.rider_name + '|' + order.rider_mobile;
+      const entry = counts.get(riderId) ?? {
+        riderName: order.rider_name,
+        total: 0,
+        activeCustomerKeys: new Set<string>(),
+      };
+      entry.total += 1;
+      if (order.subscription_status === 'active') {
+        entry.activeCustomerKeys.add(order.customer_mobile || order.customer_name || order.order_id);
+      }
+      counts.set(riderId, entry);
     });
-    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    return Array.from(counts.entries()).sort((a, b) => b[1].total - a[1].total || a[1].riderName.localeCompare(b[1].riderName));
   }, [assignedOrders]);
 
   const renderRiderAssignmentSummary = () => (
@@ -378,23 +532,40 @@ function RiderAssignmentOrdersContent() {
           <Bike size={17} color={Colors.primary} strokeWidth={2} />
           <Text style={styles.summaryTitle}>Rider Assignment Summary</Text>
         </View>
-        <Text style={styles.summaryTotal}>{assignedOrders.length} assigned</Text>
+        <View style={styles.summaryHeaderRight}>
+          {totalActiveSubs != null && (
+            <Text style={styles.summaryActiveRef}>{totalActiveSubs} active subs</Text>
+          )}
+          <Text style={styles.summaryTotal}>{assignedOrders.length} assigned</Text>
+        </View>
       </View>
       <View style={styles.summaryTableHeader}>
         <Text style={styles.summaryColumnLabel}>Rider Name</Text>
-        <Text style={styles.summaryColumnLabel}>Count</Text>
+        <Text style={styles.summaryColumnLabel}>Active</Text>
+        <Text style={styles.summaryColumnLabel}>Total</Text>
       </View>
-      {riderAssignmentSummary.length > 0 ? riderAssignmentSummary.map(([riderName, count]) => (
-        <View key={riderName} style={styles.summaryRow}>
-          <View style={styles.summaryRiderName}>
-            <Bike size={13} color={Colors.primary} strokeWidth={2} />
-            <Text style={styles.summaryRiderText} numberOfLines={1}>{riderName}</Text>
-          </View>
-          <View style={styles.summaryCountBadge}>
-            <Text style={styles.summaryCountText}>{count}</Text>
-          </View>
-        </View>
-      )) : (
+      {riderAssignmentSummary.length > 0 ? riderAssignmentSummary.map(([riderId, summary]) => {
+        const isSelected = selectedRiderId === riderId;
+        return (
+          <TouchableOpacity
+            key={riderId}
+            style={[styles.summaryRow, isSelected && styles.summaryRowActive]}
+            onPress={() => setSelectedRiderId(isSelected ? null : riderId)}
+            activeOpacity={0.75}
+          >
+            <View style={styles.summaryRiderName}>
+              <Bike size={13} color={isSelected ? Colors.primary : Colors.textSecondary} strokeWidth={2} />
+              <Text style={styles.summaryRiderText} numberOfLines={1}>{summary.riderName}</Text>
+            </View>
+            <View style={styles.summaryActiveBadge}>
+              <Text style={styles.summaryActiveText}>{summary.activeCustomerKeys.size}</Text>
+            </View>
+            <View style={styles.summaryCountBadge}>
+              <Text style={styles.summaryCountText}>{summary.total}</Text>
+            </View>
+          </TouchableOpacity>
+        );
+      }) : (
         <Text style={styles.summaryEmpty}>No assigned riders yet.</Text>
       )}
     </View>
@@ -497,7 +668,7 @@ function RiderAssignmentOrdersContent() {
                   onPress={() => { setSubStatusFilter(statusKey); setShowStatusFilter(false); setStatusSearchQuery(''); }}
                   activeOpacity={0.7}
                 >
-                  <Text style={[styles.filterOptionText, isActive && styles.filterOptionTextActive]}>{cfg.label} ({subStatusCounts[statusKey] ?? 0})</Text>
+                  <Text style={[styles.filterOptionText, isActive && styles.filterOptionTextActive]}>{statusKey === 'active' ? 'Active assigned' : cfg.label} ({subStatusCounts[statusKey] ?? 0})</Text>
                 </TouchableOpacity>
               );
             }) : <Text style={styles.filterNoResults}>No statuses found</Text>}
@@ -637,6 +808,18 @@ function RiderAssignmentOrdersContent() {
                     <View style={[styles.statusBadge, { backgroundColor: cfg.bg }]}>
                       <Text style={[styles.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
                     </View>
+                    {order.swapped_from_rider_id && (
+                      <View style={styles.reassignedBadge}>
+                        <ArrowRightLeft size={9} color={Colors.secondary} strokeWidth={2.5} />
+                        <Text style={styles.reassignedBadgeText}>REASSIGNED</Text>
+                      </View>
+                    )}
+                    {order.auto_assigned && (
+                      <View style={styles.autoBadge}>
+                        <Zap size={9} color={Colors.accentDark} strokeWidth={2.5} />
+                        <Text style={styles.autoBadgeText}>AUTO</Text>
+                      </View>
+                    )}
                   </View>
                 </View>
 
@@ -738,9 +921,23 @@ function RiderAssignmentOrdersContent() {
             </Text>
           </View>
         </View>
-        <TouchableOpacity style={styles.refreshBtn} onPress={() => { setRefreshing(true); load(); }} activeOpacity={0.8}>
-          <RefreshCw size={14} color={Colors.primary} strokeWidth={2} />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity style={styles.refreshBtn} onPress={() => { setRefreshing(true); load(); }} activeOpacity={0.8}>
+            <RefreshCw size={14} color={Colors.primary} strokeWidth={2} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.redistBtn} onPress={redistributeNow} disabled={redistributing} activeOpacity={0.8}>
+            {redistributing ? <ActivityIndicator size="small" color={Colors.warning} /> : (
+              <>
+                <RefreshCw size={14} color={Colors.warning} strokeWidth={2} />
+                <Text style={styles.redistBtnText}>Redistribute</Text>
+              </>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.manualReassignBtn} onPress={() => openManualReassign()} activeOpacity={0.8}>
+            <ArrowRightLeft size={14} color={Colors.primary} strokeWidth={2} />
+            <Text style={styles.manualReassignBtnText}>Manual Reassign</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.tabBar}>
@@ -762,6 +959,15 @@ function RiderAssignmentOrdersContent() {
             Unassigned ({unassignedOrders.length})
           </Text>
         </TouchableOpacity>
+        {activeTab === 'assigned' && (
+          <TouchableOpacity
+            style={[styles.tab, showReassignedOnly && styles.tabActive]}
+            onPress={() => setShowReassignedOnly(p => !p)}
+          >
+            <ArrowRightLeft size={15} color={showReassignedOnly ? Colors.primary : Colors.textTertiary} strokeWidth={1.8} />
+            <Text style={[styles.tabText, showReassignedOnly && styles.tabTextActive]}>Reassigned</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {bulkResult ? (
@@ -820,6 +1026,227 @@ function RiderAssignmentOrdersContent() {
           </View>
         </View>
       </Modal>
+      <Modal visible={showRedistributeResult} transparent animationType="fade" onRequestClose={() => setShowRedistributeResult(false)}>
+        <View style={styles.overlay}>
+          <View style={styles.dialog}>
+            <View style={[styles.dialogIcon, { backgroundColor: '#E8F5E9' }]}>
+              <CheckCircle size={28} color={Colors.success} />
+            </View>
+            <Text style={styles.dialogTitle}>Redistribution Complete</Text>
+            <Text style={styles.dialogText}>
+              {redistributeResult?.redistributed ?? 0} order(s) reassigned to backup riders.
+              {(redistributeResult?.failed ?? 0) > 0 ? `\n${redistributeResult?.failed} order(s) could not be reassigned (no available rider).` : ''}
+            </Text>
+            <View style={styles.dialogActions}>
+              <TouchableOpacity style={[styles.dialogConfirmBtn, { backgroundColor: Colors.primary }]} onPress={() => setShowRedistributeResult(false)}>
+                <Text style={styles.dialogConfirmText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={showManualReassignModal} transparent animationType="fade" onRequestClose={() => setShowManualReassignModal(false)}>
+        <View style={styles.overlay}>
+          <View style={styles.manualModal}>
+            <View style={styles.manualHeader}>
+              <Text style={styles.manualTitle}>Manual Reassign</Text>
+              <TouchableOpacity onPress={() => setShowManualReassignModal(false)}><Text style={styles.manualClose}>✕</Text></TouchableOpacity>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.manualScroll}>
+              {/* Rider selector */}
+              <Text style={styles.manualFieldLabel}>Select Rider *</Text>
+              {manualReassignRider ? (
+                <View style={styles.manualSelectedRider}>
+                  <View style={styles.manualRiderAvatar}><Text style={styles.manualRiderAvatarText}>{manualReassignRider.full_name.charAt(0)}</Text></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.manualRiderName}>{manualReassignRider.full_name}</Text>
+                    <Text style={styles.manualRiderMeta}>{manualReassignRider.zone} · {activeCountMap.get(manualReassignRider.id) ?? 0} active</Text>
+                  </View>
+                  <TouchableOpacity onPress={() => { setManualReassignRider(null); setManualReassignOrders([]); }}><Text style={styles.manualClearBtn}>Clear</Text></TouchableOpacity>
+                </View>
+              ) : (
+                <View style={styles.manualRiderList}>
+                  {riders.filter(r => !riderSearchQuery.trim() || r.full_name.toLowerCase().includes(riderSearchQuery.toLowerCase())).slice(0, 8).map(r => (
+                    <TouchableOpacity key={r.id} style={styles.manualRiderItem} onPress={() => setManualReassignRider(r)}>
+                      <View style={styles.manualRiderAvatar}><Text style={styles.manualRiderAvatarText}>{r.full_name.charAt(0)}</Text></View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.manualRiderName}>{r.full_name}</Text>
+                        <Text style={styles.manualRiderMeta}>{r.zone} · {activeCountMap.get(r.id) ?? 0} active{leaveSet.has(r.id) ? ' · On Leave' : ''}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+
+              {/* Date range */}
+              <View style={styles.manualDateRow}>
+                <View style={{ flex: 1 }}>
+                  <DatePickerField
+                    label="Start Date"
+                    required
+                    value={manualReassignStartDate ? parseISO(manualReassignStartDate) : null}
+                    onChange={(d) => {
+                      const nextStart = format(d, 'yyyy-MM-dd');
+                      setManualReassignStartDate(nextStart);
+                      if (!manualReassignEndDate || manualReassignEndDate < nextStart) {
+                        setManualReassignEndDate(nextStart);
+                      }
+                    }}
+                    minDate={startOfToday()}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <DatePickerField
+                    label="End Date"
+                    required
+                    value={manualReassignEndDate ? parseISO(manualReassignEndDate) : null}
+                    onChange={(d) => setManualReassignEndDate(format(d, 'yyyy-MM-dd'))}
+                    minDate={manualReassignStartDate ? parseISO(manualReassignStartDate) : startOfToday()}
+                  />
+                </View>
+              </View>
+
+              {/* Order list */}
+              {manualReassignRider && (
+                <View>
+                  <View style={styles.manualOrderHeader}>
+                    <Text style={styles.manualFieldLabel}>Orders ({manualReassignOrders.length})</Text>
+                    {manualReassignOrders.length > 0 && (
+                      <View style={styles.manualSelectAllRow}>
+                        <TouchableOpacity onPress={() => setManualSelectedIds(new Set(manualReassignOrders.map((o: any) => o.id)))}>
+                          <Text style={styles.manualSelectAllText}>Select All</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.manualSep}>·</Text>
+                        <TouchableOpacity onPress={() => setManualSelectedIds(new Set())}>
+                          <Text style={styles.manualClearAllText}>Clear All</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                  {manualLoadingOrders ? (
+                    <ActivityIndicator color={Colors.primary} size="small" style={{ paddingVertical: Spacing[4] }} />
+                  ) : manualReassignOrders.length === 0 ? (
+                    <Text style={styles.manualEmptyText}>No active orders found for this rider in the selected date range.</Text>
+                  ) : (
+                    <View style={styles.manualOrderList}>
+                      {manualReassignOrders.map((a: any) => {
+                        const isSelected = manualSelectedIds.has(a.id);
+                        const order = Array.isArray(a.order) ? a.order[0] : a.order;
+                        const user = order?.user ? (Array.isArray(order.user) ? order.user[0] : order.user) : null;
+                        const sub = order?.subscription ? (Array.isArray(order.subscription) ? order.subscription[0] : order.subscription) : null;
+                        const addr = sub?.delivery_address ? (Array.isArray(sub.delivery_address) ? sub.delivery_address[0] : sub.delivery_address) : null;
+                        const customerName = user?.full_name || user?.mobile || 'Unknown';
+                        const fullAddr = addr ? formatFullAddress(addr.apartment_name, addr.street, addr.landmark, addr.city, addr.state, addr.pincode) : '';
+                        return (
+                          <TouchableOpacity key={a.id} style={[styles.manualOrderItem, isSelected && styles.manualOrderItemSelected]} onPress={() => toggleManualSelect(a.id)} activeOpacity={0.8}>
+                            {isSelected ? <CheckSquare size={18} color={Colors.primary} strokeWidth={2} /> : <Square size={18} color={Colors.textDisabled} strokeWidth={2} />}
+                            <View style={{ flex: 1, gap: 2 }}>
+                              <Text style={styles.manualOrderCustomer}>{customerName}</Text>
+                              <Text style={styles.manualOrderMeta}>#{a.order_id.slice(-8).toUpperCase()} · {order?.scheduled_date ? format(new Date(order.scheduled_date), 'dd MMM') : ''}</Text>
+                              {fullAddr ? <Text style={styles.manualOrderAddr} numberOfLines={2}>{fullAddr}</Text> : null}
+                            </View>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
+                </View>
+              )}
+
+              {/* Replacement rider */}
+              {manualSelectedIds.size > 0 && (
+                <View>
+                  <Text style={styles.manualFieldLabel}>Replacement Rider *</Text>
+                  {manualReplacementRider ? (
+                    <View style={styles.manualSelectedRider}>
+                      <View style={styles.manualRiderAvatar}><Text style={styles.manualRiderAvatarText}>{manualReplacementRider.full_name.charAt(0)}</Text></View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.manualRiderName}>{manualReplacementRider.full_name}</Text>
+                        <Text style={styles.manualRiderMeta}>{manualReplacementRider.zone} · {activeCountMap.get(manualReplacementRider.id) ?? 0} active</Text>
+                      </View>
+                      <TouchableOpacity onPress={() => setManualReplacementRider(null)}><Text style={styles.manualClearBtn}>Clear</Text></TouchableOpacity>
+                    </View>
+                  ) : (
+                    <View>
+                      <View style={styles.manualSearchWrap}>
+                        <Text style={styles.manualSearchIcon}>🔍</Text>
+                        <TextInput style={styles.manualSearchInput} value={manualRiderSearch} onChangeText={setManualRiderSearch} placeholder="Search replacement rider…" placeholderTextColor={Colors.textDisabled} />
+                      </View>
+                      <View style={styles.manualRiderList}>
+                        {riders.filter(r => r.id !== manualReassignRider?.id && !leaveSet.has(r.id) && (!manualRiderSearch.trim() || r.full_name.toLowerCase().includes(manualRiderSearch.toLowerCase()))).slice(0, 6).map(r => (
+                          <TouchableOpacity key={r.id} style={styles.manualRiderItem} onPress={() => { setManualReplacementRider(r); setManualRiderSearch(''); }}>
+                            <View style={styles.manualRiderAvatar}><Text style={styles.manualRiderAvatarText}>{r.full_name.charAt(0)}</Text></View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.manualRiderName}>{r.full_name}</Text>
+                              <Text style={styles.manualRiderMeta}>{r.zone} · {activeCountMap.get(r.id) ?? 0} active</Text>
+                            </View>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+                  )}
+                </View>
+              )}
+
+              {/* Summary */}
+              {manualSelectedIds.size > 0 && manualReplacementRider && (
+                <View style={styles.manualSummary}>
+                  <Text style={styles.manualSummaryText}>{manualSelectedIds.size} order(s) → {manualReplacementRider.full_name}</Text>
+                </View>
+              )}
+            </ScrollView>
+
+            <View style={styles.manualFooter}>
+              <TouchableOpacity style={styles.dialogCancelBtn} onPress={() => setShowManualReassignModal(false)}>
+                <Text style={styles.dialogCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dialogConfirmBtn, { backgroundColor: Colors.primary }, (manualSelectedIds.size === 0 || !manualReplacementRider) && { opacity: 0.5 }]}
+                onPress={() => setShowManualConfirm(true)}
+                disabled={manualSelectedIds.size === 0 || !manualReplacementRider || manualReassigning}
+              >
+                {manualReassigning ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={styles.dialogConfirmText}>Reassign ({manualSelectedIds.size})</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={showManualConfirm} transparent animationType="fade" onRequestClose={() => setShowManualConfirm(false)}>
+        <View style={styles.overlay}>
+          <View style={styles.dialog}>
+            <View style={[styles.dialogIcon, { backgroundColor: Colors.primarySurface }]}>
+              <ArrowRightLeft size={28} color={Colors.primary} />
+            </View>
+            <Text style={styles.dialogTitle}>Confirm Reassignment</Text>
+            <View style={{ width: '100%', gap: Spacing[2], marginVertical: Spacing[2] }}>
+              <View style={styles.manualConfirmRow}>
+                <Text style={styles.manualConfirmLabel}>From Rider</Text>
+                <Text style={styles.manualConfirmValue}>{manualReassignRider?.full_name}</Text>
+              </View>
+              <View style={styles.manualConfirmRow}>
+                <Text style={styles.manualConfirmLabel}>To Rider</Text>
+                <Text style={styles.manualConfirmValue}>{manualReplacementRider?.full_name}</Text>
+              </View>
+              <View style={styles.manualConfirmRow}>
+                <Text style={styles.manualConfirmLabel}>Date Range</Text>
+                <Text style={styles.manualConfirmValue}>{manualReassignStartDate} → {manualReassignEndDate} (returns after end date)</Text>
+              </View>
+              <View style={styles.manualConfirmRow}>
+                <Text style={styles.manualConfirmLabel}>Orders</Text>
+                <Text style={styles.manualConfirmValue}>{manualSelectedIds.size} selected</Text>
+              </View>
+            </View>
+            <View style={styles.dialogActions}>
+              <TouchableOpacity style={styles.dialogCancelBtn} onPress={() => setShowManualConfirm(false)}>
+                <Text style={styles.dialogCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.dialogConfirmBtn} onPress={doManualReassign} disabled={manualReassigning}>
+                {manualReassigning ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={styles.dialogConfirmText}>Confirm</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -846,6 +1273,7 @@ const styles = StyleSheet.create({
   },
   tabBar: {
     flexDirection: 'row',
+    marginTop: Spacing[2],
     backgroundColor: Colors.white,
     paddingHorizontal: Spacing[4],
     paddingBottom: Spacing[3],
@@ -1067,13 +1495,18 @@ const styles = StyleSheet.create({
     borderBottomColor: Colors.border,
   },
   summaryTitleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
+  summaryHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3] },
+  summaryActiveRef: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.success },
   summaryTitle: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, color: Colors.textPrimary, flex: 1 },
   summaryTotal: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
-  summaryTableHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: Spacing[2] },
+  summaryTableHeader: { flexDirection: 'row', alignItems: 'center', paddingVertical: Spacing[2] },
   summaryColumnLabel: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.textTertiary },
-  summaryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing[2], paddingVertical: Spacing[2], borderTopWidth: 1, borderTopColor: Colors.neutral[100] },
+  summaryRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], paddingVertical: Spacing[2], borderTopWidth: 1, borderTopColor: Colors.neutral[100] },
+  summaryRowActive: { backgroundColor: Colors.primarySurface, borderRadius: Radius.sm, borderTopColor: Colors.primary },
   summaryRiderName: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], flex: 1 },
   summaryRiderText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.primary, flex: 1 },
+  summaryActiveBadge: { minWidth: 30, paddingHorizontal: Spacing[2], paddingVertical: Spacing[1], borderRadius: Radius.sm, alignItems: 'center', backgroundColor: '#E8F5E9' },
+  summaryActiveText: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.sm, color: Colors.success },
   summaryCountBadge: { minWidth: 30, paddingHorizontal: Spacing[2], paddingVertical: Spacing[1], borderRadius: Radius.sm, alignItems: 'center', backgroundColor: Colors.primarySurface },
   summaryCountText: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.sm, color: Colors.primary },
   summaryEmpty: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary, paddingVertical: Spacing[2] },
@@ -1115,4 +1548,57 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.error, alignItems: 'center',
   },
   dialogConfirmText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.white },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
+  redistBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing[1], backgroundColor: '#FFF3E0', borderWidth: 1, borderColor: Colors.warning, paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderRadius: Radius.md },
+  redistBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.warning },
+  manualReassignBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing[1], backgroundColor: Colors.primarySurface, borderWidth: 1, borderColor: Colors.primary, paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderRadius: Radius.md },
+  manualReassignBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.primary },
+  reassignedBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: Spacing[1], paddingVertical: 2, borderRadius: Radius.sm, backgroundColor: '#E0E7FF' },
+  reassignedBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 9, color: '#4F46E5' },
+  autoBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: Spacing[1], paddingVertical: 2, borderRadius: Radius.sm, backgroundColor: '#FEF3C7' },
+  autoBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 9, color: '#B45309' },
+  manualModal: {
+    width: '100%',
+    maxWidth: 480,
+    backgroundColor: Colors.white,
+    borderRadius: Radius.xl,
+    padding: Spacing[4],
+    maxHeight: '85%',
+  },
+  manualHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing[3] },
+  manualTitle: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.lg, color: Colors.textPrimary },
+  manualClose: { fontSize: 18, color: Colors.textTertiary },
+  manualScroll: { maxHeight: 500 },
+  manualFieldLabel: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textSecondary, marginBottom: Spacing[2], marginTop: Spacing[2] },
+  manualSelectedRider: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], backgroundColor: Colors.primarySurface, borderRadius: Radius.md, padding: Spacing[3], marginBottom: Spacing[2] },
+  manualRiderAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center' },
+  manualRiderAvatarText: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, color: Colors.white },
+  manualRiderName: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  manualRiderMeta: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  manualClearBtn: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.error },
+  manualRiderList: { borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, overflow: 'hidden', marginBottom: Spacing[2] },
+  manualRiderItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderBottomWidth: 1, borderBottomColor: Colors.divider },
+  manualDateRow: { flexDirection: 'row', gap: Spacing[2] },
+  manualInput: { borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingHorizontal: Spacing[3], paddingVertical: Spacing[2], fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  manualOrderHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing[2] },
+  manualSelectAllRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
+  manualSelectAllText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.primary },
+  manualSep: { color: Colors.textDisabled, fontSize: Typography.size.xs },
+  manualClearAllText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.error },
+  manualEmptyText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary, textAlign: 'center', paddingVertical: Spacing[4] },
+  manualOrderList: { borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, overflow: 'hidden' },
+  manualOrderItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3], paddingVertical: Spacing[3], paddingHorizontal: Spacing[3], borderBottomWidth: 1, borderBottomColor: Colors.divider },
+  manualOrderItemSelected: { backgroundColor: Colors.primarySurface },
+  manualOrderCustomer: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  manualOrderMeta: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  manualOrderAddr: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 10, color: Colors.textDisabled },
+  manualSearchWrap: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingHorizontal: Spacing[3], paddingVertical: Spacing[2], marginBottom: Spacing[2] },
+  manualSearchIcon: { fontSize: 14 },
+  manualSearchInput: { flex: 1, fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  manualSummary: { backgroundColor: Colors.primarySurface, borderRadius: Radius.md, padding: Spacing[3], marginTop: Spacing[2] },
+  manualSummaryText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.primary, textAlign: 'center' },
+  manualFooter: { flexDirection: 'row', gap: Spacing[3], marginTop: Spacing[3], paddingTop: Spacing[3], borderTopWidth: 1, borderTopColor: Colors.border },
+  manualConfirmRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  manualConfirmLabel: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textTertiary },
+  manualConfirmValue: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
 });

@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Platform,
   RefreshControl,
+  useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -34,6 +35,8 @@ export default function VendorPayments() {
   const { statusFilter: initialFilter } = useLocalSearchParams<{ statusFilter?: string }>();
   const { profile } = useAuthStore();
   const isWeb = Platform.OS === 'web';
+  const { width: winWidth } = useWindowDimensions();
+  const isNarrowWeb = isWeb && winWidth < 600;
 
   const [payments, setPayments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -92,7 +95,7 @@ export default function VendorPayments() {
   const formatCurrency = (amount: number) =>
     `₹${amount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
-  const containerPadding = isWeb ? 32 : Spacing[4];
+  const containerPadding = isNarrowWeb ? Spacing[4] : isWeb ? 32 : Spacing[4];
 
   return (
     <View style={styles.container}>
@@ -254,6 +257,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: Radius.lg,
     padding: Spacing[3],
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+    flexWrap: 'wrap',
   },
   summaryCard: { flex: 1, alignItems: 'center', gap: 4 },
   summaryIconWrap: {
@@ -269,6 +273,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing[3],
     backgroundColor: Colors.white,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
+    flexWrap: 'wrap',
   },
   filterBtn: {
     paddingHorizontal: 14, paddingVertical: 7,

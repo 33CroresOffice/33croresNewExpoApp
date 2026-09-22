@@ -39,6 +39,18 @@ function addOneMonth(date: Date): Date {
   return addDays(date, 29);
 }
 
+function durationDaysFromFrequency(frequency: string): number {
+  switch (frequency) {
+    case 'weekly': return 7;
+    case 'biweekly': return 14;
+    case 'monthly': return 29;
+    case '3months': return 89;
+    case '6months': return 179;
+    case 'daily': return 1;
+    default: return 29;
+  }
+}
+
 async function hmacSha256Hex(secret: string, message: string): Promise<string> {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -99,6 +111,17 @@ Deno.serve(async (req: Request) => {
       return respond({ success: false, error: "A delivery address is required" });
     }
 
+    // Fetch plan frequency to compute the correct subscription duration
+    const { data: planData, error: planError } = await serviceSupabase
+      .from("subscription_plans")
+      .select("frequency")
+      .eq("id", plan_id)
+      .maybeSingle();
+    if (planError || !planData) {
+      return respond({ success: false, error: "Could not find the selected plan." });
+    }
+    const durationDays = durationDaysFromFrequency(planData.frequency);
+
     const razorpayKeySecret = await getSecret(serviceSupabase, "RAZORPAY_KEY_SECRET");
     const isTestMode = !razorpayKeySecret || orderId.startsWith("order_test_");
 
@@ -145,13 +168,13 @@ Deno.serve(async (req: Request) => {
         startDateObj = minStartDate;
       }
 
-      endDateObj = addOneMonth(startDateObj);
+      endDateObj = addDays(startDateObj, durationDays);
       nextDeliveryDate = new Date(startDateObj);
     } else if (clientStartDate) {
       // Use the start date chosen by the customer in checkout
       startDateObj = new Date(clientStartDate);
       startDateObj.setUTCHours(0, 0, 0, 0);
-      endDateObj = addOneMonth(startDateObj);
+      endDateObj = addDays(startDateObj, durationDays);
       nextDeliveryDate = new Date(startDateObj);
     } else {
       const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -164,7 +187,7 @@ Deno.serve(async (req: Request) => {
       startDateObj = new Date();
       startDateObj.setUTCHours(0, 0, 0, 0);
       startDateObj.setUTCDate(startDateObj.getUTCDate() + daysToAdd);
-      endDateObj = addOneMonth(startDateObj);
+      endDateObj = addDays(startDateObj, durationDays);
       nextDeliveryDate = new Date(startDateObj);
     }
 

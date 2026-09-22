@@ -279,7 +279,7 @@ export default function RiderRegisterScreen() {
           </TouchableOpacity>
         </View>
         <Image
-          source={require('./rider.png')}
+          source={{ uri: 'https://images.pexels.com/photos/1402787/pexels-photo-1402787.jpeg?auto=compress&cs=tinysrgb&w=800' }}
           style={styles.heroImage}
           resizeMode="cover"
         />

@@ -103,7 +103,7 @@ function RiderAssignmentsScreenContent() {
         supabase.from('riders').select('id, full_name, mobile, zone, vehicle_type, is_active').eq('is_active', true).order('full_name'),
         supabase.from('orders').select('*, user:profiles(full_name, mobile), subscription:subscriptions(plan:subscription_plans(name), delivery_address:addresses(street, city))').in('status', ['scheduled', 'out_for_delivery']).order('scheduled_date').limit(100),
         supabase.from('rider_order_assignments').select('*, rider:rider_id(full_name, mobile, zone, vehicle_type), order:orders(id, scheduled_date, status, user:profiles(full_name, mobile), subscription:subscriptions(delivery_address:addresses(street, city)))').order('assigned_at', { ascending: false }).limit(200),
-        supabase.from('rider_leave_requests').select('rider_id').eq('leave_date', today).eq('status', 'approved'),
+        supabase.from('rider_leave_requests').select('rider_id, leave_date, end_date').eq('status', 'approved').lte('leave_date', today).gte('end_date', today),
       ]);
 
       const allOrders = ordersRes.data ?? [];
@@ -795,6 +795,7 @@ function RiderAssignmentsScreenContent() {
           </View>
         </View>
       </Modal>
+
     </View>
   );
 }

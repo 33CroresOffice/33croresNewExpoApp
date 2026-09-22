@@ -15,6 +15,10 @@
     },
     "ios": {
       "supportsTablet": true,
+      "infoPlist": {
+        "FirebaseAppDelegateProxyEnabled": false,
+        "NSLocationWhenInUseUsageDescription": "33 Crores needs your location to verify you are at an approved attendance location when marking attendance."
+      },
       "bundleIdentifier": "com.thirtythreecroresapp"
     },
     "android": {
@@ -44,6 +48,13 @@
         {
           "icon": "./assets/images/icon.png",
           "color": "#FFFFFF"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "isIosBackgroundLocationEnabled": false,
+          "shouldShowInPermissionTool": true
         }
       ]
     ],

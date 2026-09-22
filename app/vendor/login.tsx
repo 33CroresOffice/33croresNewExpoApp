@@ -1,456 +1,281 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   TouchableOpacity,
-  Platform,
   KeyboardAvoidingView,
+  Platform,
+  ScrollView,
   Image,
+  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
 import { router } from 'expo-router';
-import { supabase } from '@/lib/supabase';
-import { useAuthStore } from '@/store/authStore';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ArrowLeft, ArrowRight, Phone, Store, ShieldCheck } from 'lucide-react-native';
 import Input from '@/components/ui/Input';
-import Button from '@/components/ui/Button';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
-import { Mail, Lock, Store, ShieldCheck } from 'lucide-react-native';
+
+const { width } = Dimensions.get('window');
 
 export default function VendorLoginScreen() {
-  const { setSession, loadProfile } = useAuthStore();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const insets = useSafeAreaInsets();
+  const { width: winWidth } = useWindowDimensions();
+  const isNarrow = winWidth < 400;
+  const [mobile, setMobile] = useState('');
+  const [error, setError] = useState('');
 
-  const handleLogin = async () => {
-    if (!email.trim() || !password.trim()) {
-      setError('Please enter your email and password.');
-      return;
+  const handleMobileChange = useCallback((text: string) => {
+    setMobile(text.replace(/[^0-9]/g, '').slice(0, 10));
+    setError('');
+  }, []);
+
+  const prefixEl = useMemo(() => (
+    <View style={styles.countryCode}>
+      <Text style={styles.flag}>🇮🇳</Text>
+      <Text style={styles.code}>+91</Text>
+    </View>
+  ), []);
+
+  const validate = () => {
+    const cleaned = mobile.replace(/\s/g, '');
+    if (!cleaned || cleaned.length !== 10 || !/^[6-9]\d{9}$/.test(cleaned)) {
+      setError('Please enter a valid 10-digit Indian mobile number');
+      return false;
     }
-
-    setError(null);
-    setLoading(true);
-
-    try {
-      const { data, error: signInError } = await supabase.auth.signInWithPassword({
-        email: email.trim().toLowerCase(),
-        password,
-      });
-
-      if (signInError) {
-        setError('Invalid credentials. Please try again.');
-        setLoading(false);
-        return;
-      }
-
-      if (!data.session) {
-        setError('Login failed. Please try again.');
-        setLoading(false);
-        return;
-      }
-
-      setSession(data.session);
-
-      const profile = await loadProfile(data.session.user.id);
-
-      if (!profile) {
-        await supabase.auth.signOut();
-        setError('Account not found. Please contact support.');
-        setLoading(false);
-        return;
-      }
-
-      if (profile.role !== 'vendor') {
-        await supabase.auth.signOut();
-        setError('Access denied. This portal is for vendors only.');
-        setLoading(false);
-        return;
-      }
-
-      setLoading(false);
-      router.replace('/(vendor)');
-    } catch {
-      setError('Something went wrong. Please try again.');
-      setLoading(false);
-    }
+    setError('');
+    return true;
   };
 
-  if (Platform.OS !== 'web') {
-    return (
-      <KeyboardAvoidingView style={styles.mobileContainer} behavior="padding">
-        <ScrollView
-          contentContainerStyle={styles.mobileScroll}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={styles.mobileCard}>
-            <View style={styles.logoRow}>
-              <Image source={require('@/assets/images/2.jpg')} style={styles.logoImg} resizeMode="contain" />
-              <View>
-                <Text style={styles.brandName}>33 Crores</Text>
-                <Text style={styles.portalLabel}>Vendor Portal</Text>
-              </View>
-            </View>
+  const handleContinue = () => {
+    if (!validate()) return;
+    router.push({ pathname: '/vendor/otp-verify', params: { mobile: mobile.replace(/\s/g, '') } });
+  };
 
-            <View style={styles.iconWrap}>
-              <Store size={32} color={Colors.accent} strokeWidth={1.6} />
-            </View>
-
-            <Text style={styles.heading}>Vendor Sign In</Text>
-            <Text style={styles.subheading}>Access your procurement portal</Text>
-
-            <View style={styles.form}>
-              <Input
-                label="Email address"
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="vendor@example.com"
-                prefix={<Mail size={18} color={Colors.textTertiary} />}
-              />
-              <Input
-                label="Password"
-                value={password}
-                onChangeText={setPassword}
-                isPassword
-                placeholder="Enter your password"
-                prefix={<Lock size={18} color={Colors.textTertiary} />}
-              />
-
-              {error && (
-                <View style={styles.errorBox}>
-                  <Text style={styles.errorText}>{error}</Text>
-                </View>
-              )}
-
-              <Button
-                label="Sign in to Vendor Portal"
-                onPress={handleLogin}
-                loading={loading}
-                fullWidth
-                size="lg"
-              />
-            </View>
-
-            <TouchableOpacity onPress={() => router.replace('/auth/welcome')}>
-              <Text style={styles.backLink}>Back to customer portal</Text>
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    );
-  }
+  const canContinue = mobile.length === 10;
 
   return (
-    <View style={styles.webContainer}>
-      <View style={styles.webLeft}>
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={[styles.scroll, { paddingTop: insets.top, paddingBottom: insets.bottom + Spacing[8] }]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={[styles.header, { top: insets.top + Spacing[3] }]}>
+          <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} activeOpacity={0.7}>
+            <ArrowLeft size={20} color={Colors.white} strokeWidth={2} />
+          </TouchableOpacity>
+        </View>
+
         <Image
-          source={{ uri: 'https://images.pexels.com/photos/931177/pexels-photo-931177.jpeg?auto=compress&cs=tinysrgb&w=1200' }}
-          style={styles.webImage}
+          source={require('@/assets/images/closeup-image-basket-with-flowers-onam-festival-background.jpg')}
+          style={styles.heroImage}
           resizeMode="cover"
         />
-        <View style={styles.webImageOverlay} />
-        <View style={styles.webLeftContent}>
-          <View style={styles.logoRow}>
-            <Image source={require('@/assets/images/2.jpg')} style={styles.logoImg} resizeMode="contain" />
-            <View>
-              <Text style={[styles.brandName, { color: Colors.white }]}>33 Crores</Text>
-              <Text style={[styles.portalLabel, { color: 'rgba(255,255,255,0.75)' }]}>Vendor Portal</Text>
-            </View>
-          </View>
-
-          <View style={styles.webLeftText}>
-            <Text style={styles.webHeroTitle}>Supply fresh flowers,{'\n'}grow your business</Text>
-            <Text style={styles.webHeroSub}>
-              Manage procurement orders, track payments, and partner with us to deliver the freshest blooms.
-            </Text>
-          </View>
-
-          <View style={styles.featureList}>
-            {[
-              'View and manage procurement orders',
-              'Track payment status in real-time',
-              'Manage your flower inventory',
-            ].map((item) => (
-              <View key={item} style={styles.featureItem}>
-                <View style={styles.featureDot} />
-                <Text style={styles.featureText}>{item}</Text>
-              </View>
-            ))}
-          </View>
+        <View style={styles.heroOverlay} />
+        <View style={[styles.heroBrand, { top: insets.top + Spacing[3] + 48 + Spacing[3] }]}>
+          <Image source={require('@/assets/images/33logo-red_1.png')} style={styles.heroBrandLogo} resizeMode="contain" />
+          <Text style={styles.heroBrandText}>Crores</Text>
         </View>
-      </View>
 
-      <View style={styles.webRight}>
-        <View style={styles.webForm}>
-          <View style={styles.webFormHeader}>
-            <View style={styles.webIconWrap}>
-              <Store size={28} color={Colors.accent} strokeWidth={1.6} />
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <View style={styles.iconBadge}>
+              <Store size={22} color={Colors.accent} strokeWidth={1.8} />
             </View>
-            <Text style={styles.webFormTitle}>Vendor Sign In</Text>
-            <Text style={styles.webFormSub}>Enter your credentials to access the vendor portal</Text>
+            <Text style={styles.title}>Vendor Sign In</Text>
+            <Text style={styles.subtitle}>
+              Enter your registered mobile number and we'll send a verification code via WhatsApp
+            </Text>
           </View>
 
           <View style={styles.form}>
             <Input
-              label="Email address"
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="vendor@example.com"
-              prefix={<Mail size={18} color={Colors.textTertiary} />}
+              label="Registered Mobile Number"
+              value={mobile}
+              onChangeText={handleMobileChange}
+              keyboardType="phone-pad"
+              maxLength={10}
+              placeholder="98765 43210"
+              error={error}
+              prefix={prefixEl}
+              autoFocus
+              returnKeyType="done"
+              onSubmitEditing={handleContinue}
             />
-            <Input
-              label="Password"
-              value={password}
-              onChangeText={setPassword}
-              isPassword
-              placeholder="Enter your password"
-              prefix={<Lock size={18} color={Colors.textTertiary} />}
-            />
-
-            {error && (
-              <View style={styles.errorBox}>
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            )}
-
-            <Button
-              label="Sign in to Vendor Portal"
-              onPress={handleLogin}
-              loading={loading}
-              fullWidth
-              size="lg"
-            />
+            <Text style={styles.note}>
+              You'll receive a 6-digit code on WhatsApp. Make sure your number is registered as a vendor.
+            </Text>
           </View>
 
-          <View style={styles.linksRow}>
-            <TouchableOpacity
-              style={styles.backLinkRow}
-              onPress={() => router.replace('/auth/welcome')}
-            >
-              <Text style={styles.backLink}>Back to customer portal</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => router.replace('/admin/login')}
-            >
-              <Text style={styles.altPortalLink}>Admin portal</Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={[styles.continueBtn, !canContinue && styles.continueBtnDisabled]}
+            onPress={handleContinue}
+            disabled={!canContinue}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.continueBtnText}>Send WhatsApp Code</Text>
+            {!canContinue ? null : <ArrowRight size={18} color={Colors.white} strokeWidth={2.2} />}
+          </TouchableOpacity>
 
           <View style={styles.securityNote}>
-            <ShieldCheck size={14} color={Colors.textTertiary} />
+            <ShieldCheck size={13} color={Colors.textTertiary} />
             <Text style={styles.securityText}>
               Restricted access — authorized vendors only
             </Text>
           </View>
+
+          <View style={styles.linksRow}>
+            <TouchableOpacity onPress={() => router.replace('/auth/welcome')} activeOpacity={0.7}>
+              <Text style={styles.backLink}>Back to customer portal</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => router.replace('/admin/login')} activeOpacity={0.7}>
+              <Text style={styles.altPortalLink}>Admin portal</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
-    </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  mobileContainer: {
+  container: {
     flex: 1,
     backgroundColor: Colors.background,
   },
-  mobileScroll: {
+  scroll: {
     flexGrow: 1,
-    justifyContent: 'center',
-    padding: Spacing[6],
   },
-  mobileCard: {
-    backgroundColor: Colors.white,
-    borderRadius: Radius.xl,
-    padding: Spacing[6],
-    gap: Spacing[4],
-    ...Shadow.md,
+  header: {
+    position: 'absolute',
+    left: Spacing[5],
+    zIndex: 10,
   },
-  iconWrap: {
-    width: 64,
-    height: 64,
-    borderRadius: 20,
-    backgroundColor: Colors.accentSurface,
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.full,
+    backgroundColor: 'rgba(0,0,0,0.28)',
     alignItems: 'center',
     justifyContent: 'center',
-    alignSelf: 'center',
   },
-  webContainer: {
-    flex: 1,
-    flexDirection: 'row',
-    minHeight: '100%' as any,
+  heroImage: {
+    width,
+    height: 220,
   },
-  webLeft: {
-    flex: 1,
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  webImage: {
+  heroOverlay: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    bottom: 0,
-    width: '100%',
-    height: '100%',
+    height: 220,
+    backgroundColor: 'rgba(8,8,8,0.35)',
   },
-  webImageOverlay: {
+  heroBrand: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(100,60,10,0.72)',
-  },
-  webLeftContent: {
-    flex: 1,
-    padding: Spacing[12],
-    justifyContent: 'space-between',
-    position: 'relative',
-    zIndex: 1,
-  },
-  webLeftText: {
-    gap: Spacing[4],
-  },
-  webHeroTitle: {
-    fontFamily: Typography.fontFamily.bold,
-    fontSize: 42,
-    color: Colors.white,
-    lineHeight: 52,
-  },
-  webHeroSub: {
-    fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.lg,
-    color: 'rgba(255,255,255,0.8)',
-    lineHeight: 28,
-    maxWidth: 380,
-  },
-  featureList: {
-    gap: Spacing[3],
-  },
-  featureItem: {
+    left: Spacing[6],
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing[3],
+    gap: 6,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
+    paddingHorizontal: Spacing[3],
+    paddingVertical: 8,
+    borderRadius: 30,
   },
-  featureDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: Colors.accentLight,
+  heroBrandLogo: {
+    width: 28,
+    height: 28,
   },
-  featureText: {
-    fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.base,
-    color: 'rgba(255,255,255,0.85)',
-  },
-  webRight: {
-    width: 480,
-    backgroundColor: Colors.background,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: Spacing[10],
-  },
-  webForm: {
-    width: '100%',
-    maxWidth: 400,
-    gap: Spacing[6],
-  },
-  webFormHeader: {
-    gap: Spacing[2],
-  },
-  webIconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 18,
-    backgroundColor: Colors.accentSurface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: Spacing[2],
-  },
-  webFormTitle: {
-    fontFamily: Typography.fontFamily.bold,
-    fontSize: Typography.size['3xl'],
-    color: Colors.textPrimary,
-  },
-  webFormSub: {
-    fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.base,
-    color: Colors.textTertiary,
-  },
-  logoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing[3],
-  },
-  logoImg: {
-    width: 48,
-    height: 48,
-    borderRadius: Radius.md,
-  },
-  brandName: {
+  heroBrandText: {
     fontFamily: Typography.fontFamily.bold,
     fontSize: Typography.size.xl,
-    color: Colors.textPrimary,
+    color: Colors.white,
+    letterSpacing: -0.2,
+    marginLeft: -10,
   },
-  portalLabel: {
-    fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.sm,
-    color: Colors.textTertiary,
+  card: {
+    flex: 1,
+    backgroundColor: Colors.background,
+    borderTopLeftRadius: Radius.xl,
+    borderTopRightRadius: Radius.xl,
+    marginTop: -Radius.xl,
+    paddingHorizontal: Spacing[6],
+    paddingTop: Spacing[7],
+    paddingBottom: Spacing[6],
+    gap: Spacing[6],
   },
-  heading: {
+  cardHeader: {
+    gap: Spacing[2],
+  },
+  iconBadge: {
+    width: 52,
+    height: 52,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.accentSurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing[3],
+  },
+  title: {
     fontFamily: Typography.fontFamily.bold,
     fontSize: Typography.size['3xl'],
     color: Colors.textPrimary,
-    textAlign: 'center',
+    letterSpacing: -0.4,
   },
-  subheading: {
+  subtitle: {
     fontFamily: Typography.fontFamily.sansRegular,
     fontSize: Typography.size.base,
-    color: Colors.textTertiary,
-    textAlign: 'center',
-    marginTop: -Spacing[2],
+    color: Colors.textSecondary,
+    lineHeight: Typography.size.base * 1.6,
   },
   form: {
-    gap: Spacing[4],
+    gap: Spacing[3],
   },
-  errorBox: {
-    backgroundColor: Colors.errorSurface,
-    borderRadius: Radius.md,
-    padding: Spacing[3],
-  },
-  errorText: {
-    fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.sm,
-    color: Colors.error,
-  },
-  linksRow: {
+  countryCode: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 5,
+    paddingRight: Spacing[2],
+    borderRightWidth: 1,
+    borderRightColor: Colors.border,
   },
-  backLinkRow: {
-    alignItems: 'flex-start',
+  flag: {
+    fontSize: 16,
   },
-  backLink: {
+  code: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.base,
+    color: Colors.textPrimary,
+  },
+  note: {
     fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.sm,
+    fontSize: Typography.size.xs,
     color: Colors.textTertiary,
-    textDecorationLine: 'underline',
-    textAlign: 'center',
+    lineHeight: Typography.size.xs * 1.6,
   },
-  altPortalLink: {
-    fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.sm,
-    color: Colors.textTertiary,
-    textDecorationLine: 'underline',
+  continueBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing[2],
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing[4],
+    minHeight: 56,
+  },
+  continueBtnDisabled: {
+    opacity: 0.42,
+  },
+  continueBtnText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.md,
+    color: Colors.white,
+    letterSpacing: 0.2,
   },
   securityNote: {
     flexDirection: 'row',
@@ -462,5 +287,24 @@ const styles = StyleSheet.create({
     fontFamily: Typography.fontFamily.sansRegular,
     fontSize: Typography.size.xs,
     color: Colors.textTertiary,
+  },
+  linksRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: Spacing[2],
+  },
+  backLink: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textTertiary,
+    textDecorationLine: 'underline',
+  },
+  altPortalLink: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textTertiary,
+    textDecorationLine: 'underline',
   },
 });

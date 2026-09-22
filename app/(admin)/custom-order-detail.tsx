@@ -9,10 +9,13 @@ import {
   TouchableOpacity,
   TextInput,
   Platform,
+  Modal,
+  FlatList,
+  ActivityIndicator,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Flower2, Calendar, Phone, Package, MessageSquare, StickyNote, IndianRupee, CircleCheck as CheckCircle } from 'lucide-react-native';
+import { ArrowLeft, Flower2, Calendar, Phone, Package, MessageSquare, StickyNote, IndianRupee, CircleCheck as CheckCircle, Bike, User, RefreshCw, UserMinus, Search, X, MapPin } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { format } from 'date-fns';
@@ -127,6 +130,17 @@ const PAYMENT_STATUS_CONFIG: Record<string, { label: string; color: string; bg: 
   paid: { label: 'Paid', color: Colors.success, bg: Colors.successSurface },
 };
 
+const VEHICLE_LABELS: Record<string, string> = {
+  bike: 'Bike', scooter: 'Scooter', bicycle: 'Bicycle', foot: 'On Foot',
+};
+const ASSIGN_STATUS_COLORS: Record<string, string> = {
+  assigned: Colors.warning,
+  accepted: Colors.primary,
+  picked_up: Colors.accent,
+  delivered: Colors.success,
+  failed: Colors.error,
+};
+
 export default function AdminCustomOrderDetailScreen() {
   return (
     <ModuleGuard module="orders">
@@ -153,22 +167,45 @@ function AdminCustomOrderDetailScreenContent() {
   const [adminNote, setAdminNote] = useState('');
   const [savingNote, setSavingNote] = useState(false);
 
+  const [assignment, setAssignment] = useState<any>(null);
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [riderSearch, setRiderSearch] = useState('');
+  const [riders, setRiders] = useState<any[]>([]);
+  const [ridersLoading, setRidersLoading] = useState(false);
+  const [selectedRider, setSelectedRider] = useState<any>(null);
+  const [deliveryFee, setDeliveryFee] = useState('');
+  const [assignNotes, setAssignNotes] = useState('');
+  const [assigning, setAssigning] = useState(false);
+  const [reassignMode, setReassignMode] = useState(false);
+  const [unassigning, setUnassigning] = useState(false);
+  const [showUnassignModal, setShowUnassignModal] = useState(false);
+
   const load = useCallback(async () => {
     if (!id) {
       setLoading(false);
       return;
     }
     try {
-      const { data } = await supabase
-        .from('custom_orders')
-        .select('*, user:profiles(full_name, mobile)')
-        .eq('id', id)
-        .single();
+      const [orderRes, assignRes] = await Promise.all([
+        supabase
+          .from('custom_orders')
+          .select('*, user:profiles(full_name, mobile)')
+          .eq('id', id)
+          .single(),
+        supabase
+          .from('rider_order_assignments')
+          .select('id, custom_order_id, rider_id, status, delivery_fee, notes, assigned_at')
+          .eq('custom_order_id', id)
+          .neq('status', 'reassigned')
+          .order('assigned_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
 
-      if (data) {
+      if (orderRes.data) {
+        const data = orderRes.data;
         setOrder(data);
         setAdminNote(data.admin_note ?? '');
-        // Convert paise → rupees for display
         setFlowerPrice(data.flower_price > 0 ? String(data.flower_price / 100) : '');
         setDeliveryPrice(data.delivery_price > 0 ? String(data.delivery_price / 100) : '');
         if (data.address_id) {
@@ -180,6 +217,18 @@ function AdminCustomOrderDetailScreenContent() {
           setAddress(addr);
         }
       }
+
+      const rawAssign = assignRes.data ?? null;
+      if (rawAssign?.rider_id) {
+        const { data: riderData } = await supabase
+          .from('riders')
+          .select('id, full_name, mobile, zone, vehicle_type')
+          .eq('id', rawAssign.rider_id)
+          .maybeSingle();
+        setAssignment({ ...rawAssign, rider: riderData ?? null });
+      } else {
+        setAssignment(rawAssign);
+      }
     } catch (e) {
       console.error('load error', e);
     } finally {
@@ -189,6 +238,76 @@ function AdminCustomOrderDetailScreenContent() {
 
   useEffect(() => { load(); }, [load]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  useEffect(() => {
+    if (!showAssignModal) return;
+    setRidersLoading(true);
+    const query = riderSearch.trim();
+    let req = supabase
+      .from('riders')
+      .select('id, full_name, mobile, zone, vehicle_type')
+      .eq('is_active', true)
+      .order('full_name')
+      .limit(50);
+    if (query) {
+      req = req.or(`full_name.ilike.%${query}%,mobile.ilike.%${query}%,zone.ilike.%${query}%`);
+    }
+    req.then(({ data, error }) => {
+      setRiders(error ? [] : (data ?? []));
+      setRidersLoading(false);
+    });
+  }, [riderSearch, showAssignModal]);
+
+  const handleAssign = async () => {
+    if (!selectedRider) return;
+    setAssigning(true);
+    const fee = deliveryFee ? parseFloat(deliveryFee) : 0;
+    const notes = assignNotes.trim() || '';
+
+    if (reassignMode && assignment?.id) {
+      const { error: updateErr } = await supabase
+        .from('rider_order_assignments')
+        .update({ status: 'reassigned', is_reassigned: true })
+        .eq('id', assignment.id);
+      if (updateErr) {
+        setAssigning(false);
+        return;
+      }
+    }
+
+    const { error: assignErr } = await supabase.from('rider_order_assignments').insert({
+      custom_order_id: id,
+      rider_id: selectedRider.id,
+      status: 'assigned',
+      delivery_fee: fee,
+      notes,
+      is_reassigned: reassignMode,
+      swapped_from_rider_id: reassignMode ? assignment?.rider_id ?? null : null,
+    });
+    if (assignErr) {
+      setAssigning(false);
+      return;
+    }
+    setAssigning(false);
+    setShowAssignModal(false);
+    setSelectedRider(null);
+    setDeliveryFee('');
+    setAssignNotes('');
+    setReassignMode(false);
+    load();
+  };
+
+  const handleUnassign = async () => {
+    if (!assignment?.id) return;
+    setUnassigning(true);
+    const { error } = await supabase
+      .from('rider_order_assignments')
+      .update({ status: 'reassigned', is_reassigned: true })
+      .eq('id', assignment.id);
+    setUnassigning(false);
+    setShowUnassignModal(false);
+    if (!error) load();
+  };
 
   const handleStatusChange = async (status: string) => {
     setUpdating(true);
@@ -269,6 +388,7 @@ function AdminCustomOrderDetailScreenContent() {
   const totalRupees = order.total_price > 0 ? (order.total_price / 100).toLocaleString('en-IN') : null;
 
   const content = (
+    <>
     <ScrollView
       showsVerticalScrollIndicator={false}
       contentContainerStyle={isWeb ? webStyles.content : styles.content}
@@ -473,6 +593,89 @@ function AdminCustomOrderDetailScreenContent() {
             )}
           </View>
 
+          {/* Rider Assignment — only visible after payment */}
+          {order.payment_status === 'paid' && (
+          <View style={isWeb ? webStyles.card : styles.card}>
+            <View style={styles.cardTitleRow}>
+              <Text style={styles.sectionTitle}>Rider Assignment</Text>
+              {!assignment || assignment.status === 'delivered' || assignment.status === 'failed' ? (
+                <TouchableOpacity
+                  style={styles.assignBtn}
+                  onPress={() => { setReassignMode(false); setShowAssignModal(true); }}
+                >
+                  <Bike size={13} color={Colors.primary} />
+                  <Text style={styles.assignBtnText}>Assign Rider</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={styles.assignBtn}
+                  onPress={() => { setReassignMode(true); setShowAssignModal(true); }}
+                >
+                  <RefreshCw size={13} color={Colors.primary} />
+                  <Text style={styles.assignBtnText}>Reassign</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {assignment?.rider ? (
+              <View style={styles.riderCard}>
+                <View style={[styles.assignStatusBar, { backgroundColor: ASSIGN_STATUS_COLORS[assignment.status] ?? Colors.border }]} />
+                <View style={styles.riderInfo}>
+                  <View style={styles.riderAvatar}>
+                    <User size={18} color={Colors.primary} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.riderNameRow}>
+                      <Text style={styles.riderName}>{assignment.rider.full_name}</Text>
+                    </View>
+                    <Text style={styles.riderMeta}>+91 {assignment.rider.mobile} · {assignment.rider.zone ?? '—'} · {VEHICLE_LABELS[assignment.rider.vehicle_type] ?? assignment.rider.vehicle_type ?? '—'}</Text>
+                  </View>
+                  <View style={styles.riderStatusPill}>
+                    <Text style={[styles.riderStatusText, { color: ASSIGN_STATUS_COLORS[assignment.status] ?? Colors.textSecondary }]}>
+                      {assignment.status.replace('_', ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}
+                    </Text>
+                  </View>
+                </View>
+                {assignment.delivery_fee ? (
+                  <View style={styles.riderFeeRow}>
+                    <Text style={styles.riderFeeLabel}>Delivery Fee</Text>
+                    <Text style={styles.riderFeeValue}>₹{assignment.delivery_fee}</Text>
+                  </View>
+                ) : null}
+                <View style={styles.riderActionsRow}>
+                  <TouchableOpacity
+                    style={styles.viewRiderBtn}
+                    onPress={() => router.push({ pathname: '/(admin)/rider-detail', params: { id: assignment.rider.id, name: assignment.rider.full_name } } as any)}
+                  >
+                    <Text style={styles.viewRiderBtnText}>View Rider Profile</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.reassignBtn}
+                    onPress={() => { setReassignMode(true); setShowAssignModal(true); }}
+                  >
+                    <RefreshCw size={13} color={Colors.primary} />
+                    <Text style={styles.reassignBtnText}>Reassign</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.unassignBtn}
+                    onPress={() => setShowUnassignModal(true)}
+                    disabled={unassigning}
+                  >
+                    <UserMinus size={13} color={Colors.error} />
+                    <Text style={styles.unassignBtnText}>Unassign</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.noRiderBox}>
+                <Bike size={24} color={Colors.textTertiary} />
+                <Text style={styles.noRiderText}>No rider assigned yet</Text>
+                <Text style={styles.noRiderSub}>Tap "Assign Rider" to assign a delivery rider</Text>
+              </View>
+            )}
+          </View>
+          )}
+
           {/* Update Status */}
           <View style={isWeb ? webStyles.card : styles.card}>
             <Text style={styles.sectionTitle}>Update Status</Text>
@@ -532,7 +735,129 @@ function AdminCustomOrderDetailScreenContent() {
           <Text style={styles.orderId}>Order ID: {order.id}</Text>
         </View>
       </View>
+
+      <Modal visible={showUnassignModal} animationType="fade" transparent onRequestClose={() => setShowUnassignModal(false)}>
+        <View style={styles.unassignOverlay}>
+          <View style={styles.unassignDialog}>
+            <View style={styles.unassignIconCircle}>
+              <UserMinus size={28} color={Colors.error} />
+            </View>
+            <Text style={styles.unassignDialogTitle}>Unassign Rider?</Text>
+            <Text style={styles.unassignDialogText}>This will remove {assignment?.rider?.full_name ?? 'the rider'} from this order. The order can be assigned to another rider.</Text>
+            <View style={styles.unassignDialogActions}>
+              <TouchableOpacity style={styles.unassignCancelBtn} onPress={() => setShowUnassignModal(false)} disabled={unassigning}>
+                <Text style={styles.unassignCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.unassignConfirmBtn} onPress={handleUnassign} disabled={unassigning}>
+                {unassigning ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={styles.unassignConfirmText}>Unassign</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showAssignModal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => { setShowAssignModal(false); setSelectedRider(null); setReassignMode(false); }}>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>{reassignMode ? 'Reassign Rider' : 'Assign Rider'}</Text>
+            <TouchableOpacity onPress={() => { setShowAssignModal(false); setSelectedRider(null); setReassignMode(false); }} style={styles.modalClose}>
+              <X size={20} color={Colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.modalOrderSummary}>
+            <Text style={styles.modalOrderId}>Order #{order.id.slice(0, 8).toUpperCase()}</Text>
+            <Text style={styles.modalOrderDate}>{format(new Date(order.delivery_date), 'dd MMM yyyy')}</Text>
+            {reassignMode && assignment?.rider && (
+              <View style={styles.reassignNotice}>
+                <Text style={styles.reassignNoticeText}>
+                  Current rider: {assignment.rider.full_name} — will be marked as reassigned
+                </Text>
+              </View>
+            )}
+            {address && (
+              <View style={styles.modalAddressRow}>
+                <MapPin size={13} color={Colors.textTertiary} />
+                <Text style={styles.modalAddress} numberOfLines={1}>
+                  {[address.apartment_name, address.landmark, address.street, address.city].filter(Boolean).join(', ')}
+                </Text>
+              </View>
+            )}
+          </View>
+
+          <View style={styles.modalSearchRow}>
+            <Search size={16} color={Colors.textTertiary} />
+            <TextInput
+              style={styles.modalSearchInput}
+              placeholder="Search riders by name, mobile, zone..."
+              placeholderTextColor={Colors.textTertiary}
+              value={riderSearch}
+              onChangeText={setRiderSearch}
+            />
+          </View>
+
+          {ridersLoading ? (
+            <ActivityIndicator style={{ marginTop: Spacing[4] }} color={Colors.primary} />
+          ) : (
+            <FlatList
+              data={riders}
+              keyExtractor={(item) => item.id}
+              style={styles.riderList}
+              renderItem={({ item }) => {
+                const isSelected = selectedRider?.id === item.id;
+                return (
+                  <TouchableOpacity
+                    style={[styles.riderListItem, isSelected && styles.riderListItemSelected]}
+                    onPress={() => setSelectedRider(isSelected ? null : item)}
+                  >
+                    <View style={styles.riderListAvatar}>
+                      <User size={16} color={isSelected ? Colors.primary : Colors.textSecondary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <View style={styles.riderNameRow}>
+                        <Text style={[styles.riderListName, isSelected && { color: Colors.primary }]}>{item.full_name}</Text>
+                      </View>
+                      <Text style={styles.riderListMeta}>{item.zone ?? '—'} · {VEHICLE_LABELS[item.vehicle_type] ?? item.vehicle_type ?? '—'}</Text>
+                    </View>
+                    {isSelected && <CheckCircle size={18} color={Colors.primary} />}
+                  </TouchableOpacity>
+                );
+              }}
+              ListEmptyComponent={<Text style={styles.emptyText}>No active riders found</Text>}
+            />
+          )}
+
+          {selectedRider && (
+            <View style={styles.modalFeeRow}>
+              <TextInput
+                style={[styles.modalInput, { flex: 1 }]}
+                placeholder="Delivery fee (₹)"
+                placeholderTextColor={Colors.textTertiary}
+                keyboardType="numeric"
+                value={deliveryFee}
+                onChangeText={setDeliveryFee}
+              />
+              <TextInput
+                style={[styles.modalInput, { flex: 2 }]}
+                placeholder="Notes (optional)"
+                placeholderTextColor={Colors.textTertiary}
+                value={assignNotes}
+                onChangeText={setAssignNotes}
+              />
+            </View>
+          )}
+
+          <View style={styles.modalFooter}>
+            <Button
+              label={assigning ? (reassignMode ? 'Reassigning...' : 'Assigning...') : `${reassignMode ? 'Reassign' : 'Assign'} ${selectedRider ? selectedRider.full_name : 'Rider'}`}
+              onPress={handleAssign}
+              disabled={!selectedRider || assigning}
+            />
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
+    </>
   );
 
   if (isWeb) {
@@ -889,6 +1214,363 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: Spacing[2],
+  },
+
+  cardTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  assignBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[1],
+    paddingHorizontal: Spacing[3],
+    paddingVertical: Spacing[1],
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primarySurface,
+  },
+  assignBtnText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    color: Colors.primary,
+  },
+  riderCard: {
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    overflow: 'hidden',
+  },
+  assignStatusBar: { height: 4 },
+  riderInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[3],
+    padding: Spacing[3],
+  },
+  riderAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  riderNameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
+  riderName: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+  },
+  riderMeta: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+    marginTop: 1,
+  },
+  riderStatusPill: {
+    paddingHorizontal: Spacing[2],
+    paddingVertical: 2,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.surfaceHover,
+  },
+  riderStatusText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: 11,
+  },
+  riderFeeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing[3],
+    paddingBottom: Spacing[3],
+  },
+  riderFeeLabel: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+  },
+  riderFeeValue: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+  },
+  riderActionsRow: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  viewRiderBtn: {
+    flex: 1,
+    padding: Spacing[3],
+    alignItems: 'center',
+  },
+  viewRiderBtnText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    color: Colors.primary,
+  },
+  reassignBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing[1],
+    padding: Spacing[3],
+    borderLeftWidth: 1,
+    borderLeftColor: Colors.border,
+  },
+  reassignBtnText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    color: Colors.primary,
+  },
+  unassignBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    padding: Spacing[3],
+    borderLeftWidth: 1,
+    borderLeftColor: Colors.border,
+  },
+  unassignBtnText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    color: Colors.error,
+  },
+  noRiderBox: {
+    alignItems: 'center',
+    paddingVertical: Spacing[5],
+    gap: Spacing[2],
+  },
+  noRiderText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.textSecondary,
+  },
+  noRiderSub: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+    textAlign: 'center',
+  },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing[5],
+    paddingVertical: Spacing[4],
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    backgroundColor: Colors.white,
+  },
+  modalTitle: {
+    fontFamily: Typography.fontFamily.bold,
+    fontSize: Typography.size.xl,
+    color: Colors.textPrimary,
+  },
+  modalClose: { padding: Spacing[1] },
+  modalOrderSummary: {
+    backgroundColor: Colors.white,
+    marginHorizontal: Spacing[5],
+    marginTop: Spacing[4],
+    borderRadius: Radius.lg,
+    padding: Spacing[4],
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Spacing[1],
+  },
+  modalOrderId: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.base,
+    color: Colors.textPrimary,
+  },
+  modalOrderDate: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textSecondary,
+  },
+  modalAddressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[1],
+    marginTop: Spacing[1],
+  },
+  modalAddress: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+    flex: 1,
+  },
+  reassignNotice: {
+    backgroundColor: '#FEF3C7',
+    borderRadius: Radius.sm,
+    padding: Spacing[2],
+    marginTop: Spacing[2],
+  },
+  reassignNoticeText: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: '#B45309',
+  },
+  modalSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[3],
+    backgroundColor: Colors.white,
+    marginHorizontal: Spacing[5],
+    marginTop: Spacing[4],
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    paddingHorizontal: Spacing[4],
+    paddingVertical: Spacing[3],
+  },
+  modalSearchInput: {
+    flex: 1,
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+  },
+  riderList: {
+    flex: 1,
+    marginHorizontal: Spacing[5],
+    marginTop: Spacing[3],
+  },
+  riderListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[3],
+    padding: Spacing[3],
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.white,
+    marginBottom: Spacing[2],
+  },
+  riderListItemSelected: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primarySurface,
+  },
+  riderListAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.surfaceHover,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  riderListName: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+  },
+  riderListMeta: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+    marginTop: 1,
+  },
+  emptyText: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textTertiary,
+    textAlign: 'center',
+    marginTop: Spacing[6],
+  },
+  modalFeeRow: {
+    flexDirection: 'row',
+    gap: Spacing[3],
+    marginHorizontal: Spacing[5],
+    marginTop: Spacing[3],
+  },
+  modalInput: {
+    backgroundColor: Colors.white,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing[3],
+    paddingVertical: Spacing[3],
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+  },
+  modalFooter: {
+    padding: Spacing[5],
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    backgroundColor: Colors.white,
+  },
+  unassignOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing[5],
+  },
+  unassignDialog: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: Colors.white,
+    borderRadius: Radius.xl,
+    padding: Spacing[6],
+    alignItems: 'center',
+    gap: Spacing[3],
+  },
+  unassignIconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#FEE2E2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing[1],
+  },
+  unassignDialogTitle: {
+    fontFamily: Typography.fontFamily.bold,
+    fontSize: Typography.size.lg,
+    color: Colors.textPrimary,
+  },
+  unassignDialogText: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  unassignDialogActions: {
+    flexDirection: 'row',
+    gap: Spacing[3],
+    marginTop: Spacing[2],
+    width: '100%',
+  },
+  unassignCancelBtn: {
+    flex: 1,
+    paddingVertical: Spacing[3],
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+  },
+  unassignCancelText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.base,
+    color: Colors.textSecondary,
+  },
+  unassignConfirmBtn: {
+    flex: 1,
+    paddingVertical: Spacing[3],
+    borderRadius: Radius.md,
+    backgroundColor: Colors.error,
+    alignItems: 'center',
+  },
+  unassignConfirmText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.base,
+    color: Colors.white,
   },
 });
 

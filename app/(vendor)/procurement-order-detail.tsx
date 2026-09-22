@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  TextInput, ActivityIndicator, Platform,
+  TextInput, ActivityIndicator, Platform, useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -21,6 +21,8 @@ const GRADIENT_BOT = '#3D7A35';
 export default function VendorProcurementOrderDetail() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
+  const { width: winWidth } = useWindowDimensions();
+  const isNarrowWeb = isWeb && winWidth < 600;
   const { id } = useLocalSearchParams<{ id: string }>();
 
   const [order, setOrder] = useState<any | null>(null);
@@ -177,7 +179,7 @@ export default function VendorProcurementOrderDetail() {
 
       <ScrollView
         style={s.scroll}
-        contentContainerStyle={[s.content, isWeb && s.contentWeb]}
+        contentContainerStyle={[s.content, isWeb && !isNarrowWeb && s.contentWeb, isNarrowWeb && { padding: Spacing[4] }]}
         showsVerticalScrollIndicator={false}
       >
         <View style={s.card}>
@@ -357,6 +359,7 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: Radius.lg,
     padding: Spacing[3], gap: Spacing[3],
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+    flexWrap: 'wrap',
   },
   orderStatItem: { flex: 1, alignItems: 'center', gap: 2 },
   orderStatValue: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.lg, color: '#FFFFFF' },
@@ -407,6 +410,7 @@ const s = StyleSheet.create({
   itemRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingVertical: Spacing[3], gap: Spacing[3],
+    flexWrap: 'wrap',
   },
   itemRowBorder: { borderBottomWidth: 1, borderBottomColor: Colors.divider },
   itemInfo: { flex: 1 },
@@ -418,13 +422,13 @@ const s = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 4,
     borderWidth: 1.5, borderColor: Colors.primary + '60', borderRadius: Radius.sm,
     paddingHorizontal: Spacing[2], paddingVertical: 6,
-    backgroundColor: Colors.primarySurface, minWidth: 100,
+    backgroundColor: Colors.primarySurface, minWidth: 80,
   },
   rupeeSymbol: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.primary },
   priceCol: { alignItems: 'flex-end', gap: 4 },
   priceInput: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm,
-    color: Colors.textPrimary, minWidth: 90, padding: 0,
+    color: Colors.textPrimary, minWidth: 70, padding: 0,
   },
   unitHint: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.primary },
 

@@ -6,7 +6,7 @@ import {
   Modal, TextInput, Switch, Platform, ActivityIndicator, RefreshControl, Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Store, Plus, X, Pencil, ArrowLeft, Phone, MapPin, CreditCard, ExternalLink } from 'lucide-react-native';
+import { Store, Plus, X, Pencil, ArrowLeft, Phone, MapPin, CreditCard, ExternalLink, Trash2 } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
@@ -50,6 +50,9 @@ function VendorsScreenContent() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [tab, setTab] = useState<'active' | 'inactive'>('active');
+  const [deleteTarget, setDeleteTarget] = useState<Vendor | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const load = async () => {
     try {
@@ -126,6 +129,22 @@ function VendorsScreenContent() {
     load();
   };
 
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteError('');
+    const { error: err } = await supabase.from('vendors').delete().eq('id', deleteTarget.id);
+    if (err) {
+      setDeleteError(err.message);
+      setDeleting(false);
+      return;
+    }
+    setVendors(current => current.filter(v => v.id !== deleteTarget.id));
+    setDeleteTarget(null);
+    setDeleting(false);
+    await load();
+  };
+
   const filtered = vendors.filter(v => tab === 'active' ? v.is_active : !v.is_active);
 
   const VendorCard = ({ v }: { v: Vendor }) => (
@@ -181,6 +200,18 @@ function VendorsScreenContent() {
             <Text style={s.pillMapsText}>Maps</Text>
           </TouchableOpacity>
         ) : null}
+        <TouchableOpacity
+          style={s.deleteBtn}
+          onPress={e => {
+            e.stopPropagation?.();
+            setDeleteError('');
+            setDeleteTarget(v);
+          }}
+          activeOpacity={0.75}
+        >
+          <Trash2 size={12} color={Colors.error} strokeWidth={1.8} />
+          <Text style={s.deleteBtnText}>Delete</Text>
+        </TouchableOpacity>
       </View>
     </TouchableOpacity>
   );
@@ -317,6 +348,24 @@ function VendorsScreenContent() {
           </View>
         </View>
       </Modal>
+
+      <Modal visible={deleteTarget !== null} transparent animationType="fade" onRequestClose={() => !deleting && setDeleteTarget(null)}>
+        <View style={s.overlay}>
+          <View style={[s.confirmModal, isWeb && s.modalWeb]}>
+            <Text style={s.confirmTitle}>Delete Vendor</Text>
+            <Text style={s.confirmText}>Are you sure you want to delete this vendor?</Text>
+            {deleteError ? <Text style={s.errorText}>{deleteError}</Text> : null}
+            <View style={s.modalFooter}>
+              <TouchableOpacity style={s.cancelBtn} onPress={() => setDeleteTarget(null)} disabled={deleting}>
+                <Text style={s.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.deleteConfirmBtn} onPress={confirmDelete} disabled={deleting}>
+                {deleting ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={s.saveBtnText}>Delete</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -389,6 +438,8 @@ const s = StyleSheet.create({
   pillText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.textSecondary },
   pillMaps: { backgroundColor: Colors.primarySurface },
   pillMapsText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.primary },
+  deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.error + '12', paddingVertical: 4, paddingHorizontal: Spacing[2], borderRadius: Radius.full },
+  deleteBtnText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.error },
   mapsInputRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
   mapsInput: { flex: 1, borderColor: Colors.border },
   mapsPreview: {
@@ -400,6 +451,10 @@ const s = StyleSheet.create({
   mapsPreviewText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.primary },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: Spacing[5] },
   modal: { width: '100%', maxHeight: '92%', backgroundColor: Colors.white, borderRadius: Radius.xl, padding: Spacing[5], gap: Spacing[3] },
+  confirmModal: { width: '100%', backgroundColor: Colors.white, borderRadius: Radius.xl, padding: Spacing[5], gap: Spacing[3] },
+  confirmTitle: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.lg, color: Colors.textPrimary },
+  confirmText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.base, color: Colors.textSecondary, lineHeight: 24 },
+  deleteConfirmBtn: { flex: 1, paddingVertical: Spacing[3], borderRadius: Radius.md, backgroundColor: Colors.error, alignItems: 'center' },
   modalWeb: { maxWidth: 580 },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   modalTitle: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.lg, color: Colors.textPrimary },

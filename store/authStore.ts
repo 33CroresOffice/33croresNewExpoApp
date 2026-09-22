@@ -150,7 +150,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       customRoleColor: null,
       activePanel: null,
     });
-    router.replace('/auth/mobile');
+    router.replace('/auth/welcome');
   },
 
   reset: () => {

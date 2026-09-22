@@ -33,10 +33,12 @@ interface Props {
   onChange: (date: Date) => void;
   minDate?: Date;
   maxDate?: Date;
+  /** Start with the calendar already open (used inside dialogs) */
+  defaultOpen?: boolean;
 }
 
-export default function DatePickerField({ label, required, value, onChange, minDate, maxDate }: Props) {
-  const [open, setOpen] = useState(false);
+export default function DatePickerField({ label, required, value, onChange, minDate, maxDate, defaultOpen }: Props) {
+  const [open, setOpen] = useState(!!defaultOpen);
   const [pickerView, setPickerView] = useState<PickerView>('day');
   const [viewMonth, setViewMonth] = useState(() => {
     if (value) return value;

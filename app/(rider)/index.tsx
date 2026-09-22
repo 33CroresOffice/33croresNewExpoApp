@@ -20,7 +20,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { format } from 'date-fns';
 import StatusChip from '@/components/ui/StatusChip';
-import { useRouter, useRootNavigationState } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { resolveRider } from '@/utils/riderLookup';
 import { todayISTString, performAttendanceCheckIn, getCheckInErrorMessage } from '@/utils/attendanceCheckIn';
 import { getCurrentMonthIST, getMonthRangeIST } from '@/utils/riderPeriod';
@@ -73,7 +73,6 @@ export default function RiderDashboard() {
   const insets = useSafeAreaInsets();
   const { profile } = useAuthStore();
   const router = useRouter();
-  const rootNavigationState = useRootNavigationState();
   const isWeb = Platform.OS === 'web';
 
   const [rider, setRider] = useState<RiderInfo | null>(null);
@@ -190,7 +189,7 @@ export default function RiderDashboard() {
       });
     });
 
-    const breakdown = ((incentivesRes.data ?? []) as any[]).map((incentive: any): BonusBreakdown | null => {
+    const breakdown = ((incentivesRes.data ?? []) as any[]).map((incentive: any): BonusBreakdown => {
       const amount = Number(incentive.amount ?? 0);
       const basis = incentive.evaluation_basis ?? incentive.type;
       const category = incentive.bonus_category;
@@ -210,16 +209,16 @@ export default function RiderDashboard() {
           : 1;
       }
 
-      if (eligibleCount <= 0 || amount <= 0) return null;
+      const total = eligibleCount > 0 && amount > 0 ? eligibleCount * amount : 0;
       return {
         id: incentive.id,
         name: incentive.name,
         eligibleCount,
         amount,
-        total: eligibleCount * amount,
+        total,
         unitLabel,
       };
-    }).filter((entry): entry is BonusBreakdown => entry !== null);
+    });
 
     if (approvedCount > 0 && approvedReferralTotal > 0) {
       breakdown.push({
@@ -263,13 +262,6 @@ export default function RiderDashboard() {
   useEffect(() => {
     if (hasRedirectedRef.current) return;
     if (loading || todayAttendance === undefined || !riderId) return;
-    // Don't navigate until the root navigator has finished settling into
-    // this screen. Firing router.replace here while the root layout is
-    // still navigating into /(rider) races two navigations in the same
-    // tick, which crashed release builds with "Maximum update depth
-    // exceeded" (React Navigation's screen-options cleanup cascading into
-    // an unmount/remount loop).
-    if (!rootNavigationState?.key) return;
     if (todayAttendance?.status === 'present') {
       hasRedirectedRef.current = true;
       router.replace('/(rider)/assignments');
@@ -281,7 +273,7 @@ export default function RiderDashboard() {
     AsyncStorage.getItem(key)
       .then((shown) => { if (shown !== 'shown') setShowRankingModal(true); })
       .catch(() => setShowRankingModal(true));
-  }, [loading, todayAttendance, riderId, router, rootNavigationState?.key]);
+  }, [loading, todayAttendance, riderId, router]);
 
   const onRefresh = () => { setRefreshing(true); load(); };
 
@@ -334,20 +326,18 @@ export default function RiderDashboard() {
             </View>
           ))}
         </View>
-        {bonusBreakdown.length > 0 && (
-          <View style={bonusStyles.container}>
-            <View style={bonusStyles.headingRow}>
-              <Text style={bonusStyles.heading}>Bonus breakdown</Text>
-              <Text style={bonusStyles.total}>{`₹${bonusBreakdown.reduce((sum, bonus) => sum + bonus.total, 0).toLocaleString('en-IN')}`}</Text>
-            </View>
-            {bonusBreakdown.map((bonus) => (
-              <View key={bonus.id} style={bonusStyles.row}>
-                <Text style={bonusStyles.name} numberOfLines={1}>{bonus.name.replace(/ Bonus$/i, '')}</Text>
-                <Text style={bonusStyles.calculation}>{`${bonus.eligibleCount} ${bonus.unitLabel} × ₹${bonus.amount.toLocaleString('en-IN')} = ₹${bonus.total.toLocaleString('en-IN')}`}</Text>
-              </View>
-            ))}
+        <View style={bonusStyles.container}>
+          <View style={bonusStyles.headingRow}>
+            <Text style={bonusStyles.heading}>All incentives</Text>
+            <Text style={bonusStyles.total}>{`₹${bonusBreakdown.reduce((sum, bonus) => sum + bonus.total, 0).toLocaleString('en-IN')}`}</Text>
           </View>
-        )}
+          {bonusBreakdown.map((bonus) => (
+            <View key={bonus.id} style={bonusStyles.row}>
+              <Text style={bonusStyles.name} numberOfLines={1}>{bonus.name.replace(/ Bonus$/i, '')}</Text>
+              <Text style={bonusStyles.calculation}>₹{bonus.total.toLocaleString('en-IN')}</Text>
+            </View>
+          ))}
+        </View>
         {referralBonus && (referralBonus.approvedCount > 0 || referralBonus.eligibleCount > 0 || referralBonus.pendingCount > 0) && (
           <View style={[bonusStyles.container, { backgroundColor: Colors.primarySurface, borderColor: Colors.primary + '22' }]}>
             <View style={bonusStyles.headingRow}>

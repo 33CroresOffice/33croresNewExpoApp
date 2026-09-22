@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { usePageVisibility } from '@/hooks/usePageVisibility';
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
@@ -13,11 +13,33 @@ import {
 } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Search, ChevronRight, ChevronLeft, ChevronDown, Flower2, Package, Timer, CirclePause as PauseCircle, Download } from 'lucide-react-native';
+import { useAuthStore } from '@/store/authStore';
+import { Search, ChevronRight, ChevronLeft, ChevronDown, Flower2, Package, Timer, CirclePause as PauseCircle, Download, MapPin, X } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import StatusChip from '@/components/ui/StatusChip';
 import { format } from 'date-fns';
+
+const BATCH_SIZE = 50;
+
+async function batchedIn<T>(
+  queryFn: (ids: string[]) => PromiseLike<{ data: T[] | null; error: any }>,
+  ids: string[],
+): Promise<{ data: T[] | null; error: any }> {
+  if (ids.length === 0) return { data: null, error: null };
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+    chunks.push(ids.slice(i, i + BATCH_SIZE));
+  }
+  const results = await Promise.all(chunks.map((c) => Promise.resolve(queryFn(c))));
+  const merged: T[] = [];
+  let firstError: any = null;
+  for (const r of results) {
+    if (r.error && !firstError) firstError = r.error;
+    if (r.data) merged.push(...r.data);
+  }
+  return { data: merged.length > 0 ? merged : null, error: firstError };
+}
 
 type OrderTab = 'subscription' | 'custom';
 type SubStatusFilter = 'all' | 'active' | 'pending' | 'expired' | 'paused' | 'paused_today' | 'paused_tomorrow' | 'expiring_soon' | 'resumed_today' | 'resumed_tomorrow' | 'new_today' | 'renewed_today' | 'end_today' | 'delivery_today' | 'delivery_tomorrow';
@@ -63,6 +85,7 @@ function AdminOrdersScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
   const params = useLocalSearchParams<{ tab?: string; subFilter?: string; customFilter?: CustomFilter }>();
+  const { profile: adminProfile } = useAuthStore();
 
   const [activeTab, setActiveTab] = useState<OrderTab>(params.tab === 'custom' ? 'custom' : 'subscription');
   const [subscriptions, setSubscriptions] = useState<any[]>([]);
@@ -86,6 +109,7 @@ function AdminOrdersScreenContent() {
   const [customStatusCounts, setCustomStatusCounts] = useState<{ all: number; pending: number; paid: number; cancelled: number }>({ all: 0, pending: 0, paid: 0, cancelled: 0 });
   const [subTotalCount, setSubTotalCount] = useState(0);
   const [customTotalCount, setCustomTotalCount] = useState(0);
+  const loadRequestRef = useRef(0);
   const PAGE_SIZE = 15;
 
   useEffect(() => {
@@ -95,6 +119,7 @@ function AdminOrdersScreenContent() {
   }, [params.tab, params.subFilter, params.customFilter]);
 
   const load = async () => {
+    const requestId = ++loadRequestRef.current;
     try {
       const today = new Date().toISOString().split('T')[0];
       const yesterday = new Date();
@@ -194,11 +219,8 @@ function AdminOrdersScreenContent() {
         ? supabase.from('subscriptions').select('user_id').lt('created_at', `${today}T00:00:00.000Z`)
         : null;
 
-      const riderAssignQuery = supabase
-        .from('rider_order_assignments')
-        .select('order_id, status, rider:riders(full_name)')
-        .in('status', ['assigned', 'accepted', 'picked_up'])
-        .limit(500);
+      // Rider assignments are fetched after customData/subData are available,
+      // scoped to the displayed order IDs, so the newest assignment is always included.
 
       // Current-month subscription status counts (distinct customers per status)
       const monthStart = `${today.slice(0, 8)}01`;
@@ -213,6 +235,10 @@ function AdminOrdersScreenContent() {
         .select('*', { count: 'exact', head: true })
         .eq('status', 'active')
         .or(`pause_until.is.null,pause_until.lt.${today}`);
+      const expiredCountQuery = supabase
+        .from('subscriptions')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'expired');
       const pausedSubscriptionsQuery = supabase
         .from('subscriptions')
         .select('id, status, pause_start_date, pause_until')
@@ -265,15 +291,15 @@ function AdminOrdersScreenContent() {
         customCountQuery = customCountQuery.eq('status', 'cancelled');
       }
 
-      const [{ data: subData }, { data: customData, error: customErr }, activeIdsRes, priorSubsRes, riderAssignRes, monthSubsRes, customCountsRes, activeCountRes, pausedSubscriptionsRes, subCountRes, customCountRes] = await Promise.all([
+      const [{ data: subData }, { data: customData, error: customErr }, activeIdsRes, priorSubsRes, monthSubsRes, customCountsRes, activeCountRes, expiredCountRes, pausedSubscriptionsRes, subCountRes, customCountRes] = await Promise.all([
         subQuery,
         customQuery,
         activeIdsQuery ?? Promise.resolve({ data: null }),
         todaySubsQuery ?? Promise.resolve({ data: null }),
-        riderAssignQuery,
         monthSubsQuery,
         customCountsQuery,
         activeCountQuery,
+        expiredCountQuery,
         pausedSubscriptionsQuery,
         subCountQuery,
         customCountQuery,
@@ -281,9 +307,9 @@ function AdminOrdersScreenContent() {
       setSubTotalCount(subCountRes.count ?? 0);
       setCustomTotalCount(customCountRes.count ?? 0);
 
-      // Count active subscriptions per address (each address counted separately);
-      // paused, expired, and pending are counted per customer.
+      // Count active subscriptions per address and expired subscriptions by status.
       const activeCount = activeCountRes.count ?? 0;
+      const expiredCount = expiredCountRes.count ?? 0;
       const todayPausedSubscriptions = (pausedSubscriptionsRes.data ?? []).filter((s: any) => {
         const hasActivePausePeriod = Boolean(
           s.pause_start_date &&
@@ -317,7 +343,7 @@ function AdminOrdersScreenContent() {
       setMonthStatusCounts({
         active: activeCount,
         paused: todayPausedSubscriptions.length,
-        expired: monthExpired.size,
+        expired: expiredCount,
         pending: monthPending.size,
       });
 
@@ -330,9 +356,10 @@ function AdminOrdersScreenContent() {
       });
 
       const subAddressIds = (subData ?? []).map((s: any) => s.delivery_address_id).filter(Boolean);
-      const addressRes = subAddressIds.length > 0
-        ? await supabase.from('addresses').select('id, street, apartment_name, landmark, locality_id, city, state, pincode').in('id', subAddressIds)
-        : { data: null };
+      const addressRes = await batchedIn(
+        (ids) => supabase.from('addresses').select('id, street, apartment_name, landmark, locality_id, city, state, pincode').in('id', ids),
+        subAddressIds as string[],
+      );
       if (subData) setSubscriptions(subData);
       if (customData) setCustomOrders(customData);
       if (activeIdsRes?.data) {
@@ -355,16 +382,25 @@ function AdminOrdersScreenContent() {
         setNewTodayUserIds(new Set());
         setRenewedTodayUserIds(new Set());
       }
-      if (riderAssignRes?.data) {
-        const map: Record<string, string> = {};
-        (riderAssignRes.data as any[]).forEach((a) => {
-          const riderName = (a as any).rider?.full_name;
-          if (riderName) map[(a as any).order_id] = riderName;
-        });
-        setRiderMap(map);
-      } else {
-        setRiderMap({});
-      }
+      const subOrderIds = (subData ?? []).flatMap((s: any) => (s.orders ?? []).map((o: any) => o.id)).filter(Boolean);
+      const subAssignRes = await batchedIn(
+        (ids) => supabase
+            .from('rider_order_assignments')
+            .select('order_id, status, rider:riders(full_name)')
+            .in('status', ['assigned', 'accepted', 'picked_up'])
+            .in('order_id', ids)
+            .order('assigned_at', { ascending: false })
+            .limit(500),
+        subOrderIds as string[],
+      );
+      const map: Record<string, string> = {};
+      (subAssignRes.data as any[] | null ?? []).forEach((a) => {
+        const riderName = (a as any).rider?.full_name;
+        if (!riderName || !(a as any).order_id) return;
+        if (!map[(a as any).order_id]) map[(a as any).order_id] = riderName;
+      });
+      if (requestId !== loadRequestRef.current) return;
+      setRiderMap(map);
       if (addressRes?.data) {
         const amap: Record<string, any> = {};
         (addressRes.data as any[]).forEach((a) => { amap[a.id] = a; });
@@ -379,12 +415,13 @@ function AdminOrdersScreenContent() {
         ...(subData ?? []).map((s: any) => s.user_id),
         ...(customData ?? []).map((o: any) => o.user_id),
       ].filter(Boolean))) as string[];
-      const tagsRes = allUserIds.length > 0
-        ? await supabase
+      const tagsRes = await batchedIn(
+        (ids) => supabase
             .from('customer_tag_assignments')
             .select('customer_id, tag:customer_tags(id, name, color)')
-            .in('customer_id', allUserIds)
-        : { data: null };
+            .in('customer_id', ids),
+        allUserIds,
+      );
       if (tagsRes.data) {
         const tmap: Record<string, Array<{ id: string; name: string; color: string }>> = {};
         (tagsRes.data as any[]).forEach((row: any) => {
@@ -400,9 +437,10 @@ function AdminOrdersScreenContent() {
       }
 
       const customAddressIds = (customData ?? []).map((o: any) => o.address_id).filter(Boolean);
-      const customAddrRes = customAddressIds.length > 0
-        ? await supabase.from('addresses').select('id, street, apartment_name, landmark, locality_id, city, state, pincode').in('id', customAddressIds)
-        : { data: null };
+      const customAddrRes = await batchedIn(
+        (ids) => supabase.from('addresses').select('id, street, apartment_name, landmark, locality_id, city, state, pincode').in('id', ids),
+        customAddressIds as string[],
+      );
       if (customAddrRes?.data) {
         const cmap: Record<string, any> = {};
         (customAddrRes.data as any[]).forEach((a) => { cmap[a.id] = a; });
@@ -413,8 +451,10 @@ function AdminOrdersScreenContent() {
     } catch (e) {
       console.error('load error', e);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (requestId === loadRequestRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   };
 
@@ -590,6 +630,7 @@ function AdminOrdersScreenContent() {
 
   if (isWeb) {
     return (
+      <>
       <ScrollView style={webStyles.scroll} contentContainerStyle={webStyles.content} showsVerticalScrollIndicator={false}>
         <View style={webStyles.pageHeader}>
           <View>
@@ -817,7 +858,7 @@ function AdminOrdersScreenContent() {
             </ScrollView>
           ) : (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={webStyles.tableScroll}>
-            <View style={webStyles.tableInner}>
+            <View style={webStyles.tableInnerCustom}>
               <View style={webStyles.tableHead}>
                 <Text style={[webStyles.thCell, webStyles.colCustomer]}>Customer</Text>
                 <Text style={[webStyles.thCell, webStyles.colAddress]}>Address</Text>
@@ -914,6 +955,7 @@ function AdminOrdersScreenContent() {
           )}
         </View>
       </ScrollView>
+      </>
     );
   }
 
@@ -1259,6 +1301,122 @@ const styles = StyleSheet.create({
     color: Colors.textTertiary,
   },
   orderRight: { alignItems: 'flex-end', gap: Spacing[2] },
+  riderChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: Spacing[2],
+    paddingVertical: 3,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.primarySurface,
+    maxWidth: 120,
+  },
+  riderChipText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.xs,
+    color: Colors.primary,
+  },
+  assignBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    minHeight: 30,
+    paddingHorizontal: Spacing[2],
+    paddingVertical: 5,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.primary,
+  },
+  assignBtnDisabled: {
+    backgroundColor: Colors.neutral[100],
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  assignBtnText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.xs,
+    color: Colors.white,
+  },
+  assignBtnTextDisabled: { color: Colors.textDisabled },
+  assignSummary: { backgroundColor: Colors.primarySurface, borderRadius: Radius.md, padding: Spacing[3], marginBottom: Spacing[3] },
+  assignSummaryName: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.base,
+    color: Colors.textPrimary,
+  },
+  assignSummaryMeta: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+    marginTop: 2,
+  },
+  assignSearch: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing[3],
+    paddingVertical: Spacing[2],
+    backgroundColor: Colors.neutral[50],
+    marginBottom: Spacing[2],
+  },
+  assignSearchInput: {
+    flex: 1,
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+    height: 28,
+  },
+  assignError: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.error,
+    marginBottom: Spacing[2],
+  },
+  assignList: { maxHeight: 320 },
+  assignEmpty: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textTertiary,
+    textAlign: 'center',
+    paddingVertical: Spacing[4],
+  },
+  assignRiderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+    paddingHorizontal: Spacing[2],
+    paddingVertical: Spacing[2],
+    borderRadius: Radius.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.divider,
+  },
+  assignRiderIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  assignRiderName: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+  },
+  assignRiderMeta: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+    marginTop: 1,
+  },
+  assigningText: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+  },
   tabRow: {
     flexDirection: 'row',
     backgroundColor: Colors.white,
@@ -1653,6 +1811,10 @@ const webStyles = StyleSheet.create({
     minWidth: 1180,
     flexDirection: 'column',
   },
+  tableInnerCustom: {
+    minWidth: 1160,
+    flexDirection: 'column',
+  },
   colCustomer: { width: 220 },
   colAddress: { width: 260, paddingRight: 8 },
   colPlan: { width: 180 },
@@ -1663,6 +1825,46 @@ const webStyles = StyleSheet.create({
   colType: { width: 100 },
   colItems: { width: 240 },
   colDate: { width: 130 },
+  assignBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: 34,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.primary,
+    ...Shadow.sm,
+  },
+  assignBtnDisabled: {
+    backgroundColor: Colors.neutral[100],
+    borderWidth: 1,
+    borderColor: Colors.border,
+    shadowOpacity: 0,
+  },
+  assignBtnText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.xs,
+    color: Colors.white,
+  },
+  assignBtnTextDisabled: { color: Colors.textDisabled },
+  riderChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.primarySurface,
+    alignSelf: 'flex-start',
+    maxWidth: 150,
+  },
+  riderChipText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.xs,
+    color: Colors.primary,
+  },
   paginationBar: {
     flexDirection: 'row',
     alignItems: 'center',

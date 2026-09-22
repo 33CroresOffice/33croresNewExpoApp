@@ -125,6 +125,7 @@ export default function AdminLayout() {
       <Tabs.Screen name="panji"                     options={{ href: null }} />
       <Tabs.Screen name="localities"                 options={{ href: null }} />
       <Tabs.Screen name="apartments"                 options={{ href: null }} />
+      <Tabs.Screen name="cron-monitor"               options={{ href: null }} />
     </Tabs>
   );
 }

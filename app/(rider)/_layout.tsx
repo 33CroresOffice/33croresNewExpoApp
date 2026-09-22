@@ -4,15 +4,24 @@ import { LayoutDashboard, PackageCheck, CalendarDays, CircleUser as UserCircle, 
 import { Colors, Typography } from '@/constants/theme';
 import { useAuthStore } from '@/store/authStore';
 import { usePushNotifications } from '@/hooks/usePushNotifications';
+import { logRiderAppOpen } from '@/utils/riderAppOpen';
+import { useEffect } from 'react';
 
 const ACCENT = '#3AAFE4';
 
 export default function RiderLayout() {
   const insets = useSafeAreaInsets();
-  const { session } = useAuthStore();
+  const { session, profile } = useAuthStore();
   const userId = session?.user?.id;
 
   usePushNotifications(userId, true);
+
+  // Record one app-open log per rider session (date/time + GPS)
+  useEffect(() => {
+    if (!userId) return;
+    logRiderAppOpen(userId, profile?.mobile);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 
   return (
     <Tabs

@@ -359,6 +359,8 @@ const handleAssign = async () => {
 
       const subUpdate: Record<string, any> = {
         status: newSubStatus,
+        start_date: toISODate(editSubStartDate),
+        end_date: toISODate(editSubEndDate),
         pause_start_date: pauseStartDate,
         pause_until: pauseUntil,
         new_end_date: toISODate(editSubNewEndDate),
@@ -904,19 +906,16 @@ const handleAssign = async () => {
                   )}
                 </View>
 
-                {/* Start & End Date — read-only, permanently fixed at creation */}
-                <View style={styles.readOnlyDateRow}>
-                  <Text style={styles.readOnlyDateLabel}>Start Date</Text>
-                  <Text style={styles.readOnlyDateValue}>
-                    {editSubStartDate ? format(editSubStartDate, 'dd MMM yyyy') : '—'}
-                  </Text>
-                </View>
-                <View style={styles.readOnlyDateRow}>
-                  <Text style={styles.readOnlyDateLabel}>End Date</Text>
-                  <Text style={styles.readOnlyDateValue}>
-                    {editSubEndDate ? format(editSubEndDate, 'dd MMM yyyy') : '—'}
-                  </Text>
-                </View>
+                <DatePickerField
+                  label="Start Date"
+                  value={editSubStartDate}
+                  onChange={setEditSubStartDate}
+                />
+                <DatePickerField
+                  label="End Date"
+                  value={editSubEndDate}
+                  onChange={setEditSubEndDate}
+                />
                 <DatePickerField
                   label="New End Date"
                   value={editSubNewEndDate}

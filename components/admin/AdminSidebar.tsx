@@ -105,6 +105,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: 'Assignment Orders',     icon: ClipboardList, href: '/(admin)/rider-assignment-orders' },
       { label: 'Assignments',          icon: MapPin,      href: '/(admin)/rider-assignments' },
       { label: 'Attendance Locations', icon: ShieldCheck, href: '/(admin)/attendance-locations' },
+      { label: 'Rider Activity Logs',   icon: Activity,     href: '/(admin)/rider-activity-logs' },
       { label: 'Delivery Time',       icon: Clock,       href: '/(admin)/rider-delivery-time' },
       { label: 'Incentives',          icon: Award,        href: '/(admin)/rider-incentives' },
     ],
@@ -142,6 +143,7 @@ const SYSTEM_ITEMS: (NavItem & { module: string })[] = [
   { label: 'Admin Login Logs',  icon: LoginLogIcon, href: '/(admin)/admin-login-logs', module: 'admin_users' },
   { label: 'Roles & Access',    icon: Shield,       href: '/(admin)/roles',             module: 'roles' },
   { label: 'Secret Keys',       icon: KeyRound,     href: '/(admin)/secret-keys',      module: 'secret_keys' },
+  { label: 'Cron Monitor',      icon: Clock,        href: '/(admin)/cron-monitor',     module: 'logs' },
 ];
 
 export default function AdminSidebar() {

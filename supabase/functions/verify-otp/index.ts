@@ -282,6 +282,26 @@ Deno.serve(async (req: Request) => {
         .eq("id", providerRecord.id);
     }
 
+    // Link user_id on vendors if this mobile belongs to an active vendor
+    const { data: vendorRecord } = await supabase
+      .from("vendors")
+      .select("id, is_active, user_id")
+      .eq("mobile", mobile)
+      .maybeSingle();
+
+    if (vendorRecord && vendorRecord.is_active && !vendorRecord.user_id) {
+      await supabase
+        .from("vendors")
+        .update({ user_id: userId })
+        .eq("id", vendorRecord.id);
+
+      // Ensure profile role is vendor
+      await supabase
+        .from("profiles")
+        .update({ role: "vendor" })
+        .eq("id", userId);
+    }
+
     return new Response(
       JSON.stringify({ success: true, email, password }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }

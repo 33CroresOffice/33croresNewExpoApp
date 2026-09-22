@@ -86,7 +86,7 @@ function RiderDetailScreenContent() {
   const [assignedOrdersFilter, setAssignedOrdersFilter] = useState<string>('all');
 
   const [showLeaveModal, setShowLeaveModal] = useState(false);
-  const [leaveForm, setLeaveForm] = useState({ leave_date: format(new Date(), 'yyyy-MM-dd'), reason: '', notes: '' });
+  const [leaveForm, setLeaveForm] = useState({ leave_date: format(new Date(), 'yyyy-MM-dd'), end_date: format(new Date(), 'yyyy-MM-dd'), reason: '', notes: '' });
   const [savingLeave, setSavingLeave] = useState(false);
 
   const [zoneAssignments, setZoneAssignments] = useState<any[]>([]);
@@ -181,18 +181,24 @@ function RiderDetailScreenContent() {
     await supabase.from('rider_leave_requests').insert({
       rider_id: id,
       leave_date: leaveForm.leave_date,
+      end_date: leaveForm.end_date || leaveForm.leave_date,
       reason: leaveForm.reason.trim() || null,
       notes: leaveForm.notes.trim() || null,
       status: 'approved',
       requested_by: adminProfile?.id,
     });
-    await supabase.from('rider_attendance').upsert({
-      rider_id: id,
-      date: leaveForm.leave_date,
-      status: 'leave',
-      notes: leaveForm.reason.trim() || 'Leave',
-      recorded_by: adminProfile?.id,
-    }, { onConflict: 'rider_id,date' });
+    const startD = new Date(leaveForm.leave_date + 'T00:00:00');
+    const endD = new Date((leaveForm.end_date || leaveForm.leave_date) + 'T00:00:00');
+    for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
+      const dateStr = format(d, 'yyyy-MM-dd');
+      await supabase.from('rider_attendance').upsert({
+        rider_id: id,
+        date: dateStr,
+        status: 'leave',
+        notes: leaveForm.reason.trim() || 'Leave',
+        recorded_by: adminProfile?.id,
+      }, { onConflict: 'rider_id,date' });
+    }
     setSavingLeave(false);
     setShowLeaveModal(false);
     load();
@@ -361,11 +367,11 @@ function RiderDetailScreenContent() {
                 assignments.slice(0, 5).map(a => {
                   const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
                   return (
-                    <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
+                    <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => a.order_id && router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
                       <View style={[s.assignStatusBar, { backgroundColor: cfg.color }]} />
                       <View style={s.assignBody}>
                         <View style={s.assignTop}>
-                          <Text style={s.assignOrderId}>Order #{a.order_id.slice(-8).toUpperCase()}</Text>
+                          <Text style={s.assignOrderId}>{a.order_id ? `Order #${a.order_id.slice(-8).toUpperCase()}` : 'Unlinked assignment'}</Text>
                           <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
                             <Text style={[s.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
                           </View>
@@ -428,11 +434,11 @@ function RiderDetailScreenContent() {
               filtered.map(a => {
                 const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
                 return (
-                  <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
+                  <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => a.order_id && router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
                     <View style={[s.assignStatusBar, { backgroundColor: cfg.color }]} />
                     <View style={s.assignBody}>
                       <View style={s.assignTop}>
-                        <Text style={s.assignOrderId}>Order #{a.order_id.slice(-8).toUpperCase()}</Text>
+                        <Text style={s.assignOrderId}>{a.order_id ? `Order #${a.order_id.slice(-8).toUpperCase()}` : 'Unlinked assignment'}</Text>
                         <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
                           <Text style={[s.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
                         </View>
@@ -534,11 +540,11 @@ function RiderDetailScreenContent() {
                 filtered.map(a => {
                 const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
                 return (
-                  <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
+                  <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => a.order_id && router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
                     <View style={[s.assignStatusBar, { backgroundColor: cfg.color }]} />
                     <View style={s.assignBody}>
                       <View style={s.assignTop}>
-                        <Text style={s.assignOrderId}>Order #{a.order_id.slice(-8).toUpperCase()}</Text>
+                        <Text style={s.assignOrderId}>{a.order_id ? `Order #${a.order_id.slice(-8).toUpperCase()}` : 'Unlinked assignment'}</Text>
                         <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
                           <Text style={[s.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
                         </View>
@@ -765,7 +771,7 @@ function RiderDetailScreenContent() {
         {/* LEAVE */}
         {activeTab === 'leave' && (
           <>
-            <TouchableOpacity style={s.addBtn} onPress={() => { setLeaveForm({ leave_date: format(new Date(), 'yyyy-MM-dd'), reason: '', notes: '' }); setShowLeaveModal(true); }} activeOpacity={0.8}>
+            <TouchableOpacity style={s.addBtn} onPress={() => { setLeaveForm({ leave_date: format(new Date(), 'yyyy-MM-dd'), end_date: format(new Date(), 'yyyy-MM-dd'), reason: '', notes: '' }); setShowLeaveModal(true); }} activeOpacity={0.8}>
               <Plus size={15} color={Colors.white} strokeWidth={2} />
               <Text style={s.addBtnText}>Mark Leave</Text>
             </TouchableOpacity>
@@ -795,7 +801,7 @@ function RiderDetailScreenContent() {
                     <View style={[s.leaveCardAccent, { backgroundColor: cfg.color }]} />
                     <View style={s.leaveCardBody}>
                       <View style={s.leaveCardTop}>
-                        <Text style={s.leaveDate}>{format(new Date(lr.leave_date + 'T00:00:00'), 'EEEE, dd MMM yyyy')}</Text>
+                        <Text style={s.leaveDate}>{format(new Date(lr.leave_date + 'T00:00:00'), 'dd MMM yyyy')}{lr.end_date && lr.end_date !== lr.leave_date ? ` – ${format(new Date(lr.end_date + 'T00:00:00'), 'dd MMM yyyy')}` : ''}</Text>
                         <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
                           <Text style={[s.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
                         </View>
@@ -927,7 +933,10 @@ function RiderDetailScreenContent() {
               <Text style={s.leaveInfoText}>Marking a leave day will also update attendance to "Leave" and surface any active assignments on that date for reassignment.</Text>
             </View>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <ModalField label="Leave Date (YYYY-MM-DD)" value={leaveForm.leave_date} onChange={v => setLeaveForm(p => ({ ...p, leave_date: v }))} placeholder="2026-04-01" />
+              <View style={s.fieldRowHoriz}>
+                <ModalField label="Start Date" value={leaveForm.leave_date} onChange={v => setLeaveForm(p => ({ ...p, leave_date: v }))} placeholder="2026-04-01" flex={1} />
+                <ModalField label="End Date" value={leaveForm.end_date} onChange={v => setLeaveForm(p => ({ ...p, end_date: v }))} placeholder="2026-04-01" flex={1} />
+              </View>
               <ModalField label="Reason" value={leaveForm.reason} onChange={v => setLeaveForm(p => ({ ...p, reason: v }))} placeholder="e.g. Sick leave, personal" />
               <ModalField label="Notes" value={leaveForm.notes} onChange={v => setLeaveForm(p => ({ ...p, notes: v }))} placeholder="Optional additional notes" multiline />
             </ScrollView>
