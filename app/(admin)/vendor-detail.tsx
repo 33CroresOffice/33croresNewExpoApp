@@ -2,19 +2,20 @@ import React, { useEffect, useState, useCallback } from 'react';
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Platform, ActivityIndicator, Modal, TextInput, Switch, Linking,
+  Platform, ActivityIndicator, Modal, TextInput, Switch, Linking, Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ArrowLeft, Store, Phone, MapPin, CreditCard, Mail, FileText,
   ExternalLink, Pencil, X, Package, IndianRupee, CalendarDays,
-  CircleCheck, Plus, Flower2, Trash2,
+  CircleCheck, Plus, Flower2, Trash2, QrCode,
 } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { format } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { Vendor, ProcurementOrder, VendorPayment, VendorFlower, FlowerType, UnitType } from '@/types/database';
+import PhotoUploadField from '@/components/ui/PhotoUploadField';
 
 type Tab = 'overview' | 'orders' | 'payments' | 'flowers';
 
@@ -38,7 +39,7 @@ const EMPTY_VENDOR_FORM = {
   business_name: '', contact_person: '', mobile: '', whatsapp: '',
   email: '', city: '', address: '', google_maps_url: '', gstin: '',
   bank_account_name: '', bank_account_number: '', bank_ifsc: '',
-  upi_id: '', notes: '', is_active: true,
+  upi_id: '', qr_code_image_path: null as string | null, notes: '', is_active: true,
 };
 
 const EMPTY_EDIT_FLOWER = {
@@ -115,6 +116,7 @@ function VendorDetailScreenContent() {
       google_maps_url: vendor.google_maps_url ?? '', gstin: vendor.gstin ?? '',
       bank_account_name: vendor.bank_account_name ?? '', bank_account_number: vendor.bank_account_number ?? '',
       bank_ifsc: vendor.bank_ifsc ?? '', upi_id: vendor.upi_id ?? '',
+      qr_code_image_path: vendor.qr_code_image_path ?? null,
       notes: vendor.notes ?? '', is_active: vendor.is_active,
     });
     setVendorError('');
@@ -141,6 +143,7 @@ function VendorDetailScreenContent() {
       bank_account_number: vendorForm.bank_account_number.trim() || null,
       bank_ifsc: vendorForm.bank_ifsc.trim() || null,
       upi_id: vendorForm.upi_id.trim() || null,
+      qr_code_image_path: vendorForm.qr_code_image_path,
       notes: vendorForm.notes.trim() || null,
       is_active: vendorForm.is_active,
     };
@@ -332,7 +335,21 @@ function VendorDetailScreenContent() {
               {vendor.bank_account_name ? <InfoRow icon={<CreditCard size={14} color={Colors.textTertiary} strokeWidth={1.8} />} label="Bank A/C Name" value={vendor.bank_account_name} /> : null}
               {vendor.bank_account_number ? <InfoRow icon={<CreditCard size={14} color={Colors.textTertiary} strokeWidth={1.8} />} label="A/C Number" value={vendor.bank_account_number} /> : null}
               {vendor.bank_ifsc ? <InfoRow icon={<CreditCard size={14} color={Colors.textTertiary} strokeWidth={1.8} />} label="IFSC" value={vendor.bank_ifsc} /> : null}
-              {!vendor.upi_id && !vendor.bank_account_number ? <Text style={s.emptyInline}>No payment details on file.</Text> : null}
+              {!vendor.upi_id && !vendor.bank_account_number && !vendor.qr_code_image_path ? <Text style={s.emptyInline}>No payment details on file.</Text> : null}
+              {vendor.qr_code_image_path ? (
+                <View style={s.qrPreviewWrap}>
+                  <Image
+                    source={{
+                      uri: vendor.qr_code_image_path.startsWith('http')
+                        ? vendor.qr_code_image_path
+                        : supabase.storage.from('vendor-qr-codes').getPublicUrl(vendor.qr_code_image_path).data.publicUrl,
+                    }}
+                    style={s.qrPreviewImg}
+                    resizeMode="contain"
+                  />
+                  <Text style={s.qrPreviewLabel}>Scan to Pay QR Code</Text>
+                </View>
+              ) : null}
             </View>
 
             {vendor.notes ? (
@@ -494,6 +511,16 @@ function VendorDetailScreenContent() {
               <Field label="Bank Account Name" value={vendorForm.bank_account_name} onChange={v => setVendorForm(p => ({ ...p, bank_account_name: v }))} placeholder="Name as per bank" />
               <Field label="Bank Account Number" value={vendorForm.bank_account_number} onChange={v => setVendorForm(p => ({ ...p, bank_account_number: v }))} placeholder="000123456789" keyboardType="numeric" />
               <Field label="IFSC Code" value={vendorForm.bank_ifsc} onChange={v => setVendorForm(p => ({ ...p, bank_ifsc: v }))} placeholder="SBIN0001234" autoCapitalize="characters" />
+              <Text style={s.sectionHead}>Scan to Pay QR Code</Text>
+              <PhotoUploadField
+                label="Payment QR Code"
+                value={vendorForm.qr_code_image_path}
+                onChange={path => setVendorForm(p => ({ ...p, qr_code_image_path: path }))}
+                storagePath={`vendor-qr-codes/${vendor?.id ?? 'new'}`}
+                bucket="vendor-qr-codes"
+                aspectRatio={[1, 1]}
+                hint="Upload a UPI / bank QR code image customers can scan to pay this vendor."
+              />
               <Text style={s.sectionHead}>Notes</Text>
               <Field label="Internal Notes" value={vendorForm.notes} onChange={v => setVendorForm(p => ({ ...p, notes: v }))} placeholder="Any notes..." multiline />
               <View style={s.switchRow}>
@@ -769,4 +796,7 @@ const s = StyleSheet.create({
   priceInputPrefix: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textSecondary, marginRight: 4 },
   priceInput: { flex: 1, paddingVertical: Spacing[3], fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.base, color: Colors.textPrimary },
   priceInputSuffix: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary, marginLeft: 4 },
+  qrPreviewWrap: { alignItems: 'center', marginTop: Spacing[3], gap: Spacing[1] },
+  qrPreviewImg: { width: 160, height: 160, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border },
+  qrPreviewLabel: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.textTertiary },
 });

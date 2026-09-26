@@ -47,35 +47,37 @@ Deno.serve(async (req: Request) => {
       };
     }
 
-    // --- 1. Fetch scheduled orders for the target date ---
-    // These are the actual delivery orders created by the generate-orders cron.
-    // We join through subscription -> plan -> plan_flower_requirements to get
-    // the exact flower breakup per package.
-    const { data: orders, error: ordersErr } = await supabase
-      .from("orders")
+    // --- 1. Fetch eligible active subscriptions for the target date ---
+    // We query subscriptions directly (not orders) so the flower calculation
+    // matches the Orders page "Tomorrow Delivery" count: active, started,
+    // not expired via effective end date, not paused on the target date.
+    const { data: subs, error: subsErr } = await supabase
+      .from("subscriptions")
       .select(`
         id,
-        subscription_id,
-        scheduled_date,
         status,
-        subscription:subscriptions(
+        start_date,
+        end_date,
+        new_end_date,
+        pause_start_date,
+        pause_until,
+        plan:subscription_plans(
           id,
-          status,
-          plan:subscription_plans(
-            id,
-            frequency,
-            flower_requirements:plan_flower_requirements(
-              flower_type_id,
-              quantity_per_delivery,
-              unit_type
-            )
+          frequency,
+          flower_requirements:plan_flower_requirements(
+            flower_type_id,
+            quantity_per_delivery,
+            unit_type
           )
         )
       `)
-      .eq("scheduled_date", targetDate)
-      .in("status", ["scheduled", "out_for_delivery"]);
+      .eq("status", "active")
+      .lte("start_date", targetDate)
+      .or(`new_end_date.gte.${targetDate},and(new_end_date.is.null,or(end_date.is.null,end_date.gte.${targetDate}))`)
+      .or(`pause_until.is.null,pause_until.lt.${targetDate}`)
+      .limit(1000);
 
-    if (ordersErr) throw new Error("Failed to fetch orders: " + ordersErr.message);
+    if (subsErr) throw new Error("Failed to fetch subscriptions: " + subsErr.message);
 
     // flower_type_id -> { total_quantity, unit_type, sub_count, custom_count, original_flower_type_id }
     const flowerTotals: Record<string, {
@@ -88,12 +90,7 @@ Deno.serve(async (req: Request) => {
 
     let orderCount = 0;
 
-    for (const order of orders ?? []) {
-      const sub = order.subscription as any;
-      if (!sub) continue;
-      // Skip paused or expired subscriptions
-      if (sub.status === "paused" || sub.status === "expired") continue;
-
+    for (const sub of subs ?? []) {
       const plan = sub.plan as any;
       if (!plan) continue;
 

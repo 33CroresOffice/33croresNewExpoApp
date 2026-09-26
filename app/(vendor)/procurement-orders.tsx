@@ -42,6 +42,7 @@ export default function VendorProcurementOrders() {
   const isNarrowWeb = isWeb && winWidth < 600;
 
   const [orders, setOrders] = useState<any[]>([]);
+  const [paidOrderIds, setPaidOrderIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [activeFilter, setActiveFilter] = useState<string>('all');
@@ -71,20 +72,29 @@ export default function VendorProcurementOrders() {
     if (vendorError) { setErrorMsg(`Vendor lookup error: ${vendorError.message}`); setLoading(false); setRefreshing(false); return; }
     if (!vendorData) { setErrorMsg('No vendor profile linked to this account.'); setLoading(false); setRefreshing(false); return; }
 
-    const { data, error } = await supabase
-      .from('procurement_orders')
-      .select(`
-        id, status, requirement_date, created_at, notes,
-        items:procurement_order_items(
-          id, quantity, unit_type, price_per_unit, total_price,
-          flower_type:flower_types(display_name, unit_type)
-        )
-      `)
-      .eq('vendor_id', vendorData.id)
-      .order('created_at', { ascending: false });
+    const [ordersRes, paymentsRes] = await Promise.all([
+      supabase
+        .from('procurement_orders')
+        .select(`
+          id, status, requirement_date, created_at, notes,
+          items:procurement_order_items(
+            id, quantity, unit_type, price_per_unit, total_price,
+            flower_type:flower_types(display_name, unit_type)
+          )
+        `)
+        .eq('vendor_id', vendorData.id)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('vendor_payments')
+        .select('procurement_order_id')
+        .eq('vendor_id', vendorData.id)
+        .eq('status', 'completed'),
+    ]);
 
-    if (error) { setErrorMsg(`Orders error: ${error.message}`); setLoading(false); setRefreshing(false); return; }
-    setOrders(data ?? []);
+    if (ordersRes.error) { setErrorMsg(`Orders error: ${ordersRes.error.message}`); setLoading(false); setRefreshing(false); return; }
+    if (paymentsRes.error) { setErrorMsg(`Payment status error: ${paymentsRes.error.message}`); setLoading(false); setRefreshing(false); return; }
+    setOrders(ordersRes.data ?? []);
+    setPaidOrderIds(new Set((paymentsRes.data ?? []).map((payment: { procurement_order_id: string }) => payment.procurement_order_id)));
     setLoading(false); setRefreshing(false);
   };
 
@@ -95,9 +105,9 @@ export default function VendorProcurementOrders() {
 
   const filteredOrders = orders.filter((o) => {
     const matchesStatus = activeFilter === 'pending'
-      ? PENDING_STATUSES.includes(o.status)
+      ? o.status !== 'cancelled' && !paidOrderIds.has(o.id)
       : activeFilter === 'completed'
-        ? COMPLETED_STATUSES.includes(o.status)
+        ? COMPLETED_STATUSES.includes(o.status) && paidOrderIds.has(o.id)
         : true;
 
     if (!matchesStatus) return false;
@@ -152,7 +162,7 @@ export default function VendorProcurementOrders() {
           <View style={styles.statDivider} />
           <View style={styles.statItem}>
             <Text style={styles.statValue}>
-              {filteredOrders.filter(o => COMPLETED_STATUSES.includes(o.status)).length}
+              {filteredOrders.filter(o => COMPLETED_STATUSES.includes(o.status) && paidOrderIds.has(o.id)).length}
             </Text>
             <Text style={styles.statLabel}>Completed</Text>
           </View>

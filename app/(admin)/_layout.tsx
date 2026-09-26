@@ -118,6 +118,7 @@ export default function AdminLayout() {
       <Tabs.Screen name="send-notification"        options={{ href: null }} />
       <Tabs.Screen name="roles"                     options={{ href: null }} />
       <Tabs.Screen name="custom-order-detail"       options={{ href: null }} />
+      <Tabs.Screen name="customize-order"           options={{ href: null }} />
       <Tabs.Screen name="service-order-detail"      options={{ href: null }} />
       <Tabs.Screen name="service-orders"           options={{ href: null }} />
       <Tabs.Screen name="package-management"     options={{ href: null }} />

@@ -11,12 +11,12 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Store, Package, CircleDollarSign, Clock, LogOut, FileText, CircleCheck as CheckCircle, ChevronRight, TrendingUp, CircleAlert as AlertCircle } from 'lucide-react-native';
+import { Store, Package, CircleDollarSign, Clock, FileText, CircleCheck as CheckCircle, ChevronRight, TrendingUp, CircleAlert as AlertCircle, LogOut } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { useRouter } from 'expo-router';
-import { format } from 'date-fns';
+import { addDays, format } from 'date-fns';
 import StatusChip from '@/components/ui/StatusChip';
 
 interface VendorMetrics {
@@ -25,6 +25,12 @@ interface VendorMetrics {
   completedOrders: number;
   totalPayments: number;
   pendingPayments: number;
+}
+
+interface TodayOrderItem {
+  name: string;
+  quantity: number;
+  unitType: string;
 }
 
 const ACCENT_GOLD = '#C8962A';
@@ -47,6 +53,8 @@ export default function VendorDashboard() {
   });
   const [recentOrders, setRecentOrders] = useState<any[]>([]);
   const [recentPayments, setRecentPayments] = useState<any[]>([]);
+  const [todayOrderCount, setTodayOrderCount] = useState(0);
+  const [todayOrderItems, setTodayOrderItems] = useState<TodayOrderItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -57,27 +65,42 @@ export default function VendorDashboard() {
     if (!vendorData) { setLoading(false); setRefreshing(false); return; }
     setVendor(vendorData);
 
-    const [ordersRes, paymentsRes, recentOrdersRes, recentPaymentsRes] = await Promise.all([
-      supabase.from('procurement_orders').select('status', { count: 'exact' }).eq('vendor_id', vendorData.id),
-      supabase.from('vendor_payments').select('amount, status').eq('vendor_id', vendorData.id),
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const tomorrow = format(addDays(new Date(), 1), 'yyyy-MM-dd');
+    const [ordersRes, paymentsRes, recentOrdersRes, recentPaymentsRes, todayOrdersRes] = await Promise.all([
+      supabase.from('procurement_orders').select('id, status, total_amount', { count: 'exact' }).eq('vendor_id', vendorData.id),
+      supabase.from('vendor_payments').select('amount, status, procurement_order_id').eq('vendor_id', vendorData.id),
       supabase.from('procurement_orders')
-        .select(`
-          id, status, requirement_date, created_at, notes,
-          items:procurement_order_items(
-            id, quantity, unit_type,
-            flower_type:flower_types(display_name)
-          )
-        `)
+        .select('id, status, created_at, notes, items:procurement_order_items(id, flower_type:flower_types(display_name))')
         .eq('vendor_id', vendorData.id).order('created_at', { ascending: false }).limit(5),
       supabase.from('vendor_payments')
         .select('id, amount, status, payment_date, payment_method, notes')
         .eq('vendor_id', vendorData.id).order('payment_date', { ascending: false }).limit(5),
+      supabase.from('procurement_orders')
+        .select('id', { count: 'exact' })
+        .eq('vendor_id', vendorData.id)
+        .gte('created_at', `${today}T00:00:00`)
+        .lt('created_at', `${tomorrow}T00:00:00`),
     ]);
 
     const allOrders = ordersRes.data ?? [];
     const allPayments = paymentsRes.data ?? [];
     const totalPaid = allPayments.filter((p: any) => p.status === 'completed').reduce((s: number, p: any) => s + Number(p.amount), 0);
-    const pendingPay = allPayments.filter((p: any) => p.status === 'pending').reduce((s: number, p: any) => s + Number(p.amount), 0);
+
+    const paidByOrder = new Map<string, number>();
+    allPayments.filter((p: any) => p.status === 'completed').forEach((p: any) => {
+      const oid = p.procurement_order_id as string;
+      paidByOrder.set(oid, (paidByOrder.get(oid) ?? 0) + Number(p.amount));
+    });
+
+    let pendingPay = 0;
+    allOrders.forEach((o: any) => {
+      if (o.status === 'cancelled') return;
+      const orderTotal = Number(o.total_amount) || 0;
+      const paidForOrder = paidByOrder.get(o.id as string) ?? 0;
+      const unpaid = orderTotal - paidForOrder;
+      if (unpaid > 0) pendingPay += unpaid;
+    });
 
     setMetrics({
       totalOrders: ordersRes.count ?? 0,
@@ -88,6 +111,30 @@ export default function VendorDashboard() {
     });
     if (recentOrdersRes.data) setRecentOrders(recentOrdersRes.data);
     if (recentPaymentsRes.data) setRecentPayments(recentPaymentsRes.data);
+
+    const todayOrderIds = (todayOrdersRes.data ?? []).map((order: { id: string }) => order.id);
+    setTodayOrderCount(todayOrdersRes.count ?? todayOrderIds.length);
+    if (todayOrderIds.length > 0) {
+      const { data: itemRows } = await supabase
+        .from('procurement_order_items')
+        .select('quantity, unit_type, flower_type:flower_types(display_name)')
+        .in('procurement_order_id', todayOrderIds);
+      const itemTotals = new Map<string, TodayOrderItem>();
+      (itemRows ?? []).forEach((item: any) => {
+        const name = item.flower_type?.display_name ?? 'Unknown item';
+        const unitType = item.unit_type ?? '';
+        const key = `${name}-${unitType}`;
+        const existing = itemTotals.get(key);
+        if (existing) {
+          existing.quantity += Number(item.quantity) || 0;
+        } else {
+          itemTotals.set(key, { name, quantity: Number(item.quantity) || 0, unitType });
+        }
+      });
+      setTodayOrderItems(Array.from(itemTotals.values()));
+    } else {
+      setTodayOrderItems([]);
+    }
     setLoading(false);
     setRefreshing(false);
   };
@@ -99,9 +146,10 @@ export default function VendorDashboard() {
 
   const metricCards = [
     { label: 'Total Orders', value: metrics.totalOrders.toString(), icon: Package, color: Colors.primary, bg: Colors.primarySurface, route: '/(vendor)/procurement-orders', params: {} },
-    { label: 'Pending', value: metrics.pendingOrders.toString(), icon: Clock, color: Colors.warning, bg: Colors.warningSurface, route: '/(vendor)/procurement-orders', params: { statusFilter: 'pending' } },
-    { label: 'Completed', value: metrics.completedOrders.toString(), icon: CheckCircle, color: Colors.success, bg: Colors.successSurface, route: '/(vendor)/procurement-orders', params: { statusFilter: 'completed' } },
-    { label: 'Received', value: formatCurrency(metrics.totalPayments), icon: CircleDollarSign, color: ACCENT_GOLD, bg: Colors.accentSurface, route: '/(vendor)/payments', params: { statusFilter: 'completed' } },
+    { label: 'Pending Orders', value: metrics.pendingOrders.toString(), icon: Clock, color: Colors.warning, bg: Colors.warningSurface, route: '/(vendor)/procurement-orders', params: { statusFilter: 'pending' } },
+    { label: 'Completed Orders', value: metrics.completedOrders.toString(), icon: CheckCircle, color: Colors.success, bg: Colors.successSurface, route: '/(vendor)/procurement-orders', params: { statusFilter: 'completed' } },
+    { label: 'Total Received', value: formatCurrency(metrics.totalPayments), icon: CircleDollarSign, color: ACCENT_GOLD, bg: Colors.accentSurface, route: '/(vendor)/payments', params: { statusFilter: 'completed' } },
+    { label: 'Pending Payments', value: formatCurrency(metrics.pendingPayments), icon: TrendingUp, color: Colors.secondary, bg: Colors.secondarySurface, route: '/(vendor)/payments', params: { statusFilter: 'pending' } },
   ];
 
   if (isWeb) {
@@ -125,40 +173,20 @@ export default function VendorDashboard() {
               <View>
                 <Text style={wStyles.headerEyebrow}>Vendor Portal</Text>
                 <Text style={wStyles.headerTitle}>{vendor?.business_name ?? 'Dashboard'}</Text>
+                {vendor?.mobile && <Text style={wStyles.headerMobile}>{vendor.mobile}</Text>}
                 <Text style={wStyles.headerDate}>{format(new Date(), 'EEEE, dd MMMM yyyy')}</Text>
               </View>
             </View>
-            <View style={wStyles.headerRight}>
-              <TouchableOpacity style={wStyles.refreshBtn} onPress={() => { setRefreshing(true); load(); }}>
-                <Text style={wStyles.refreshText}>Refresh</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={wStyles.signOutBtn} onPress={signOut}>
-                <LogOut size={16} color='rgba(255,255,255,0.75)' strokeWidth={1.8} />
-                <Text style={wStyles.signOutText}>Sign out</Text>
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity
+              style={wStyles.signOutButton}
+              onPress={() => { void signOut(); }}
+              activeOpacity={0.8}
+            >
+              <LogOut size={16} color={ACCENT_GOLD} strokeWidth={2} />
+              <Text style={wStyles.signOutText}>Sign out</Text>
+            </TouchableOpacity>
           </View>
 
-          {vendor && (
-            <View style={[wStyles.profileCard, isNarrowWeb && wStyles.profileCardNarrow]}>
-              <View style={wStyles.profileLeft}>
-                <View style={wStyles.avatarCircle}>
-                  <Text style={wStyles.avatarText}>{(vendor.business_name ?? 'V')[0].toUpperCase()}</Text>
-                </View>
-                <View>
-                  <Text style={wStyles.profileName}>{vendor.business_name}</Text>
-                  <Text style={wStyles.profileMeta}>{vendor.contact_person} · {vendor.mobile}</Text>
-                  {vendor.city && <Text style={wStyles.profileCity}>{vendor.city}</Text>}
-                </View>
-              </View>
-              <View style={[wStyles.statusPill, { backgroundColor: vendor.is_active ? 'rgba(46,125,50,0.18)' : 'rgba(198,40,40,0.15)' }]}>
-                <View style={[wStyles.statusDot, { backgroundColor: vendor.is_active ? '#4CAF50' : Colors.error }]} />
-                <Text style={[wStyles.statusPillText, { color: vendor.is_active ? '#4CAF50' : Colors.error }]}>
-                  {vendor.is_active ? 'Active' : 'Inactive'}
-                </Text>
-              </View>
-            </View>
-          )}
         </LinearGradient>
 
         {!vendor && !loading && (
@@ -173,6 +201,31 @@ export default function VendorDashboard() {
 
         {vendor && (
           <View style={{ padding: isNarrowWeb ? 16 : 32, gap: 24 }}>
+            <TouchableOpacity
+              style={[wStyles.todayCard, isNarrowWeb && wStyles.todayCardNarrow]}
+              onPress={() => router.push('/(vendor)/procurement-orders' as any)}
+              activeOpacity={0.85}
+            >
+              <View style={wStyles.todayCardTop}>
+                <View style={wStyles.todayIconWrap}><Package size={20} color={ACCENT_GOLD} strokeWidth={1.8} /></View>
+                <View style={wStyles.todayHeading}>
+                  <Text style={wStyles.todayEyebrow}>Today’s Orders</Text>
+                  <Text style={wStyles.todayCount}>{loading ? '—' : todayOrderCount}</Text>
+                  <Text style={wStyles.todayCountLabel}>total orders created today</Text>
+                </View>
+                <ChevronRight size={18} color={ACCENT_GOLD} />
+              </View>
+              <View style={wStyles.todayItems}>
+                {todayOrderItems.length === 0 ? (
+                  <Text style={wStyles.todayEmpty}>No item quantities recorded for today</Text>
+                ) : todayOrderItems.map((item) => (
+                  <View key={`${item.name}-${item.unitType}`} style={wStyles.todayItemRow}>
+                    <Text style={wStyles.todayItemName}>{item.name}</Text>
+                    <Text style={wStyles.todayItemQuantity}>{item.quantity} {item.unitType}</Text>
+                  </View>
+                ))}
+              </View>
+            </TouchableOpacity>
             <View style={wStyles.metricsGrid}>
               {[
                 { label: 'Total Orders', value: metrics.totalOrders.toString(), icon: Package, color: Colors.primary, bg: Colors.primarySurface, route: '/(vendor)/procurement-orders', params: {} },
@@ -197,7 +250,11 @@ export default function VendorDashboard() {
             </View>
 
             <View style={[wStyles.tablesRow, isNarrowWeb && { flexDirection: 'column' }]}>
-              <View style={[wStyles.tableCard, isNarrowWeb && wStyles.tableCardNarrow]}>
+              <TouchableOpacity
+                style={[wStyles.tableCard, isNarrowWeb && wStyles.tableCardNarrow]}
+                onPress={() => router.push('/(vendor)/procurement-orders' as any)}
+                activeOpacity={0.98}
+              >
                 <View style={wStyles.tableHeader}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                     <Package size={16} color={Colors.primary} strokeWidth={1.8} />
@@ -208,9 +265,8 @@ export default function VendorDashboard() {
                   </TouchableOpacity>
                 </View>
                 <View style={[wStyles.tableHead, isNarrowWeb && { display: 'none' }]}>
-                  <Text style={[wStyles.thCell, { flex: 1 }]}>Date</Text>
-                  <Text style={[wStyles.thCell, { flex: 1 }]}>Required By</Text>
-                  <Text style={[wStyles.thCell, { flex: 1.5 }]}>Items</Text>
+                  <Text style={[wStyles.thCell, { flex: 1.5 }]}>Date</Text>
+                  <Text style={[wStyles.thCell, { flex: 2 }]}>Items</Text>
                   <Text style={[wStyles.thCell, { flex: 1 }]}>Status</Text>
                 </View>
                 {recentOrders.length === 0 ? (
@@ -220,34 +276,26 @@ export default function VendorDashboard() {
                     <TouchableOpacity
                       key={order.id}
                       style={[wStyles.tableRow, i % 2 === 1 && wStyles.tableRowAlt, isNarrowWeb && { flexDirection: 'column', alignItems: 'stretch', gap: 6, paddingVertical: 12 }]}
+                      onPress={() => router.push('/(vendor)/procurement-orders' as any)}
                       activeOpacity={0.7}
                     >
-                      <Text style={[wStyles.tdCell, { flex: 1 }]}>{order.created_at ? format(new Date(order.created_at), 'dd MMM yyyy') : '—'}</Text>
-                      <Text style={[wStyles.tdCell, { flex: 1 }]}>{order.requirement_date ? format(new Date(order.requirement_date), 'dd MMM yyyy') : '—'}</Text>
-                      <View style={{ flex: 1.5, flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>
-                        {(order.items ?? []).slice(0, 2).map((item: any, idx: number) => (
-                          <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: Colors.primarySurface, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 }}>
-                            <Text style={{ fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.primary }}>
-                              {item.flower_type?.display_name ?? 'Unknown'} · {item.quantity} {item.unit_type ?? ''}
-                            </Text>
-                          </View>
-                        ))}
-                        {(order.items ?? []).length > 2 && (
-                          <Text style={{ fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.textTertiary, alignSelf: 'center' }}>
-                            +{(order.items ?? []).length - 2} more
-                          </Text>
-                        )}
-                        {(order.items ?? []).length === 0 && (
-                          <Text style={wStyles.tdCell}>—</Text>
-                        )}
-                      </View>
+                      <Text style={[wStyles.tdCell, { flex: 1.5 }]}>{order.created_at ? format(new Date(order.created_at), 'dd MMM yyyy') : '—'}</Text>
+                      <Text style={[wStyles.tdCell, { flex: 2 }]} numberOfLines={1}>
+                        {(order.items ?? []).length === 0
+                          ? '—'
+                          : (order.items ?? []).slice(0, 3).map((item: any) => item.flower_type?.display_name ?? 'Unknown').join(', ') + ((order.items ?? []).length > 3 ? ', ...' : '')}
+                      </Text>
                       <View style={{ flex: 1 }}><StatusChip status={order.status} /></View>
                     </TouchableOpacity>
                   ))
                 )}
-              </View>
+              </TouchableOpacity>
 
-              <View style={[wStyles.tableCard, { flex: 1 }, isNarrowWeb && wStyles.tableCardNarrow]}>
+              <TouchableOpacity
+                style={[wStyles.tableCard, { flex: 1 }, isNarrowWeb && wStyles.tableCardNarrow]}
+                onPress={() => router.push('/(vendor)/payments' as any)}
+                activeOpacity={0.98}
+              >
                 <View style={wStyles.tableHeader}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                     <CircleDollarSign size={16} color={ACCENT_GOLD} strokeWidth={1.8} />
@@ -273,7 +321,7 @@ export default function VendorDashboard() {
                     </View>
                   ))
                 )}
-              </View>
+              </TouchableOpacity>
             </View>
           </View>
         )}
@@ -296,31 +344,21 @@ export default function VendorDashboard() {
             <View>
               <Text style={mStyles.headerEyebrow}>Vendor Portal</Text>
               <Text style={mStyles.headerTitle} numberOfLines={1}>{vendor?.business_name ?? 'Dashboard'}</Text>
+              {vendor?.mobile && <Text style={mStyles.headerMobile}>{vendor.mobile}</Text>}
+              <Text style={mStyles.headerDate}>{format(new Date(), 'EEEE, dd MMMM yyyy')}</Text>
             </View>
           </View>
-          <TouchableOpacity style={mStyles.signOutBtn} onPress={signOut} activeOpacity={0.7}>
-            <LogOut size={16} color='rgba(255,255,255,0.7)' strokeWidth={1.8} />
+          <TouchableOpacity
+            style={mStyles.signOutButton}
+            onPress={() => { void signOut(); }}
+            activeOpacity={0.8}
+          >
+            <LogOut size={15} color={ACCENT_GOLD} strokeWidth={2} />
+            <Text style={mStyles.signOutText}>Sign out</Text>
           </TouchableOpacity>
         </View>
 
-        {vendor && (
-          <View style={mStyles.vendorRow}>
-            <View style={mStyles.vendorAvatarSmall}>
-              <Text style={mStyles.vendorAvatarText}>{(vendor.business_name ?? 'V')[0].toUpperCase()}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={mStyles.vendorContact}>{vendor.contact_person} · {vendor.mobile}</Text>
-              {vendor.city && <Text style={mStyles.vendorCity}>{vendor.city}</Text>}
-            </View>
-            <View style={[mStyles.activePill, { backgroundColor: vendor.is_active ? 'rgba(76,175,80,0.2)' : 'rgba(198,40,40,0.2)' }]}>
-              <Text style={[mStyles.activePillText, { color: vendor.is_active ? '#4CAF50' : Colors.error }]}>
-                {vendor.is_active ? 'Active' : 'Inactive'}
-              </Text>
-            </View>
-          </View>
-        )}
 
-        <Text style={mStyles.dateText}>{format(new Date(), 'EEEE, dd MMMM yyyy')}</Text>
       </LinearGradient>
 
       <ScrollView
@@ -336,7 +374,34 @@ export default function VendorDashboard() {
         )}
 
         {vendor && (
-          <>
+          <View style={mStyles.dashboardContent}>
+            <TouchableOpacity
+              style={mStyles.todayCard}
+              onPress={() => router.push('/(vendor)/procurement-orders' as any)}
+              activeOpacity={0.85}
+            >
+              <View style={mStyles.todayCardTop}>
+                <View style={mStyles.todayIconWrap}><Package size={18} color={ACCENT_GOLD} strokeWidth={1.8} /></View>
+                <View style={mStyles.todayHeading}>
+                  <Text style={mStyles.todayEyebrow}>Today’s Orders</Text>
+                  <View style={mStyles.todayCountRow}>
+                    <Text style={mStyles.todayCount}>{loading ? '—' : todayOrderCount}</Text>
+                    <Text style={mStyles.todayCountLabel}>total orders</Text>
+                  </View>
+                </View>
+                <ChevronRight size={17} color={ACCENT_GOLD} />
+              </View>
+              <View style={mStyles.todayItems}>
+                {todayOrderItems.length === 0 ? (
+                  <Text style={mStyles.todayEmpty}>No item quantities recorded for today</Text>
+                ) : todayOrderItems.map((item) => (
+                  <View key={`${item.name}-${item.unitType}`} style={mStyles.todayItemRow}>
+                    <Text style={mStyles.todayItemName} numberOfLines={1}>{item.name}</Text>
+                    <Text style={mStyles.todayItemQuantity}>{item.quantity} {item.unitType}</Text>
+                  </View>
+                ))}
+              </View>
+            </TouchableOpacity>
             <View style={mStyles.metricsGrid}>
               {metricCards.map((card) => {
                 const Icon = card.icon;
@@ -357,7 +422,11 @@ export default function VendorDashboard() {
               })}
             </View>
 
-            <View style={mStyles.section}>
+            <TouchableOpacity
+              style={mStyles.section}
+              onPress={() => router.push('/(vendor)/procurement-orders' as any)}
+              activeOpacity={0.98}
+            >
                 <View style={mStyles.sectionHeader}>
                   <Text style={mStyles.sectionTitle}>Recent Orders</Text>
                   <TouchableOpacity onPress={() => router.push('/(vendor)/procurement-orders' as any)} style={mStyles.seeAllBtn}>
@@ -373,7 +442,7 @@ export default function VendorDashboard() {
                     <TouchableOpacity
                       key={order.id}
                       style={[mStyles.listRow, i === recentOrders.length - 1 && mStyles.listRowLast]}
-                      onPress={() => router.push({ pathname: '/(vendor)/procurement-order-detail', params: { id: order.id } })}
+                      onPress={() => router.push('/(vendor)/procurement-orders' as any)}
                       activeOpacity={0.7}
                     >
                       <View style={[mStyles.listIconWrap, { backgroundColor: Colors.primarySurface }]}>
@@ -409,9 +478,13 @@ export default function VendorDashboard() {
                   ))
                   )}
                 </View>
-            </View>
+            </TouchableOpacity>
 
-            <View style={mStyles.section}>
+            <TouchableOpacity
+              style={mStyles.section}
+              onPress={() => router.push('/(vendor)/payments' as any)}
+              activeOpacity={0.98}
+            >
                 <View style={mStyles.sectionHeader}>
                   <Text style={mStyles.sectionTitle}>Recent Payments</Text>
                   <TouchableOpacity onPress={() => router.push('/(vendor)/payments' as any)} style={mStyles.seeAllBtn}>
@@ -439,8 +512,8 @@ export default function VendorDashboard() {
                   ))
                   )}
                 </View>
-            </View>
-          </>
+            </TouchableOpacity>
+          </View>
         )}
       </ScrollView>
     </View>
@@ -456,6 +529,16 @@ const mStyles = StyleSheet.create({
   },
   headerTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3], flex: 1 },
+  signOutButton: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
+    borderWidth: 1, borderColor: 'rgba(200,150,42,0.65)',
+    backgroundColor: 'rgba(0,0,0,0.12)',
+  },
+  signOutText: {
+    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs,
+    color: '#FFFFFF',
+  },
   storeIconWrap: {
     width: 40, height: 40, borderRadius: 12,
     backgroundColor: 'rgba(255,255,255,0.12)',
@@ -471,43 +554,61 @@ const mStyles = StyleSheet.create({
     fontFamily: Typography.fontFamily.bold,
     fontSize: Typography.size['2xl'], color: '#FFFFFF', letterSpacing: -0.3,
   },
-  signOutBtn: {
-    width: 38, height: 38, borderRadius: 19,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
+  headerMobile: {
+    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm,
+    color: 'rgba(255,255,255,0.82)', marginTop: 4,
   },
-  vendorRow: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing[3],
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: Radius.lg, padding: Spacing[3],
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
-  },
-  vendorAvatarSmall: {
-    width: 36, height: 36, borderRadius: 10,
-    backgroundColor: 'rgba(212,168,83,0.3)',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  vendorAvatarText: {
-    fontFamily: Typography.fontFamily.bold, fontSize: 16, color: ACCENT_GOLD,
-  },
-  vendorContact: {
-    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: 'rgba(255,255,255,0.9)',
-  },
-  vendorCity: {
-    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: 'rgba(255,255,255,0.55)',
-  },
-  activePill: {
-    paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full,
-  },
-  activePillText: {
-    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11,
-  },
-  dateText: {
-    fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.xs, color: 'rgba(255,255,255,0.5)', letterSpacing: 0.3,
+  headerDate: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs,
+    color: 'rgba(255,255,255,0.58)', marginTop: 3,
   },
   scrollContent: { padding: Spacing[4], gap: Spacing[4], paddingBottom: Spacing[10] },
+  dashboardContent: { width: '100%', gap: Spacing[4] },
+  todayCard: {
+    width: '100%', backgroundColor: '#1B3A18', borderRadius: Radius.lg,
+    borderWidth: 1, borderColor: 'rgba(200,150,42,0.35)', overflow: 'hidden', ...Shadow.md,
+  },
+  todayCardTop: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing[3],
+    paddingHorizontal: Spacing[4], paddingVertical: Spacing[4],
+  },
+  todayIconWrap: {
+    width: 42, height: 42, borderRadius: 13,
+    backgroundColor: 'rgba(200,150,42,0.18)', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+  },
+  todayHeading: { flex: 1, gap: 2 },
+  todayEyebrow: {
+    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs,
+    color: ACCENT_GOLD, letterSpacing: 0.8, textTransform: 'uppercase',
+  },
+  todayCountRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
+  todayCount: {
+    fontFamily: Typography.fontFamily.bold, fontSize: 28, color: '#FFFFFF', letterSpacing: -0.5,
+  },
+  todayCountLabel: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs,
+    color: 'rgba(255,255,255,0.6)',
+  },
+  todayItems: {
+    paddingHorizontal: Spacing[4], paddingBottom: Spacing[3], gap: 1,
+    borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)',
+  },
+  todayItemRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: Spacing[2],
+  },
+  todayItemName: {
+    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm,
+    color: 'rgba(255,255,255,0.88)', flex: 1,
+  },
+  todayItemQuantity: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm,
+    color: ACCENT_GOLD,
+  },
+  todayEmpty: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm,
+    color: 'rgba(255,255,255,0.5)', paddingVertical: Spacing[3], textAlign: 'center',
+  },
   noVendorCard: {
     backgroundColor: Colors.white, borderRadius: 16, padding: Spacing[6],
     alignItems: 'center', gap: Spacing[3], borderWidth: 1, borderColor: Colors.border,
@@ -516,9 +617,9 @@ const mStyles = StyleSheet.create({
     fontFamily: Typography.fontFamily.sansRegular,
     fontSize: Typography.size.sm, color: Colors.textTertiary, textAlign: 'center',
   },
-  metricsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing[3] },
+  metricsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing[3], alignContent: 'flex-start' },
   metricCard: {
-    width: '47%', backgroundColor: Colors.white, borderRadius: Radius.lg,
+    width: '46%', backgroundColor: Colors.white, borderRadius: Radius.lg,
     padding: Spacing[4], gap: Spacing[2],
     borderWidth: 1, borderColor: Colors.border, ...Shadow.sm,
   },
@@ -533,7 +634,7 @@ const mStyles = StyleSheet.create({
     fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs,
     color: Colors.textTertiary, letterSpacing: 0.2,
   },
-  section: { gap: Spacing[2], minHeight: 92 },
+  section: { width: '100%', gap: Spacing[2] },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minHeight: 24 },
   sectionTitle: {
     fontFamily: Typography.fontFamily.sansSemiBold,
@@ -544,7 +645,7 @@ const mStyles = StyleSheet.create({
     fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.primary,
   },
   listCard: {
-    backgroundColor: Colors.white, borderRadius: Radius.lg,
+    width: '100%', backgroundColor: Colors.white, borderRadius: Radius.lg,
     borderWidth: 1, borderColor: Colors.border, overflow: 'hidden', minHeight: 56, ...Shadow.sm,
   },
   listRow: {
@@ -580,6 +681,16 @@ const wStyles = StyleSheet.create({
     flexDirection: 'column', gap: 16, paddingHorizontal: 16, paddingTop: 24, paddingBottom: 16,
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  signOutButton: {
+    flexDirection: 'row', alignItems: 'center', gap: 7,
+    paddingHorizontal: 14, paddingVertical: 9, borderRadius: 10,
+    borderWidth: 1, borderColor: 'rgba(200,150,42,0.65)',
+    backgroundColor: 'rgba(0,0,0,0.12)',
+  },
+  signOutText: {
+    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm,
+    color: '#FFFFFF',
+  },
   headerIconWrap: {
     width: 52, height: 52, borderRadius: 16,
     backgroundColor: 'rgba(255,255,255,0.12)',
@@ -594,54 +705,14 @@ const wStyles = StyleSheet.create({
     fontFamily: Typography.fontFamily.bold, fontSize: 30,
     color: '#FFFFFF', letterSpacing: -0.5, marginTop: 2,
   },
+  headerMobile: {
+    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm,
+    color: 'rgba(255,255,255,0.82)', marginTop: 3,
+  },
   headerDate: {
-    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm,
-    color: 'rgba(255,255,255,0.5)', marginTop: 3,
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs,
+    color: 'rgba(255,255,255,0.58)', marginTop: 3,
   },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 4 },
-  refreshBtn: {
-    paddingHorizontal: 16, paddingVertical: 8, borderRadius: Radius.full,
-    backgroundColor: 'rgba(255,255,255,0.12)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)',
-  },
-  refreshText: {
-    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: 'rgba(255,255,255,0.85)',
-  },
-  signOutBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 14, paddingVertical: 8,
-    borderRadius: Radius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)',
-    backgroundColor: 'rgba(255,255,255,0.08)',
-  },
-  signOutText: {
-    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: 'rgba(255,255,255,0.75)',
-  },
-  profileCard: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    marginHorizontal: 32, marginBottom: 28,
-    backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: Radius.lg,
-    padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
-  },
-  profileCardNarrow: {
-    flexDirection: 'column', gap: 12, alignItems: 'stretch',
-    marginHorizontal: 16, marginBottom: 20,
-    backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: Radius.lg,
-    padding: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
-  },
-  profileLeft: { flexDirection: 'row', alignItems: 'center', gap: 14 },
-  avatarCircle: {
-    width: 52, height: 52, borderRadius: 16,
-    backgroundColor: 'rgba(212,168,83,0.25)', alignItems: 'center', justifyContent: 'center',
-  },
-  avatarText: { fontFamily: Typography.fontFamily.bold, fontSize: 22, color: ACCENT_GOLD },
-  profileName: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.lg, color: '#FFFFFF' },
-  profileMeta: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: 'rgba(255,255,255,0.6)', marginTop: 2 },
-  profileCity: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: 'rgba(255,255,255,0.45)', marginTop: 1 },
-  statusPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: Radius.full,
-  },
-  statusDot: { width: 7, height: 7, borderRadius: 4 },
-  statusPillText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 13 },
   noVendorCard: {
     backgroundColor: Colors.white, borderRadius: 20, padding: 40,
     alignItems: 'center', gap: 12, borderWidth: 1, borderColor: Colors.border, ...Shadow.sm,
@@ -652,6 +723,54 @@ const wStyles = StyleSheet.create({
   },
   noVendorTitle: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.lg, color: Colors.textPrimary },
   noVendorSub: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary, textAlign: 'center', maxWidth: 400 },
+  todayCard: {
+    backgroundColor: '#1B3A18', borderRadius: Radius.lg,
+    borderWidth: 1, borderColor: 'rgba(200,150,42,0.35)', overflow: 'hidden', ...Shadow.md,
+  },
+  todayCardNarrow: {
+    backgroundColor: '#1B3A18', borderRadius: Radius.lg,
+    borderWidth: 1, borderColor: 'rgba(200,150,42,0.35)', overflow: 'hidden', ...Shadow.md,
+  },
+  todayCardTop: {
+    flexDirection: 'row', alignItems: 'center', gap: 16,
+    paddingHorizontal: 24, paddingVertical: 20,
+  },
+  todayIconWrap: {
+    width: 48, height: 48, borderRadius: 14,
+    backgroundColor: 'rgba(200,150,42,0.18)', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+  },
+  todayHeading: { flex: 1, gap: 3 },
+  todayEyebrow: {
+    fontFamily: Typography.fontFamily.sansMedium, fontSize: 11,
+    color: ACCENT_GOLD, letterSpacing: 1, textTransform: 'uppercase',
+  },
+  todayCount: {
+    fontFamily: Typography.fontFamily.bold, fontSize: 32, color: '#FFFFFF', letterSpacing: -0.5,
+  },
+  todayCountLabel: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm,
+    color: 'rgba(255,255,255,0.6)', marginTop: 2,
+  },
+  todayItems: {
+    paddingHorizontal: 24, paddingBottom: 16, gap: 1,
+    borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)',
+  },
+  todayItemRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 10,
+  },
+  todayItemName: {
+    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm,
+    color: 'rgba(255,255,255,0.88)', flex: 1,
+  },
+  todayItemQuantity: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm,
+    color: ACCENT_GOLD,
+  },
+  todayEmpty: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm,
+    color: 'rgba(255,255,255,0.5)', paddingVertical: 14, textAlign: 'center',
+  },
   metricsGrid: { flexDirection: 'row', gap: 14, flexWrap: 'wrap' },
   metricCard: {
     flex: 1, minWidth: 140, backgroundColor: Colors.white, borderRadius: Radius.lg,

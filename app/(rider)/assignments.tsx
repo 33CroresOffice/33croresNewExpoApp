@@ -289,6 +289,7 @@ export default function RiderAssignments() {
       .filter((a) => {
         const key = a.custom_order_id ?? a.order_id;
         if (!key || seenOrderIds.has(key)) return false;
+        if (a.orderDetail?.order_type === 'subscription' && a.orderDetail.subscription_status !== 'active') return false;
         seenOrderIds.add(key);
         return true;
       })

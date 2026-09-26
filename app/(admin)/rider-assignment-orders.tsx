@@ -17,7 +17,7 @@ type Tab = 'assigned' | 'unassigned';
 
 interface AssignedOrder {
   assignment_id: string;
-  order_id: string;
+  order_id: string | null;
   status: string;
   subscription_status: string;
   scheduled_date: string;
@@ -60,6 +60,10 @@ const ASSIGN_STATUS_CONFIG: Record<string, { label: string; color: string; bg: s
   failed:    { label: 'Failed',    color: '#DC2626', bg: '#FEE2E2' },
   reassigned:{ label: 'Reassigned',color: '#6B7280', bg: '#F3F4F6' },
 };
+
+function formatOrderReference(orderId: string | null | undefined): string {
+  return orderId ? `#${orderId.slice(-8).toUpperCase()}` : '#Custom order';
+}
 
 const SUBSCRIPTION_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
   active:    { label: 'Active',    color: '#15803D', bg: '#DCFCE7' },
@@ -180,7 +184,7 @@ function RiderAssignmentOrdersContent() {
 
       const assigned: AssignedOrder[] = (assignedRes.data ?? []).map((row: any) => ({
         assignment_id: row.id,
-        order_id: row.order_id,
+        order_id: row.order_id ?? null,
         status: row.status,
         delivery_sequence: row.delivery_sequence ?? null,
         rider_id: row.rider_id ?? '',
@@ -755,7 +759,11 @@ function RiderAssignmentOrdersContent() {
 
               <TouchableOpacity
                 style={styles.orderContent}
-                onPress={() => router.push({ pathname: '/(admin)/order-detail' as any, params: { id: order.order_id } })}
+                onPress={() => {
+                  if (order.order_id) {
+                    router.push({ pathname: '/(admin)/order-detail' as any, params: { id: order.order_id } });
+                  }
+                }}
                 activeOpacity={0.8}
               >
                 <View style={styles.orderTopRow}>
@@ -783,7 +791,7 @@ function RiderAssignmentOrdersContent() {
                         <Text style={styles.sequenceBadgeText}>{order.delivery_sequence}</Text>
                       </View>
                     ) : null}
-                    <Text style={styles.orderId}>#{order.order_id.slice(-8).toUpperCase()}</Text>
+                    <Text style={styles.orderId}>{formatOrderReference(order.order_id)}</Text>
                     <View style={styles.riderPill}>
                       <Bike size={11} color={Colors.primary} strokeWidth={2.2} />
                       <Text style={styles.riderPillText} numberOfLines={1}>{order.rider_name}{order.rider_mobile ? ' · ' + order.rider_mobile : ''}</Text>
@@ -873,7 +881,7 @@ function RiderAssignmentOrdersContent() {
             <View style={[styles.statusDot, { backgroundColor: Colors.warning }]} />
             <View style={styles.orderContent}>
               <View style={styles.orderTopRow}>
-                <Text style={styles.orderId}>#{order.order_id.slice(-8).toUpperCase()}</Text>
+                <Text style={styles.orderId}>{formatOrderReference(order.order_id)}</Text>
                 <View style={[styles.statusBadge, { backgroundColor: '#FEF3C7' }]}>
                   <Text style={[styles.statusBadgeText, { color: '#B45309' }]}>Unassigned</Text>
                 </View>
@@ -1142,7 +1150,7 @@ function RiderAssignmentOrdersContent() {
                             {isSelected ? <CheckSquare size={18} color={Colors.primary} strokeWidth={2} /> : <Square size={18} color={Colors.textDisabled} strokeWidth={2} />}
                             <View style={{ flex: 1, gap: 2 }}>
                               <Text style={styles.manualOrderCustomer}>{customerName}</Text>
-                              <Text style={styles.manualOrderMeta}>#{a.order_id.slice(-8).toUpperCase()} · {order?.scheduled_date ? format(new Date(order.scheduled_date), 'dd MMM') : ''}</Text>
+                              <Text style={styles.manualOrderMeta}>{formatOrderReference(a.order_id)} · {order?.scheduled_date ? format(new Date(order.scheduled_date), 'dd MMM') : ''}</Text>
                               {fullAddr ? <Text style={styles.manualOrderAddr} numberOfLines={2}>{fullAddr}</Text> : null}
                             </View>
                           </TouchableOpacity>

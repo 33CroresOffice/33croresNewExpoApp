@@ -289,13 +289,15 @@ Deno.serve(async (req: Request) => {
       .eq("mobile", mobile)
       .maybeSingle();
 
-    if (vendorRecord && vendorRecord.is_active && !vendorRecord.user_id) {
-      await supabase
-        .from("vendors")
-        .update({ user_id: userId })
-        .eq("id", vendorRecord.id);
+    if (vendorRecord && vendorRecord.is_active) {
+      if (!vendorRecord.user_id) {
+        await supabase
+          .from("vendors")
+          .update({ user_id: userId })
+          .eq("id", vendorRecord.id);
+      }
 
-      // Ensure profile role is vendor
+      // Ensure profile role is vendor (even if user_id was already linked)
       await supabase
         .from("profiles")
         .update({ role: "vendor" })

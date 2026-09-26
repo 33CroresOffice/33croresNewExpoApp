@@ -6,11 +6,12 @@ import {
   Modal, TextInput, Switch, Platform, ActivityIndicator, RefreshControl, Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Store, Plus, X, Pencil, ArrowLeft, Phone, MapPin, CreditCard, ExternalLink, Trash2 } from 'lucide-react-native';
+import { Store, Plus, X, Pencil, ArrowLeft, Phone, MapPin, CreditCard, ExternalLink, Trash2, QrCode } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { Vendor } from '@/types/database';
+import PhotoUploadField from '@/components/ui/PhotoUploadField';
 
 const EMPTY_FORM = {
   business_name: '',
@@ -26,6 +27,7 @@ const EMPTY_FORM = {
   bank_account_number: '',
   bank_ifsc: '',
   upi_id: '',
+  qr_code_image_path: null as string | null,
   notes: '',
   is_active: true,
 };
@@ -91,6 +93,7 @@ function VendorsScreenContent() {
       bank_account_number: v.bank_account_number ?? '',
       bank_ifsc: v.bank_ifsc ?? '',
       upi_id: v.upi_id ?? '',
+      qr_code_image_path: v.qr_code_image_path ?? null,
       notes: v.notes ?? '',
       is_active: v.is_active,
     });
@@ -117,6 +120,7 @@ function VendorsScreenContent() {
       bank_account_number: form.bank_account_number.trim() || null,
       bank_ifsc: form.bank_ifsc.trim() || null,
       upi_id: form.upi_id.trim() || null,
+      qr_code_image_path: form.qr_code_image_path,
       notes: form.notes.trim() || null,
       is_active: form.is_active,
     };
@@ -170,6 +174,12 @@ function VendorsScreenContent() {
           <View style={s.pill}>
             <Phone size={11} color={Colors.textTertiary} strokeWidth={1.8} />
             <Text style={s.pillText}>{v.mobile}</Text>
+          </View>
+        ) : null}
+        {v.qr_code_image_path ? (
+          <View style={[s.pill, s.pillQr]}>
+            <QrCode size={11} color={Colors.primary} strokeWidth={1.8} />
+            <Text style={s.pillQrText}>QR</Text>
           </View>
         ) : null}
         {v.upi_id ? (
@@ -324,6 +334,16 @@ function VendorsScreenContent() {
               <Field label="Bank Account Name" value={form.bank_account_name} onChange={v => setForm(p => ({ ...p, bank_account_name: v }))} placeholder="Name as per bank" />
               <Field label="Bank Account Number" value={form.bank_account_number} onChange={v => setForm(p => ({ ...p, bank_account_number: v }))} placeholder="000123456789" keyboardType="numeric" />
               <Field label="IFSC Code" value={form.bank_ifsc} onChange={v => setForm(p => ({ ...p, bank_ifsc: v }))} placeholder="SBIN0001234" autoCapitalize="characters" />
+              <Text style={s.sectionHead}>Scan to Pay QR Code</Text>
+              <PhotoUploadField
+                label="Payment QR Code"
+                value={form.qr_code_image_path}
+                onChange={path => setForm(p => ({ ...p, qr_code_image_path: path }))}
+                storagePath={`vendor-qr-codes/${editing?.id ?? 'new'}`}
+                bucket="vendor-qr-codes"
+                aspectRatio={[1, 1]}
+                hint="Upload a UPI / bank QR code image customers can scan to pay this vendor."
+              />
               <Text style={s.sectionHead}>Notes</Text>
               <Field label="Internal Notes" value={form.notes} onChange={v => setForm(p => ({ ...p, notes: v }))} placeholder="Any notes about this vendor..." multiline />
               <View style={s.switchRow}>
@@ -438,6 +458,8 @@ const s = StyleSheet.create({
   pillText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.textSecondary },
   pillMaps: { backgroundColor: Colors.primarySurface },
   pillMapsText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.primary },
+  pillQr: { backgroundColor: Colors.primarySurface, borderWidth: 1, borderColor: Colors.primary + '40' },
+  pillQrText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.primary },
   deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.error + '12', paddingVertical: 4, paddingHorizontal: Spacing[2], borderRadius: Radius.full },
   deleteBtnText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.error },
   mapsInputRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },

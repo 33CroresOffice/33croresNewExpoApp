@@ -39,6 +39,7 @@ export default function VendorPayments() {
   const isNarrowWeb = isWeb && winWidth < 600;
 
   const [payments, setPayments] = useState<any[]>([]);
+  const [pendingPayments, setPendingPayments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [activeFilter, setActiveFilter] = useState<string>('all');
@@ -66,14 +67,43 @@ export default function VendorPayments() {
     if (vendorError) { setErrorMsg(`Vendor lookup error: ${vendorError.message}`); setLoading(false); setRefreshing(false); return; }
     if (!vendorData) { setErrorMsg('No vendor profile linked to this account.'); setLoading(false); setRefreshing(false); return; }
 
-    const { data, error } = await supabase
-      .from('vendor_payments')
-      .select('id, amount, status, payment_date, payment_method, notes, procurement_order_id, procurement_order:procurement_orders(order_number, total_amount)')
-      .eq('vendor_id', vendorData.id)
-      .order('payment_date', { ascending: false });
+    const [payRes, ordRes] = await Promise.all([
+      supabase.from('vendor_payments')
+        .select('id, amount, status, payment_date, payment_method, notes, procurement_order_id, procurement_order:procurement_orders(order_number, total_amount)')
+        .eq('vendor_id', vendorData.id)
+        .order('payment_date', { ascending: false }),
+      supabase.from('procurement_orders')
+        .select('id, status, total_amount, created_at, order_number')
+        .eq('vendor_id', vendorData.id),
+    ]);
 
-    if (error) { setErrorMsg(`Payments error: ${error.message}`); setLoading(false); setRefreshing(false); return; }
-    setPayments(data ?? []);
+    if (payRes.error) { setErrorMsg(`Payments error: ${payRes.error.message}`); setLoading(false); setRefreshing(false); return; }
+    setPayments(payRes.data ?? []);
+
+    const paidByOrder = new Map<string, number>();
+    (payRes.data ?? []).filter((p: any) => p.status === 'completed').forEach((p: any) => {
+      const oid = p.procurement_order_id as string;
+      paidByOrder.set(oid, (paidByOrder.get(oid) ?? 0) + Number(p.amount));
+    });
+
+    const pendingOrderPayments = (ordRes.data ?? []).flatMap((o: any) => {
+      if (o.status === 'cancelled') return [];
+      const orderTotal = Number(o.total_amount) || 0;
+      const paidForOrder = paidByOrder.get(o.id as string) ?? 0;
+      const unpaid = orderTotal - paidForOrder;
+      if (unpaid <= 0) return [];
+      return [{
+        id: `pending-${o.id}`,
+        amount: unpaid,
+        status: 'pending',
+        payment_date: o.created_at,
+        payment_method: null,
+        notes: 'Awaiting admin payment',
+        procurement_order_id: o.id,
+        procurement_order: { order_number: o.order_number },
+      }];
+    });
+    setPendingPayments(pendingOrderPayments);
     setLoading(false); setRefreshing(false);
   };
 
@@ -82,14 +112,18 @@ export default function VendorPayments() {
     else setLoading(false);
   }, [profile?.id]);
 
-  const filteredPayments = payments.filter((p) => {
+  const displayPayments = [
+    ...payments.filter((payment) => payment.status === 'completed'),
+    ...pendingPayments,
+  ];
+  const filteredPayments = displayPayments.filter((p) => {
     if (activeFilter === 'completed') return p.status === 'completed';
     if (activeFilter === 'pending') return p.status === 'pending';
     return true;
   });
 
   const totalReceived = payments.filter(p => p.status === 'completed').reduce((s, p) => s + Number(p.amount), 0);
-  const totalPending = payments.filter(p => p.status === 'pending').reduce((s, p) => s + Number(p.amount), 0);
+  const totalPending = pendingPayments.reduce((s, p) => s + Number(p.amount), 0);
   const filteredTotal = filteredPayments.reduce((s, p) => s + Number(p.amount), 0);
 
   const formatCurrency = (amount: number) =>

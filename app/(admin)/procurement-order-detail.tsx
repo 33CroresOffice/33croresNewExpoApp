@@ -2,15 +2,16 @@ import React, { useEffect, useState, useCallback } from 'react';
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  TextInput, ActivityIndicator, Platform, Modal,
+  TextInput, ActivityIndicator, Platform, Modal, Image, Linking,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Package, Store, Calendar, FileText, IndianRupee, CreditCard as Edit3, Check, X, Clock, Truck, CircleCheck as CheckCircle, Circle as XCircle, ChevronDown, CircleDollarSign } from 'lucide-react-native';
+import { ArrowLeft, Package, Store, Calendar, FileText, IndianRupee, CreditCard as Edit3, Check, X, Clock, Truck, CircleCheck as CheckCircle, Circle as XCircle, ChevronDown, CircleDollarSign, QrCode } from 'lucide-react-native';
 import { format, parseISO } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { ProcurementOrder, ProcurementOrderItem, ProcurementOrderStatus } from '@/types/database';
+import PhotoUploadField from '@/components/ui/PhotoUploadField';
 
 const STATUS_CONFIG: Record<string, { bg: string; text: string; border: string; icon: any; label: string }> = {
   draft:     { bg: Colors.neutral[100],    text: Colors.neutral[600],   border: Colors.neutral[300],  icon: Clock,        label: 'Draft' },
@@ -52,6 +53,7 @@ function ProcurementOrderDetailScreenContent() {
   const [payAmount, setPayAmount] = useState('');
   const [payMethod, setPayMethod] = useState('cash');
   const [payNotes, setPayNotes] = useState('');
+  const [receiptImagePath, setReceiptImagePath] = useState<string | null>(null);
   const [recordingPayment, setRecordingPayment] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
 
@@ -64,7 +66,7 @@ function ProcurementOrderDetailScreenContent() {
       const [orderRes, itemsRes] = await Promise.all([
         supabase
           .from('procurement_orders')
-          .select('*, vendor:vendors(business_name, contact_person, mobile, email, address, city)')
+          .select('*, vendor:vendors(business_name, contact_person, mobile, email, address, city, upi_id, qr_code_image_path)')
           .eq('id', id)
           .maybeSingle(),
         supabase
@@ -78,7 +80,7 @@ function ProcurementOrderDetailScreenContent() {
 
       const { data: payData } = await supabase
         .from('vendor_payments')
-        .select('id, amount, status, payment_date, payment_method, notes, created_at')
+        .select('id, amount, status, payment_date, payment_method, notes, receipt_image_path, created_at')
         .eq('procurement_order_id', id!)
         .order('created_at', { ascending: false });
       if (payData) setPayments(payData);
@@ -151,11 +153,12 @@ function ProcurementOrderDetailScreenContent() {
       amount: amt,
       payment_method: payMethod,
       notes: payNotes,
+      receipt_image_path: receiptImagePath,
       status: 'completed',
       recorded_by: session?.user?.id ?? null,
     });
-    if (error) { setPaymentError(error.message); setRecordingPayment(false); return; }
-    setPayAmount(''); setPayNotes(''); setShowPayModal(false);
+    if (error) { setPaymentError('Could not record the payment. Please try again.'); setRecordingPayment(false); return; }
+    setPayAmount(''); setPayNotes(''); setReceiptImagePath(null); setShowPayModal(false);
 
     const newTotalPaid = totalPaid + amt;
     const orderTotal = Number(order?.total_amount ?? 0);
@@ -479,6 +482,23 @@ function ProcurementOrderDetailScreenContent() {
                   </TouchableOpacity>
                 ))}
               </View>
+              {payMethod === 'upi' && vendor?.qr_code_image_path ? (
+                <View style={s.qrCodeBox}>
+                  <Text style={s.payFieldLabel}>Vendor QR Code</Text>
+                  <View style={s.qrCodePreviewWrap}>
+                    <Image
+                      source={{
+                        uri: vendor.qr_code_image_path.startsWith('http')
+                          ? vendor.qr_code_image_path
+                          : supabase.storage.from('vendor-qr-codes').getPublicUrl(vendor.qr_code_image_path).data.publicUrl,
+                      }}
+                      style={s.qrCodeImage}
+                      resizeMode="contain"
+                    />
+                    <Text style={s.qrCodeHint}>Scan this QR code to pay this vendor via UPI</Text>
+                  </View>
+                </View>
+              ) : null}
               <Text style={s.payFieldLabel}>Notes</Text>
               <TextInput
                 style={[s.priceInput, s.payNotesInput]}
@@ -488,14 +508,26 @@ function ProcurementOrderDetailScreenContent() {
                 placeholderTextColor={Colors.textDisabled}
                 multiline
               />
+              <Text style={s.payFieldLabel}>Payment Receipt</Text>
+              <PhotoUploadField
+                label="Upload Receipt"
+                value={receiptImagePath}
+                onChange={setReceiptImagePath}
+                storagePath={`vendor-receipts/${id ?? 'new'}`}
+                bucket="vendor-receipts"
+                aspectRatio={[4, 3]}
+                hint="Upload a screenshot or photo of the payment receipt for your records."
+              />
               {paymentError && <Text style={s.errorText}>{paymentError}</Text>}
             </View>
             <View style={s.payModalFooter}>
               <TouchableOpacity style={s.cancelBtn} onPress={() => setShowPayModal(false)}>
                 <Text style={s.cancelBtnText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={s.recordPayBtn} onPress={recordPayment} disabled={recordingPayment} activeOpacity={0.85}>
-                {recordingPayment ? (
+              <TouchableOpacity style={[s.recordPayBtn, fullyPaid && s.recordPayBtnDisabled]} onPress={recordPayment} disabled={recordingPayment || fullyPaid} activeOpacity={0.85}>
+                {fullyPaid ? (
+                  <Text style={s.recordPayBtnText}>Fully Paid</Text>
+                ) : recordingPayment ? (
                   <ActivityIndicator size="small" color={Colors.white} />
                 ) : (
                   <>
@@ -721,4 +753,11 @@ const s = StyleSheet.create({
   cancelBtn: { flex: 1, paddingVertical: 12, borderRadius: Radius.md, backgroundColor: Colors.neutral[100], alignItems: 'center' },
   cancelBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textSecondary },
   errorText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 12, color: Colors.error, marginTop: Spacing[1] },
+  recordPayBtnDisabled: { backgroundColor: Colors.neutral[300] },
+  qrCodeBox: { marginTop: Spacing[2], gap: Spacing[1] },
+  qrCodePreviewWrap: { alignItems: 'center', gap: Spacing[1], backgroundColor: Colors.neutral[50], borderRadius: Radius.md, padding: Spacing[3], borderWidth: 1, borderColor: Colors.border },
+  qrCodeImage: { width: 180, height: 180, borderRadius: Radius.md },
+  qrCodeHint: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.textTertiary, textAlign: 'center' },
+  receiptLink: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, alignSelf: 'flex-start' },
+  receiptLinkText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.primary },
 });

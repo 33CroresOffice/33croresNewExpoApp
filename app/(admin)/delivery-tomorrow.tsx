@@ -60,19 +60,22 @@ function DeliveryTomorrowContent() {
   const load = async () => {
     setError('');
     try {
-      const [subOrdersRes, customOrdersRes, riderAssignRes] = await Promise.all([
+      const [subsRes, customOrdersRes, riderAssignRes] = await Promise.all([
         supabase
-          .from('orders')
+          .from('subscriptions')
           .select(`
-            id, status, scheduled_date,
-            subscription:subscriptions(
-              id, user_id,
-              user:profiles(full_name, mobile),
-              plan:subscription_plans(name)
-            )
+            id, user_id, status, start_date, end_date, new_end_date, pause_start_date, pause_until,
+            delivery_address_id,
+            user:profiles(full_name, mobile),
+            plan:subscription_plans(name),
+            orders(id, scheduled_date, status)
           `)
-          .eq('scheduled_date', tomorrowStr)
-          .in('status', ['scheduled', 'out_for_delivery']),
+          .eq('status', 'active')
+          .lte('start_date', tomorrowStr)
+          .or(`new_end_date.gte.${tomorrowStr},and(new_end_date.is.null,or(end_date.is.null,end_date.gte.${tomorrowStr}))`)
+          .or(`pause_until.is.null,pause_until.lt.${tomorrowStr}`)
+          .order('created_at', { ascending: false })
+          .limit(500),
         supabase
           .from('custom_orders')
           .select(`
@@ -89,23 +92,23 @@ function DeliveryTomorrowContent() {
           .limit(500),
       ]);
 
-      if (subOrdersRes.error) throw subOrdersRes.error;
+      if (subsRes.error) throw subsRes.error;
 
-      const subUserIds = (subOrdersRes.data ?? [])
-        .map((o: any) => o.subscription?.user_id)
+      const subAddressIds = (subsRes.data ?? [])
+        .map((s: any) => s.delivery_address_id)
         .filter(Boolean) as string[];
 
-      const addressRes = subUserIds.length > 0
+      const addressRes = subAddressIds.length > 0
         ? await supabase
             .from('addresses')
-            .select('user_id, street, apartment_name, landmark, locality_id, is_default')
-            .in('user_id', subUserIds)
+            .select('id, user_id, street, apartment_name, landmark, locality_id, is_default')
+            .in('id', subAddressIds)
             .order('is_default', { ascending: false })
         : { data: null };
 
       const addressMap: Record<string, any> = {};
       for (const a of (addressRes.data ?? []) as any[]) {
-        if (!addressMap[a.user_id]) addressMap[a.user_id] = a;
+        if (!addressMap[a.id]) addressMap[a.id] = a;
       }
 
       const riderMap: Record<string, string> = {};
@@ -116,15 +119,14 @@ function DeliveryTomorrowContent() {
 
       const items: DeliveryItem[] = [];
 
-      for (const order of (subOrdersRes.data ?? []) as any[]) {
-        const sub = order.subscription;
-        if (!sub) continue;
-        const addr = addressMap[sub.user_id];
+      for (const sub of (subsRes.data ?? []) as any[]) {
+        const tomorrowOrder = (sub.orders ?? []).find((o: any) => o.scheduled_date === tomorrowStr);
+        const addr = sub.delivery_address_id ? addressMap[sub.delivery_address_id] : null;
         const itemsList = sub.plan?.name
           ? `${sub.plan.name} subscription`
           : 'Subscription delivery';
         items.push({
-          id: order.id,
+          id: tomorrowOrder?.id ?? sub.id,
           type: 'subscription',
           customerName: sub.user?.full_name ?? 'Unknown',
           mobile: sub.user?.mobile ?? '',
@@ -133,8 +135,8 @@ function DeliveryTomorrowContent() {
             ? [addr.street, addr.apartment_name].filter(Boolean).join(', ')
             : 'No address',
           landmark: addr?.landmark ?? '',
-          status: order.status,
-          riderName: riderMap[order.id],
+          status: tomorrowOrder?.status ?? 'scheduled',
+          riderName: tomorrowOrder ? riderMap[tomorrowOrder.id] : undefined,
           items: itemsList,
         });
       }

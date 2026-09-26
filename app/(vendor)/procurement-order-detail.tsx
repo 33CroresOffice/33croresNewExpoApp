@@ -2,13 +2,15 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   TextInput, ActivityIndicator, Platform, useWindowDimensions,
+  Modal,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  ArrowLeft, Package, Store, Calendar, FileText,
+  ArrowLeft, Package, Calendar, FileText,
   Save, CircleCheck as CheckCircle2,
+  XCircle, AlertTriangle,
 } from 'lucide-react-native';
 import { format, parseISO } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
@@ -32,16 +34,25 @@ export default function VendorProcurementOrderDetail() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [totals, setTotals] = useState<Record<string, string>>({});
+  const [unavailableItems, setUnavailableItems] = useState<Record<string, { reason: string | null; status: string }>>({});
+  const [showUnavailableModal, setShowUnavailableModal] = useState(false);
+  const [unavailableTargetItemId, setUnavailableTargetItemId] = useState<string | null>(null);
+  const [unavailableReason, setUnavailableReason] = useState('');
+  const [markingUnavailable, setMarkingUnavailable] = useState(false);
+  const [unavailableError, setUnavailableError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
-    const [orderRes, itemsRes] = await Promise.all([
+    const [orderRes, itemsRes, unavailRes] = await Promise.all([
       supabase.from('procurement_orders')
-        .select('*, vendor:vendors(business_name, contact_person, mobile, email, address, city)')
+        .select('*')
         .eq('id', id).maybeSingle(),
       supabase.from('procurement_order_items')
         .select('*, flower_type:flower_types(display_name, unit_type)')
         .eq('procurement_order_id', id).order('created_at'),
+      supabase.from('item_unavailability')
+        .select('id, procurement_order_item_id, reason, status')
+        .eq('procurement_order_id', id),
     ]);
     if (orderRes.data) setOrder(orderRes.data);
     if (itemsRes.data) {
@@ -51,6 +62,13 @@ export default function VendorProcurementOrderDetail() {
         initialTotals[item.id] = item.total_price != null ? String(item.total_price) : '';
       });
       setTotals(initialTotals);
+    }
+    if (unavailRes.data) {
+      const map: Record<string, { reason: string | null; status: string }> = {};
+      unavailRes.data.forEach((u: any) => {
+        map[u.procurement_order_item_id] = { reason: u.reason, status: u.status };
+      });
+      setUnavailableItems(map);
     }
     setLoading(false);
   }, [id]);
@@ -95,8 +113,17 @@ export default function VendorProcurementOrderDetail() {
       .eq('procurement_order_id', id!);
 
     if (freshItems) {
-      const newTotal = freshItems.reduce((sum, i) => sum + (i.total_price ?? 0), 0);
-      await supabase.from('procurement_orders').update({ total_amount: newTotal }).eq('id', id!);
+      const newTotal = freshItems.reduce((sum, i) => sum + (Number(i.total_price) || 0), 0);
+      const { error: orderError } = await supabase
+        .from('procurement_orders')
+        .update({ total_amount: newTotal })
+        .eq('id', id!);
+      if (orderError) {
+        setSaveError(orderError.message);
+        setSaving(false);
+        return;
+      }
+      setOrder((current: any) => current ? { ...current, total_amount: newTotal } : current);
     }
 
     await load();
@@ -124,15 +151,52 @@ export default function VendorProcurementOrderDetail() {
     );
   }
 
-  const vendor = order.vendor as any;
   const totalPriced = items.filter(i => i.price_per_unit != null).length;
   const allPriced = totalPriced === items.length && items.length > 0;
 
-  const hasChanges = items.some(item => {
-    const current = totals[item.id] ?? '';
-    const saved = item.total_price != null ? String(item.total_price) : '';
-    return current !== saved && current !== '';
-  });
+  const isOrderActive = order.status !== 'fulfilled' && order.status !== 'cancelled';
+
+  const openUnavailableModal = (itemId: string) => {
+    setUnavailableTargetItemId(itemId);
+    setUnavailableReason(unavailableItems[itemId]?.reason ?? '');
+    setUnavailableError(null);
+    setShowUnavailableModal(true);
+  };
+
+  const confirmMarkUnavailable = async () => {
+    if (!unavailableTargetItemId || !order) return;
+    setMarkingUnavailable(true);
+    setUnavailableError(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const targetItem = items.find(i => i.id === unavailableTargetItemId);
+      if (!targetItem) return;
+      const { error } = await supabase.from('item_unavailability').insert({
+        procurement_order_item_id: unavailableTargetItemId,
+        procurement_order_id: order.id,
+        requirement_date: order.requirement_date,
+        flower_type_id: targetItem.flower_type_id,
+        reported_by: session?.user?.id,
+        reporter_role: 'vendor',
+        reason: unavailableReason.trim() || null,
+        status: 'pending',
+      });
+      if (error) {
+        if (error.message.includes('picked up')) {
+          setUnavailableError('Cannot mark item unavailable after pickup is confirmed');
+        } else {
+          setUnavailableError(error.message);
+        }
+        setMarkingUnavailable(false);
+        return;
+      }
+      setShowUnavailableModal(false);
+      await load();
+    } catch (e: any) {
+      setUnavailableError(e.message ?? 'Failed to mark item unavailable');
+    }
+    setMarkingUnavailable(false);
+  };
 
   return (
     <View style={s.container}>
@@ -182,54 +246,6 @@ export default function VendorProcurementOrderDetail() {
         contentContainerStyle={[s.content, isWeb && !isNarrowWeb && s.contentWeb, isNarrowWeb && { padding: Spacing[4] }]}
         showsVerticalScrollIndicator={false}
       >
-        <View style={s.card}>
-          <View style={s.cardHeader}>
-            <View style={s.cardIconWrap}>
-              <Store size={14} color={Colors.primary} strokeWidth={1.8} />
-            </View>
-            <Text style={s.cardTitle}>Business</Text>
-          </View>
-          <Text style={s.vendorName}>{vendor?.business_name ?? vendor?.contact_person ?? '—'}</Text>
-          {vendor?.mobile && <Text style={s.vendorMeta}>{vendor.mobile}</Text>}
-          {vendor?.email && <Text style={s.vendorMeta}>{vendor.email}</Text>}
-          {(vendor?.address || vendor?.city) && (
-            <Text style={s.vendorMeta}>{[vendor.address, vendor.city].filter(Boolean).join(', ')}</Text>
-          )}
-        </View>
-
-        <View style={s.card}>
-          <View style={s.cardHeader}>
-            <View style={s.cardIconWrap}>
-              <Calendar size={14} color={Colors.primary} strokeWidth={1.8} />
-            </View>
-            <Text style={s.cardTitle}>Order Details</Text>
-          </View>
-          <View style={s.detailRow}>
-            <Text style={s.detailLabel}>Order Date</Text>
-            <Text style={s.detailValue}>
-              {order.order_date ? format(parseISO(order.order_date), 'dd MMM yyyy') : '—'}
-            </Text>
-          </View>
-          <View style={s.detailRow}>
-            <Text style={s.detailLabel}>Required By</Text>
-            <Text style={s.detailValue}>
-              {order.requirement_date ? format(parseISO(order.requirement_date), 'dd MMM yyyy') : '—'}
-            </Text>
-          </View>
-          <View style={s.detailDivider} />
-          <View style={s.detailRow}>
-            <Text style={s.detailLabel}>Total Amount</Text>
-            <Text style={[s.detailValue, s.totalAmount]}>
-              ₹{Number(order.total_amount).toLocaleString('en-IN')}
-            </Text>
-          </View>
-          {order.notes && (
-            <View style={s.notesBox}>
-              <FileText size={13} color={Colors.textTertiary} strokeWidth={1.8} />
-              <Text style={s.notesText}>{order.notes}</Text>
-            </View>
-          )}
-        </View>
 
         {saveError && (
           <View style={s.errorBanner}>
@@ -265,6 +281,7 @@ export default function VendorProcurementOrderDetail() {
           ) : (
             items.map((item, idx) => {
               const ft = item.flower_type as any;
+              const unavail = unavailableItems[item.id];
               return (
                 <View key={item.id} style={[s.itemRow, idx < items.length - 1 && s.itemRowBorder]}>
                   <View style={s.itemInfo}>
@@ -277,51 +294,145 @@ export default function VendorProcurementOrderDetail() {
                         Unit: ₹{Number(item.price_per_unit).toFixed(2)} / {item.unit_type ?? item.flower_type?.unit_type ?? 'unit'}
                       </Text>
                     )}
+                    {unavail && (
+                      <View style={s.unavailBadge}>
+                        <XCircle size={10} color={Colors.error} strokeWidth={2} />
+                        <Text style={s.unavailBadgeText}>Unavailable{unavail.reason ? `: ${unavail.reason}` : ''}</Text>
+                      </View>
+                    )}
                   </View>
 
-                  <View style={s.priceCol}>
-                    <View style={s.priceInputWrap}>
-                      <Text style={s.rupeeSymbol}>₹</Text>
-                      <TextInput
-                        style={s.priceInput}
-                        value={totals[item.id] ?? ''}
-                        onChangeText={val => setTotals(prev => ({ ...prev, [item.id]: val }))}
-                        keyboardType="decimal-pad"
-                        placeholder="Total price"
-                        placeholderTextColor={Colors.textDisabled}
-                      />
+                  {unavail ? (
+                    <View style={s.priceCol}>
+                      <View style={s.unavailTag}>
+                        <XCircle size={14} color={Colors.error} strokeWidth={2} />
+                        <Text style={s.unavailTagText}>Unavailable</Text>
+                      </View>
                     </View>
-                    {(() => {
-                      const t = parseFloat(totals[item.id] ?? '');
-                      if (!isNaN(t) && item.quantity > 0) {
-                        const u = (t / item.quantity).toFixed(2);
-                        return <Text style={s.unitHint}>₹{u} / {item.unit_type ?? item.flower_type?.unit_type ?? 'unit'}</Text>;
-                      }
-                      return null;
-                    })()}
-                  </View>
+                  ) : (
+                    <View style={s.priceCol}>
+                      <View style={s.priceInputWrap}>
+                        <Text style={s.rupeeSymbol}>₹</Text>
+                        <TextInput
+                          style={s.priceInput}
+                          value={totals[item.id] ?? ''}
+                          onChangeText={val => setTotals(prev => ({ ...prev, [item.id]: val }))}
+                          keyboardType="decimal-pad"
+                          placeholder="Total price"
+                          placeholderTextColor={Colors.textDisabled}
+                        />
+                      </View>
+                      {(() => {
+                        const t = parseFloat(totals[item.id] ?? '');
+                        if (!isNaN(t) && item.quantity > 0) {
+                          const u = (t / item.quantity).toFixed(2);
+                          return <Text style={s.unitHint}>₹{u} / {item.unit_type ?? item.flower_type?.unit_type ?? 'unit'}</Text>;
+                        }
+                        return null;
+                      })()}
+                    </View>
+                  )}
+
+                  {isOrderActive && !unavail && (
+                    <TouchableOpacity
+                      style={s.markUnavailBtn}
+                      onPress={() => openUnavailableModal(item.id)}
+                      activeOpacity={0.7}
+                    >
+                      <AlertTriangle size={12} color={Colors.error} strokeWidth={2} />
+                      <Text style={s.markUnavailBtnText}>Mark Unavailable</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               );
             })
           )}
+
+          <TouchableOpacity
+            style={[s.saveBtn, saving && s.saveBtnDisabled]}
+            onPress={saveAll}
+            disabled={saving}
+            activeOpacity={0.85}
+          >
+            {saving ? (
+              <ActivityIndicator size="small" color={Colors.white} />
+            ) : (
+              <>
+                <Save size={18} color={Colors.white} strokeWidth={2} />
+                <Text style={s.saveBtnText}>Save Prices</Text>
+              </>
+            )}
+          </TouchableOpacity>
         </View>
 
-        <TouchableOpacity
-          style={[s.saveBtn, saving && s.saveBtnDisabled]}
-          onPress={saveAll}
-          disabled={saving}
-          activeOpacity={0.85}
-        >
-          {saving ? (
-            <ActivityIndicator size="small" color={Colors.white} />
-          ) : (
-            <>
-              <Save size={18} color={Colors.white} strokeWidth={2} />
-              <Text style={s.saveBtnText}>Save Prices</Text>
-            </>
+        <View style={s.card}>
+          <View style={s.cardHeader}>
+            <View style={s.cardIconWrap}>
+              <Calendar size={14} color={Colors.primary} strokeWidth={1.8} />
+            </View>
+            <Text style={s.cardTitle}>Order Details</Text>
+          </View>
+          <View style={s.detailRow}>
+            <Text style={s.detailLabel}>Order Date</Text>
+            <Text style={s.detailValue}>{order.order_date ? format(parseISO(order.order_date), 'dd MMM yyyy') : '—'}</Text>
+          </View>
+          <View style={s.detailDivider} />
+          <View style={s.detailRow}>
+            <Text style={s.detailLabel}>Total Amount</Text>
+            <Text style={[s.detailValue, s.totalAmount]}>₹{Number(order.total_amount).toLocaleString('en-IN')}</Text>
+          </View>
+          {order.notes && (
+            <View style={s.notesBox}>
+              <FileText size={13} color={Colors.textTertiary} strokeWidth={1.8} />
+              <Text style={s.notesText}>{order.notes}</Text>
+            </View>
           )}
-        </TouchableOpacity>
+        </View>
       </ScrollView>
+
+      {/* Mark Unavailable Modal */}
+      <Modal visible={showUnavailableModal} transparent animationType="fade" onRequestClose={() => setShowUnavailableModal(false)}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <View style={s.modalHeader}>
+              <Text style={s.modalTitle}>Mark Item Unavailable</Text>
+              <TouchableOpacity onPress={() => setShowUnavailableModal(false)} style={s.modalClose}>
+                <Text style={s.modalCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            {unavailableError && (
+              <View style={s.errorBanner}>
+                <Text style={s.errorBannerText}>{unavailableError}</Text>
+              </View>
+            )}
+            <Text style={s.modalLabel}>Reason (optional)</Text>
+            <TextInput
+              style={s.modalInput}
+              value={unavailableReason}
+              onChangeText={setUnavailableReason}
+              placeholder="e.g. Out of stock, quality issue"
+              placeholderTextColor={Colors.textDisabled}
+              multiline
+            />
+            <Text style={s.modalHint}>Admin will be notified to reassign this item.</Text>
+            <TouchableOpacity
+              style={[s.modalConfirmBtn, markingUnavailable && s.saveBtnDisabled]}
+              onPress={confirmMarkUnavailable}
+              disabled={markingUnavailable}
+              activeOpacity={0.85}
+            >
+              {markingUnavailable ? (
+                <ActivityIndicator size="small" color={Colors.white} />
+              ) : (
+                <>
+                  <XCircle size={16} color={Colors.white} strokeWidth={2} />
+                  <Text style={s.modalConfirmBtnText}>Confirm Unavailable</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -384,9 +495,6 @@ const s = StyleSheet.create({
   },
   cardTitle: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
 
-  vendorName: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.lg, color: Colors.textPrimary },
-  vendorMeta: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textSecondary },
-
   detailRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   detailLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary },
   detailValue: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textPrimary },
@@ -410,7 +518,6 @@ const s = StyleSheet.create({
   itemRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingVertical: Spacing[3], gap: Spacing[3],
-    flexWrap: 'wrap',
   },
   itemRowBorder: { borderBottomWidth: 1, borderBottomColor: Colors.divider },
   itemInfo: { flex: 1 },
@@ -453,4 +560,23 @@ const s = StyleSheet.create({
     padding: Spacing[3], borderWidth: 1, borderColor: Colors.success + '30',
   },
   successBannerText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.success },
+
+  unavailBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  unavailBadgeText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.error },
+  unavailTag: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 12, backgroundColor: Colors.errorSurface, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.error + '30' },
+  unavailTagText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.error },
+  markUnavailBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 6, paddingHorizontal: 10, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.error + '40', backgroundColor: Colors.errorSurface, marginTop: 4 },
+  markUnavailBtnText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.error },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: Spacing[4] },
+  modalCard: { backgroundColor: Colors.white, borderRadius: Radius.lg, padding: Spacing[5], width: '100%', maxWidth: 400, gap: Spacing[3] },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  modalTitle: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, color: Colors.textPrimary },
+  modalClose: { padding: 4 },
+  modalCloseText: { fontSize: 18, color: Colors.textTertiary },
+  modalLabel: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
+  modalInput: { borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingVertical: 10, paddingHorizontal: Spacing[3], fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary, minHeight: 60 },
+  modalHint: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 12, color: Colors.textTertiary },
+  modalConfirmBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing[2], backgroundColor: Colors.error, borderRadius: Radius.lg, paddingVertical: Spacing[3], marginTop: Spacing[2] },
+  modalConfirmBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white },
 });

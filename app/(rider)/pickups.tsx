@@ -28,6 +28,8 @@ import {
   Navigation,
   Save,
   IndianRupee,
+  XCircle,
+  AlertTriangle,
 } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
@@ -101,6 +103,12 @@ export default function RiderPickups() {
   const [pickupError, setPickupError] = useState<string | null>(null);
   const [pickupCutoffTime, setPickupCutoffTime] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState(Date.now());
+  const [unavailableItems, setUnavailableItems] = useState<Record<string, { reason: string | null; status: string }>>({});
+  const [showUnavailableModal, setShowUnavailableModal] = useState(false);
+  const [unavailableTargetItemId, setUnavailableTargetItemId] = useState<string | null>(null);
+  const [unavailableReason, setUnavailableReason] = useState('');
+  const [markingUnavailable, setMarkingUnavailable] = useState(false);
+  const [unavailableError, setUnavailableError] = useState<string | null>(null);
 
   useEffect(() => {
     const interval = setInterval(() => setNowTick(Date.now()), 30000);
@@ -153,6 +161,23 @@ export default function RiderPickups() {
     if (!error && data) {
       setOrders(data as unknown as PickupOrder[]);
     }
+
+    // Load unavailable items for these orders
+    if (rId && data && data.length > 0) {
+      const orderIds = (data as any[]).map(o => o.id);
+      const { data: unavailData } = await supabase
+        .from('item_unavailability')
+        .select('id, procurement_order_item_id, reason, status')
+        .in('procurement_order_id', orderIds);
+      if (unavailData) {
+        const map: Record<string, { reason: string | null; status: string }> = {};
+        unavailData.forEach((u: any) => {
+          map[u.procurement_order_item_id] = { reason: u.reason, status: u.status };
+        });
+        setUnavailableItems(map);
+      }
+    }
+
     setLoading(false);
     setRefreshing(false);
   }, [profile?.id, riderId]);
@@ -175,10 +200,48 @@ export default function RiderPickups() {
       inputs[it.id] = it.total_price != null ? String(it.total_price) : '';
     });
     setPriceInputs(inputs);
-    // If every item already has a price saved in DB, treat as already saved
-    const allAlreadyPriced = (o.items ?? []).length > 0 &&
-      (o.items ?? []).every((it) => it.price_per_unit != null && it.price_per_unit > 0);
-    setPriceSaved(allAlreadyPriced);
+    // If every available item already has a price saved in DB, treat as already saved
+    const availableItems = (o.items ?? []).filter(it => !unavailableItems[it.id]);
+    const allAlreadyPriced = availableItems.length > 0 &&
+      availableItems.every((it) => it.price_per_unit != null && it.price_per_unit > 0);
+    setPriceSaved(allAlreadyPriced || availableItems.length === 0);
+  };
+
+  const confirmMarkUnavailable = async () => {
+    if (!unavailableTargetItemId || !selected || !profile?.id) return;
+    setMarkingUnavailable(true);
+    setUnavailableError(null);
+    try {
+      const targetItem = selected.items?.find(it => it.id === unavailableTargetItemId);
+      if (!targetItem) return;
+      const { error } = await supabase.from('item_unavailability').insert({
+        procurement_order_item_id: unavailableTargetItemId,
+        procurement_order_id: selected.id,
+        requirement_date: selected.requirement_date,
+        flower_type_id: targetItem.flower_type_id,
+        reported_by: profile.id,
+        reporter_role: 'rider',
+        reason: unavailableReason.trim() || null,
+        status: 'pending',
+      });
+      if (error) {
+        if (error.message.includes('picked up')) {
+          setUnavailableError('Cannot mark item unavailable after pickup is confirmed');
+        } else {
+          setUnavailableError(error.message);
+        }
+        setMarkingUnavailable(false);
+        return;
+      }
+      setShowUnavailableModal(false);
+      setUnavailableReason('');
+      setUnavailableTargetItemId(null);
+      // Update local state
+      setUnavailableItems(prev => ({ ...prev, [unavailableTargetItemId]: { reason: unavailableReason.trim() || null, status: 'pending' } }));
+    } catch (e: any) {
+      setUnavailableError(e.message ?? 'Failed to mark item unavailable');
+    }
+    setMarkingUnavailable(false);
   };
 
   const markPickedUp = async () => {
@@ -187,10 +250,14 @@ export default function RiderPickups() {
       setPickupError('Pickup time is already over.');
       return;
     }
-    const allPriced = selected.items?.every((it) => it.price_per_unit != null && it.price_per_unit > 0);
-    if (!allPriced) {
-      setPickupError('Enter and save prices for all items before marking as picked up');
-      return;
+    // Only require prices for items that are NOT unavailable
+    const availableItems = (selected.items ?? []).filter(it => !unavailableItems[it.id]);
+    if (availableItems.length > 0) {
+      const allPriced = availableItems.every((it) => it.price_per_unit != null && it.price_per_unit > 0);
+      if (!allPriced) {
+        setPickupError('Enter and save prices for all available items before marking as picked up');
+        return;
+      }
     }
     setMarkingPickedUp(true);
     setPickupError(null);
@@ -296,13 +363,15 @@ export default function RiderPickups() {
   const renderItems = (o: PickupOrder) => {
     if (!o.items || o.items.length === 0) return null;
     const canEdit = isPickupActive(o.status);
-    const allPriced = o.items.every((it) =>
+    const availableItems = o.items.filter(it => !unavailableItems[it.id]);
+    const allPriced = availableItems.length === 0 || availableItems.every((it) =>
       it.price_set_by === 'vendor'
         ? it.price_per_unit != null && it.price_per_unit > 0
         : (priceInputs[it.id] ?? '').trim() !== '' && !isNaN(parseFloat((priceInputs[it.id] ?? '').trim()))
     );
     const computedTotal = canEdit
       ? o.items.reduce((sum, it) => {
+          if (unavailableItems[it.id]) return sum;
           if (it.price_set_by === 'vendor') {
             return sum + (Number(it.total_price ?? 0));
           }
@@ -320,15 +389,28 @@ export default function RiderPickups() {
           </View>
           <Text style={mStyles.detailCardTitle}>Items ({o.items.length})</Text>
         </View>
-        {o.items.map((it, idx) => (
+        {o.items.map((it, idx) => {
+          const unavail = unavailableItems[it.id];
+          return (
           <View key={it.id} style={[mStyles.itemRow, idx === o.items!.length - 1 && mStyles.itemRowLast]}>
             <View style={{ flex: 1 }}>
               <Text style={mStyles.itemName}>{it.flower_type?.display_name ?? 'Flower'}</Text>
               <Text style={mStyles.itemQty}>
                 {Number(it.quantity)} {it.unit_type ?? it.flower_type?.unit_type ?? 'units'}
               </Text>
+              {unavail && (
+                <View style={mStyles.unavailBadge}>
+                  <XCircle size={10} color={Colors.error} strokeWidth={2} />
+                  <Text style={mStyles.unavailBadgeText}>Unavailable{unavail.reason ? `: ${unavail.reason}` : ''}</Text>
+                </View>
+              )}
             </View>
-            {canEdit && it.price_set_by !== 'vendor' && it.price_per_unit == null ? (
+            {unavail ? (
+              <View style={mStyles.unavailTag}>
+                <XCircle size={14} color={Colors.error} strokeWidth={2} />
+                <Text style={mStyles.unavailTagText}>Unavailable</Text>
+              </View>
+            ) : canEdit && it.price_set_by !== 'vendor' && it.price_per_unit == null ? (
               <View style={{ alignItems: 'flex-end', gap: 4 }}>
                 <View style={mStyles.priceInputWrap}>
                   <IndianRupee size={12} color={Colors.textTertiary} strokeWidth={2} />
@@ -376,8 +458,24 @@ export default function RiderPickups() {
                 )}
               </View>
             )}
+            {canEdit && !unavail && (
+              <TouchableOpacity
+                style={mStyles.markUnavailBtn}
+                onPress={() => {
+                  setUnavailableTargetItemId(it.id);
+                  setUnavailableReason('');
+                  setUnavailableError(null);
+                  setShowUnavailableModal(true);
+                }}
+                activeOpacity={0.7}
+              >
+                <AlertTriangle size={11} color={Colors.error} strokeWidth={2} />
+                <Text style={mStyles.markUnavailBtnText}>Mark Unavailable</Text>
+              </TouchableOpacity>
+            )}
           </View>
-        ))}
+          );
+        })}
         <View style={mStyles.itemsTotalRow}>
           <Text style={mStyles.itemsTotalLabel}>Total</Text>
           <Text style={mStyles.itemsTotalValue}>
@@ -440,9 +538,6 @@ export default function RiderPickups() {
             {!priceSaved && !isPickupCutoffPassed() && (
               <Text style={mStyles.pickupHintText}>Save prices to enable pickup confirmation</Text>
             )}
-            {pickupCutoffTime && !isPickupCutoffPassed() && (
-              <Text style={mStyles.pickupCutoffHintText}>Pickup cutoff: {formatCutoffAMPM(pickupCutoffTime)} IST</Text>
-            )}
           </View>
         )}
         {o.status === 'fulfilled' && o.picked_up_at && (
@@ -483,6 +578,9 @@ export default function RiderPickups() {
 
             <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
               <View style={mStyles.detailSection}>
+                {/* Items with price entry */}
+                {renderItems(o)}
+
                 {/* Vendor */}
                 <View style={mStyles.detailCard}>
                   <View style={mStyles.detailCardHeader}>
@@ -511,35 +609,6 @@ export default function RiderPickups() {
                   )}
                 </View>
 
-                {/* Schedule */}
-                <View style={mStyles.detailCard}>
-                  <View style={mStyles.detailCardHeader}>
-                    <View style={[mStyles.detailIconWrap, { backgroundColor: Colors.warningSurface }]}>
-                      <Calendar size={16} color={Colors.warning} strokeWidth={1.8} />
-                    </View>
-                    <Text style={mStyles.detailCardTitle}>Schedule</Text>
-                  </View>
-                  {o.requirement_date && (
-                    <View style={mStyles.detailRow}>
-                      <Clock size={13} color={Colors.textTertiary} strokeWidth={1.8} />
-                      <Text style={mStyles.detailSmallText}>
-                        Required by {format(new Date(o.requirement_date + 'T00:00:00'), 'dd MMM yyyy')}
-                      </Text>
-                    </View>
-                  )}
-                  {o.pickup_assigned_at && (
-                    <View style={mStyles.detailRow}>
-                      <Navigation size={13} color={Colors.textTertiary} strokeWidth={1.8} />
-                      <Text style={mStyles.detailSmallText}>
-                        Assigned {format(new Date(o.pickup_assigned_at), 'dd MMM yyyy, hh:mm a')}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-
-                {/* Items with price entry */}
-                {renderItems(o)}
-
                 {/* Notes */}
                 {(o.pickup_notes || o.notes) && (
                   <View style={mStyles.detailCard}>
@@ -565,6 +634,49 @@ export default function RiderPickups() {
                 )}
               </View>
             </ScrollView>
+
+            {/* Mark Unavailable overlay — rendered inside detail modal so it appears above the backdrop on web */}
+            {showUnavailableModal && (
+              <View style={mStyles.unavailInlineOverlay}>
+                <Pressable style={mStyles.unavailInlineBackdrop} onPress={() => { setShowUnavailableModal(false); setUnavailableError(null); }} />
+                <View style={mStyles.unavailModalCard}>
+                  <View style={mStyles.unavailModalHeader}>
+                    <Text style={mStyles.unavailModalTitle}>Mark Item Unavailable</Text>
+                    <TouchableOpacity onPress={() => { setShowUnavailableModal(false); setUnavailableError(null); }} style={mStyles.modalClose}>
+                      <X size={18} color={Colors.textTertiary} strokeWidth={2} />
+                    </TouchableOpacity>
+                  </View>
+                  {unavailableError && (
+                    <Text style={mStyles.priceErrorText}>{unavailableError}</Text>
+                  )}
+                  <Text style={mStyles.unavailModalLabel}>Reason (optional)</Text>
+                  <TextInput
+                    style={mStyles.unavailModalInput}
+                    value={unavailableReason}
+                    onChangeText={setUnavailableReason}
+                    placeholder="e.g. Out of stock, quality issue"
+                    placeholderTextColor={Colors.textTertiary}
+                    multiline
+                  />
+                  <Text style={mStyles.unavailModalHint}>Admin will be notified to reassign this item.</Text>
+                  <TouchableOpacity
+                    style={[mStyles.unavailModalConfirmBtn, markingUnavailable && mStyles.saveBtnDisabled]}
+                    onPress={confirmMarkUnavailable}
+                    disabled={markingUnavailable}
+                    activeOpacity={0.85}
+                  >
+                    {markingUnavailable ? (
+                      <ActivityIndicator size="small" color={Colors.white} />
+                    ) : (
+                      <>
+                        <XCircle size={16} color={Colors.white} strokeWidth={2} />
+                        <Text style={mStyles.unavailModalConfirmText}>Confirm Unavailable</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
           </View>
         </View>
       </Modal>
@@ -1003,6 +1115,23 @@ const mStyles = StyleSheet.create({
   noteText: {
     fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textSecondary, lineHeight: 20,
   },
+  unavailBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  unavailBadgeText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.error },
+  unavailTag: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, paddingHorizontal: 10, backgroundColor: Colors.errorSurface, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.error + '30' },
+  unavailTagText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.error },
+  markUnavailBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 5, paddingHorizontal: 8, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.error + '40', backgroundColor: Colors.errorSurface, marginTop: 4 },
+  markUnavailBtnText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.error },
+  unavailModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: Spacing[4] },
+  unavailInlineOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', padding: Spacing[4], zIndex: 100 },
+  unavailInlineBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
+  unavailModalCard: { backgroundColor: Colors.white, borderRadius: Radius.lg, padding: Spacing[5], width: '100%', maxWidth: 400, gap: Spacing[3] },
+  unavailModalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  unavailModalTitle: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, color: Colors.textPrimary },
+  unavailModalLabel: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
+  unavailModalInput: { borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingVertical: 10, paddingHorizontal: Spacing[3], fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary, minHeight: 60 },
+  unavailModalHint: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 12, color: Colors.textTertiary },
+  unavailModalConfirmBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing[2], backgroundColor: Colors.error, borderRadius: Radius.lg, paddingVertical: Spacing[3], marginTop: Spacing[2] },
+  unavailModalConfirmText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white },
 });
 
 const wStyles = StyleSheet.create({
@@ -1071,7 +1200,7 @@ const wStyles = StyleSheet.create({
   statusBadgeText: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11,
   },
-  orderCardBottom: { flexDirection: 'row', alignItems: 'center', gap: 16, flexWrap: 'wrap' as any },
+  orderCardBottom: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   orderMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   orderMetaText: {
     fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textSecondary,

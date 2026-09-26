@@ -43,6 +43,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: 'Orders',           icon: ClipboardList,   href: '/(admin)/orders' },
       { label: 'Tomorrow Delivery', icon: Truck,          href: '/(admin)/delivery-tomorrow' },
       { label: 'New Subscription', icon: PlusCircle,      href: '/(admin)/create-subscription' },
+      { label: 'Customize Order',  icon: Sparkles,        href: '/(admin)/customize-order' },
       { label: 'Customers',        icon: Users,           href: '/(admin)/operations-customers' },
       { label: 'Payment History',  icon: CreditCard,     href: '/(admin)/payment-history' },
     ],

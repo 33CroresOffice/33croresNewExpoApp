@@ -370,6 +370,7 @@ export interface Vendor {
   bank_account_name: string | null;
   upi_id: string | null;
   google_maps_url: string | null;
+  qr_code_image_path: string | null;
   is_active: boolean;
   notes: string | null;
   created_at: string;
@@ -494,6 +495,7 @@ export interface VendorPayment {
   status: VendorPaymentStatus;
   notes: string | null;
   recorded_by: string | null;
+  receipt_image_path: string | null;
   created_at: string;
   procurement_order?: ProcurementOrder;
 }
@@ -695,4 +697,39 @@ export interface PoojaListShare {
   expires_at: string;
   is_revoked: boolean;
   created_at: string;
+}
+
+// ─── Item Unavailability & Reassignment ──────────────────────────────────────
+
+export type ItemUnavailabilityStatus = 'pending' | 'reassigned' | 'resolved';
+export type ReporterRole = 'vendor' | 'rider';
+
+export interface ItemUnavailability {
+  id: string;
+  procurement_order_item_id: string;
+  procurement_order_id: string;
+  requirement_date: string | null;
+  flower_type_id: string | null;
+  reported_by: string | null;
+  reporter_role: ReporterRole;
+  reason: string | null;
+  status: ItemUnavailabilityStatus;
+  created_at: string;
+  flower_type?: FlowerType;
+  reassignment?: ItemReassignment | null;
+}
+
+export interface ItemReassignment {
+  id: string;
+  unavailability_id: string;
+  original_vendor_id: string | null;
+  replacement_vendor_id: string;
+  replacement_flower_type_id: string;
+  replacement_quantity: number;
+  replacement_unit_type: string | null;
+  replacement_procurement_order_id: string | null;
+  reassigned_by: string | null;
+  created_at: string;
+  replacement_vendor?: Vendor;
+  replacement_flower_type?: FlowerType;
 }

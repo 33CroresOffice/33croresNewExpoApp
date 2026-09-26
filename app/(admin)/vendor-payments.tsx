@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { usePageVisibility } from '@/hooks/usePageVisibility';
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
@@ -58,6 +58,7 @@ function VendorPaymentsScreenContent() {
   const [refreshing, setRefreshing] = useState(false);
   const [tab, setTab] = useState('all');
   const [dateFilter, setDateFilter] = useState(0);
+  const pendingExtraRef = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -80,6 +81,26 @@ function VendorPaymentsScreenContent() {
       }
       const { data } = await query;
       if (data) setPayments(data as any);
+
+      const { data: allOrders } = await supabase
+        .from('procurement_orders')
+        .select('id, status, total_amount');
+
+      const paidByOrder = new Map<string, number>();
+      (data ?? []).filter((p: any) => p.status === 'completed').forEach((p: any) => {
+        const oid = p.procurement_order_id as string;
+        paidByOrder.set(oid, (paidByOrder.get(oid) ?? 0) + Number(p.amount));
+      });
+
+      let pendingExtra = 0;
+      (allOrders ?? []).forEach((o: any) => {
+        if (o.status === 'cancelled') return;
+        const orderTotal = Number(o.total_amount) || 0;
+        const paidForOrder = paidByOrder.get(o.id as string) ?? 0;
+        const unpaid = orderTotal - paidForOrder;
+        if (unpaid > 0) pendingExtra += unpaid;
+      });
+      pendingExtraRef.current = pendingExtra;
     } catch (e) {
       console.error('load error', e);
     } finally {
@@ -93,7 +114,7 @@ function VendorPaymentsScreenContent() {
 
   const filtered = payments.filter(p => tab === 'all' || p.status === tab);
   const totalPaid = payments.filter(p => p.status === 'completed').reduce((s, p) => s + Number(p.amount), 0);
-  const totalPending = payments.filter(p => p.status === 'pending').reduce((s, p) => s + Number(p.amount), 0);
+  const totalPending = payments.filter(p => p.status === 'pending').reduce((s, p) => s + Number(p.amount), 0) + pendingExtraRef.current;
   const fmt = (n: number) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
   return (
