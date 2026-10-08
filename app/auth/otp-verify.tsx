@@ -102,10 +102,6 @@ export default function OtpVerifyScreen() {
 
       if (!profile) {
         router.replace('/auth/welcome');
-      } else if (profile.role === 'admin') {
-        router.replace('/(admin)');
-      } else if (profile.role === 'vendor') {
-        router.replace('/(vendor)');
       } else if (!profile.full_name) {
         router.replace('/auth/profile-setup');
       } else {

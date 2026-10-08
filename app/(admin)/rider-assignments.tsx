@@ -6,7 +6,7 @@ import {
   Modal, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Truck, Search, ArrowLeft, X, ChevronRight, Calendar, CircleCheck as CheckCircle, CircleAlert as AlertCircle, Clock, User, MapPin, Plus, ChevronDown, Package, Zap, RefreshCw, ShieldAlert } from 'lucide-react-native';
+import { Truck, Search, ArrowLeft, X, ChevronRight, Calendar, CircleCheck as CheckCircle, CircleAlert as AlertCircle, Clock, User, MapPin, Plus, ChevronDown, Package, Zap, RefreshCw, ShieldAlert, Star } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { format, isToday, parseISO } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
@@ -102,7 +102,7 @@ function RiderAssignmentsScreenContent() {
       const [ridersRes, ordersRes, assignmentsRes, leaveRes] = await Promise.all([
         supabase.from('riders').select('id, full_name, mobile, zone, vehicle_type, is_active').eq('is_active', true).order('full_name'),
         supabase.from('orders').select('*, user:profiles(full_name, mobile), subscription:subscriptions(plan:subscription_plans(name), delivery_address:addresses(street, city))').in('status', ['scheduled', 'out_for_delivery']).order('scheduled_date').limit(100),
-        supabase.from('rider_order_assignments').select('*, rider:rider_id(full_name, mobile, zone, vehicle_type), order:orders(id, scheduled_date, status, user:profiles(full_name, mobile), subscription:subscriptions(delivery_address:addresses(street, city)))').order('assigned_at', { ascending: false }).limit(200),
+        supabase.from('rider_order_assignments').select('*, rider:rider_id(full_name, mobile, zone, vehicle_type), order:orders(id, scheduled_date, status, user:profiles(full_name, mobile), subscription:subscriptions(primary_rider_id, delivery_address:addresses(street, city)))').order('assigned_at', { ascending: false }).limit(200),
         supabase.from('rider_leave_requests').select('rider_id, leave_date, end_date').eq('status', 'approved').lte('leave_date', today).gte('end_date', today),
       ]);
 
@@ -187,6 +187,14 @@ function RiderAssignmentsScreenContent() {
     });
     if (!error) {
       await supabase.from('orders').update({ status: 'out_for_delivery' }).eq('id', selectedOrder.id);
+      // Make this the subscription's standing rider so daily orders keep
+      // going to the same rider until admin unassigns or reassigns.
+      if (selectedOrder.subscription_id) {
+        await supabase
+          .from('subscriptions')
+          .update({ primary_rider_id: selectedRider.id })
+          .eq('id', selectedOrder.subscription_id);
+      }
     }
     setAssigning(false);
     if (error) { Alert.alert('Error', error.message); return; }
@@ -452,6 +460,12 @@ function RiderAssignmentsScreenContent() {
                             <Truck size={12} color={Colors.primary} strokeWidth={2} />
                             <Text style={s.activeRiderName}>{a.rider?.full_name}</Text>
                             <Text style={s.activeZone}>({a.rider?.zone})</Text>
+                            {a.order?.subscription?.primary_rider_id && a.order?.subscription?.primary_rider_id === a.rider_id && (
+                              <View style={s.primaryBadge}>
+                                <Star size={8} color={Colors.warning} strokeWidth={2.5} fill={Colors.warning} />
+                                <Text style={s.primaryBadgeText}>PRIMARY</Text>
+                              </View>
+                            )}
                           </View>
                           <View style={s.activeCustomer}>
                             <User size={12} color={Colors.textTertiary} strokeWidth={2} />
@@ -876,6 +890,8 @@ const s = StyleSheet.create({
   activeRider: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   activeRiderName: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.primary },
   activeZone: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  primaryBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3, backgroundColor: '#FFF8E1' },
+  primaryBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 8, color: '#F59E0B' },
   activeCustomer: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   activeCustomerName: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textSecondary },
   activeFooter: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3] },

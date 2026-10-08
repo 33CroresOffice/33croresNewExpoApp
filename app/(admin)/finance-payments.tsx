@@ -6,12 +6,13 @@ import {
   TextInput, Platform, ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CreditCard, Search, ArrowLeft, CircleCheck as CheckCircle, Circle as XCircle, Clock, RotateCcw } from 'lucide-react-native';
-import { router } from 'expo-router';
-import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
+import { CreditCard, Search, ArrowLeft, CircleCheck as CheckCircle, Circle as XCircle, Clock, RotateCcw, Flower2, Sparkles, X } from 'lucide-react-native';
+import { router, useLocalSearchParams } from 'expo-router';
+import { format, startOfMonth, endOfMonth, subMonths, startOfDay, endOfDay } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { PaymentStatus } from '@/types/database';
+import DatePickerField from '@/components/ui/DatePickerField';
 
 interface PaymentRow {
   id: string;
@@ -22,6 +23,17 @@ interface PaymentRow {
   created_at: string;
   profile?: { full_name: string | null; mobile: string };
   subscription?: { plan?: { name: string } };
+}
+
+interface CustomPaymentRow {
+  id: string;
+  total_price: number;
+  payment_status: string;
+  razorpay_order_id: string;
+  razorpay_payment_id: string | null;
+  created_at: string;
+  order_type: string | null;
+  profile?: { full_name: string | null; mobile: string };
 }
 
 const PERIOD_OPTIONS = [
@@ -35,8 +47,6 @@ const STATUS_TABS: { label: string; value: PaymentStatus | 'all' }[] = [
   { label: 'All', value: 'all' },
   { label: 'Success', value: 'success' },
   { label: 'Pending', value: 'pending' },
-  { label: 'Failed', value: 'failed' },
-  { label: 'Refunded', value: 'refunded' },
 ];
 
 const STATUS_CONFIG: Record<PaymentStatus, { label: string; bg: string; text: string; icon: React.ReactNode }> = {
@@ -45,6 +55,26 @@ const STATUS_CONFIG: Record<PaymentStatus, { label: string; bg: string; text: st
   failed:   { label: 'Failed',   bg: '#FFEBEE', text: Colors.error, icon: <XCircle size={12} color={Colors.error} strokeWidth={2} /> },
   refunded: { label: 'Refunded', bg: Colors.neutral[100], text: Colors.textSecondary, icon: <RotateCcw size={12} color={Colors.textSecondary} strokeWidth={2} /> },
 };
+
+const CUSTOM_STATUS_CONFIG: Record<string, { label: string; bg: string; text: string; icon: React.ReactNode }> = {
+  paid:     { label: 'Paid',     bg: '#E8F5E9', text: Colors.success, icon: <CheckCircle size={12} color={Colors.success} strokeWidth={2} /> },
+  pending:  { label: 'Pending',  bg: Colors.accentSurface, text: Colors.accentDark, icon: <Clock size={12} color={Colors.accentDark} strokeWidth={2} /> },
+  unpaid:   { label: 'Unpaid',   bg: '#FFEBEE', text: Colors.error, icon: <XCircle size={12} color={Colors.error} strokeWidth={2} /> },
+};
+
+const SOURCE_TABS = [
+  { key: 'subscription', label: 'Subscription', icon: <Flower2 size={14} strokeWidth={1.8} /> },
+  { key: 'customization', label: 'Customization', icon: <Sparkles size={14} strokeWidth={1.8} /> },
+] as const;
+
+type SourceTab = (typeof SOURCE_TABS)[number]['key'];
+
+const CUSTOM_STATUS_TABS: { label: string; value: string | 'all' }[] = [
+  { label: 'All', value: 'all' },
+  { label: 'Paid', value: 'paid' },
+  { label: 'Pending', value: 'pending' },
+  { label: 'Unpaid', value: 'unpaid' },
+];
 
 export default function FinancePaymentsScreen() {
   return (
@@ -57,21 +87,28 @@ export default function FinancePaymentsScreen() {
 function FinancePaymentsScreenContent() {
   const insets = useSafeAreaInsets();
   const isWeb = Platform.OS === 'web';
+  const { tab: tabParam } = useLocalSearchParams<{ tab?: string }>();
   const [payments, setPayments] = useState<PaymentRow[]>([]);
+  const [customPayments, setCustomPayments] = useState<CustomPaymentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<PaymentStatus | 'all'>('all');
+  const [customTab, setCustomTab] = useState<string | 'all'>('all');
+  const [sourceTab, setSourceTab] = useState<SourceTab>(tabParam === 'customization' ? 'customization' : 'subscription');
   const [dateFilter, setDateFilter] = useState(0);
+  const [rangeFrom, setRangeFrom] = useState<Date | null>(null);
+  const [rangeTo, setRangeTo] = useState<Date | null>(null);
+  const [openPicker, setOpenPicker] = useState<'from' | 'to' | null>(null);
 
   const load = useCallback(async () => {
     try {
-      let query = supabase
-        .from('payments')
-        .select('*, profile:profiles(full_name, mobile), subscription:subscriptions(plan:subscription_plans(name))')
-        .order('created_at', { ascending: false })
-        .limit(300);
-      if (dateFilter !== -1) {
+      const range = (() => {
+        if (dateFilter === -2) {
+          if (!rangeFrom || !rangeTo) return null;
+          return { from: startOfDay(rangeFrom).toISOString(), to: endOfDay(rangeTo).toISOString() };
+        }
+        if (dateFilter === -1) return null;
         const now = new Date();
         let fromDate: Date;
         let toDate: Date;
@@ -85,19 +122,41 @@ function FinancePaymentsScreenContent() {
           fromDate = startOfMonth(subMonths(now, dateFilter - 1));
           toDate = now;
         }
-        query = query
-          .gte('created_at', fromDate.toISOString())
-          .lte('created_at', toDate.toISOString());
+        return { from: fromDate.toISOString(), to: toDate.toISOString() };
+      })();
+
+      let subQuery = supabase
+        .from('payments')
+        .select('*, profile:profiles(full_name, mobile), subscription:subscriptions(plan:subscription_plans(name))')
+        .order('created_at', { ascending: false })
+        .limit(300);
+      let customQuery = supabase
+        .from('custom_orders')
+        .select('id, total_price, payment_status, razorpay_order_id, razorpay_payment_id, created_at, order_type, profile:profiles(full_name, mobile)')
+        .in('payment_status', ['paid', 'pending'])
+        .order('created_at', { ascending: false })
+        .limit(300);
+      if (range) {
+        subQuery = subQuery.gte('created_at', range.from).lte('created_at', range.to);
+        customQuery = customQuery.gte('created_at', range.from).lte('created_at', range.to);
       }
-      const { data } = await query;
+      const [{ data }, { data: customData }] = await Promise.all([subQuery, customQuery]);
       if (data) setPayments(data as any);
+      if (customData) setCustomPayments(customData as any);
     } catch (e) {
       console.error('load error', e);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [dateFilter]);
+  }, [dateFilter, rangeFrom, rangeTo]);
+
+  const clearRange = useCallback(() => {
+    setRangeFrom(null);
+    setRangeTo(null);
+    setOpenPicker(null);
+    setDateFilter(0);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
   usePageVisibility(load);
@@ -116,10 +175,26 @@ function FinancePaymentsScreenContent() {
     return true;
   });
 
+  const filteredCustom = customPayments.filter(p => {
+    if (customTab !== 'all' && p.payment_status !== customTab) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      return (
+        (p.profile?.full_name ?? '').toLowerCase().includes(q) ||
+        (p.profile?.mobile ?? '').toLowerCase().includes(q) ||
+        (p.order_type ?? '').toLowerCase().includes(q) ||
+        (p.razorpay_payment_id ?? p.razorpay_order_id).toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
+
   const fmt = (paise: number) => `₹${(paise / 100).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
   const totalSuccess = payments.filter(p => p.status === 'success').reduce((s, p) => s + p.amount, 0);
   const totalPending = payments.filter(p => p.status === 'pending').reduce((s, p) => s + p.amount, 0);
   const totalRefunded = payments.filter(p => p.status === 'refunded').reduce((s, p) => s + p.amount, 0);
+  const customTotalPaid = customPayments.filter(p => p.payment_status === 'paid').reduce((s, p) => s + p.total_price, 0);
+  const customTotalPending = customPayments.filter(p => p.payment_status === 'pending').reduce((s, p) => s + p.total_price, 0);
 
   return (
     <View style={[s.container, { paddingTop: isWeb ? 0 : insets.top }]}>
@@ -135,11 +210,26 @@ function FinancePaymentsScreenContent() {
           </View>
           <View>
             <Text style={[s.title, isWeb && s.titleWeb]}>Payments</Text>
-            <Text style={s.subtitle}>{payments.length} transactions</Text>
+            <Text style={s.subtitle}>{sourceTab === 'subscription' ? payments.length : customPayments.length} transactions</Text>
           </View>
         </View>
       </View>
 
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabScroll} contentContainerStyle={s.tabs}>
+        {SOURCE_TABS.map(t => {
+          const Icon = t.key === 'subscription' ? Flower2 : Sparkles;
+          const active = sourceTab === t.key;
+          return (
+            <TouchableOpacity key={t.key} style={[s.sourceTabBtn, active && s.sourceTabBtnActive]} onPress={() => setSourceTab(t.key)}>
+              <Icon size={14} color={active ? Colors.primary : Colors.textSecondary} strokeWidth={1.8} />
+              <Text style={[s.sourceTabText, active && s.sourceTabTextActive]}>{t.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
+      {sourceTab === 'subscription' ? (
+        <>
       <View style={[s.summaryRow, isWeb && s.summaryRowWeb]}>
         {[
           { label: 'Collected', value: fmt(totalSuccess), color: Colors.success },
@@ -158,13 +248,52 @@ function FinancePaymentsScreenContent() {
           <Search size={14} color={Colors.textTertiary} strokeWidth={1.8} />
           <TextInput style={s.searchInput} value={search} onChangeText={setSearch} placeholder="Search by name, mobile, plan or reference..." placeholderTextColor={Colors.textDisabled} />
         </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.periodPills}>
-          {PERIOD_OPTIONS.map(p => (
-            <TouchableOpacity key={p.value} style={[s.periodPill, dateFilter === p.value && s.periodPillActive]} onPress={() => setDateFilter(p.value)}>
-              <Text style={[s.periodPillText, dateFilter === p.value && s.periodPillTextActive]}>{p.label}</Text>
+        <View style={s.filterRow}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.periodPills}>
+            {PERIOD_OPTIONS.map(p => (
+              <TouchableOpacity key={p.value} style={[s.periodPill, dateFilter === p.value && s.periodPillActive]} onPress={() => { setDateFilter(p.value); setRangeFrom(null); setRangeTo(null); }}>
+                <Text style={[s.periodPillText, dateFilter === p.value && s.periodPillTextActive]}>{p.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <View style={s.periodDivider} />
+          <View style={s.rangeField}>
+            <DatePickerField
+              label="From"
+              compact
+              value={rangeFrom}
+              open={openPicker === 'from'}
+              onOpenChange={(o) => setOpenPicker(o ? 'from' : null)}
+              maxDate={rangeTo ?? new Date()}
+              onChange={(d) => {
+                setRangeFrom(d);
+                if (rangeTo && d > rangeTo) setRangeTo(null);
+                setDateFilter(-2);
+              }}
+            />
+          </View>
+          <View style={s.rangeField}>
+            <DatePickerField
+              label="To"
+              compact
+              align="right"
+              value={rangeTo}
+              open={openPicker === 'to'}
+              onOpenChange={(o) => setOpenPicker(o ? 'to' : null)}
+              minDate={rangeFrom ?? undefined}
+              maxDate={new Date()}
+              onChange={(d) => {
+                setRangeTo(d);
+                setDateFilter(-2);
+              }}
+            />
+          </View>
+          {dateFilter === -2 && rangeFrom && rangeTo && (
+            <TouchableOpacity style={s.rangeClear} onPress={clearRange}>
+              <X size={14} color={Colors.textTertiary} strokeWidth={2} />
             </TouchableOpacity>
-          ))}
-        </ScrollView>
+          )}
+        </View>
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabScroll} contentContainerStyle={s.tabs}>
@@ -176,6 +305,86 @@ function FinancePaymentsScreenContent() {
           </TouchableOpacity>
         ))}
       </ScrollView>
+        </>
+      ) : (
+        <>
+      <View style={[s.summaryRow, isWeb && s.summaryRowWeb]}>
+        {[
+          { label: 'Collected', value: fmt(customTotalPaid), color: Colors.success },
+          { label: 'Pending', value: fmt(customTotalPending), color: Colors.accentDark },
+          { label: 'Orders', value: String(customPayments.length), color: Colors.textPrimary },
+        ].map(item => (
+          <View key={item.label} style={s.summaryPill}>
+            <Text style={s.summaryPillLabel}>{item.label}</Text>
+            <Text style={[s.summaryPillValue, { color: item.color }]}>{item.value}</Text>
+          </View>
+        ))}
+      </View>
+
+      <View style={[s.searchRow, isWeb && s.searchRowWeb]}>
+        <View style={s.searchWrap}>
+          <Search size={14} color={Colors.textTertiary} strokeWidth={1.8} />
+          <TextInput style={s.searchInput} value={search} onChangeText={setSearch} placeholder="Search by name, mobile, type or reference..." placeholderTextColor={Colors.textDisabled} />
+        </View>
+        <View style={s.filterRow}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.periodPills}>
+            {PERIOD_OPTIONS.map(p => (
+              <TouchableOpacity key={p.value} style={[s.periodPill, dateFilter === p.value && s.periodPillActive]} onPress={() => { setDateFilter(p.value); setRangeFrom(null); setRangeTo(null); }}>
+                <Text style={[s.periodPillText, dateFilter === p.value && s.periodPillTextActive]}>{p.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <View style={s.periodDivider} />
+          <View style={s.rangeField}>
+            <DatePickerField
+              label="From"
+              compact
+              value={rangeFrom}
+              open={openPicker === 'from'}
+              onOpenChange={(o) => setOpenPicker(o ? 'from' : null)}
+              maxDate={rangeTo ?? new Date()}
+              onChange={(d) => {
+                setRangeFrom(d);
+                if (rangeTo && d > rangeTo) setRangeTo(null);
+                setDateFilter(-2);
+              }}
+            />
+          </View>
+          <View style={s.rangeField}>
+            <DatePickerField
+              label="To"
+              compact
+              align="right"
+              value={rangeTo}
+              open={openPicker === 'to'}
+              onOpenChange={(o) => setOpenPicker(o ? 'to' : null)}
+              minDate={rangeFrom ?? undefined}
+              maxDate={new Date()}
+              onChange={(d) => {
+                setRangeTo(d);
+                setDateFilter(-2);
+              }}
+            />
+          </View>
+          {dateFilter === -2 && rangeFrom && rangeTo && (
+            <TouchableOpacity style={s.rangeClear} onPress={clearRange}>
+              <X size={14} color={Colors.textTertiary} strokeWidth={2} />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabScroll} contentContainerStyle={s.tabs}>
+        {CUSTOM_STATUS_TABS.map(t => (
+          <TouchableOpacity key={t.value} style={[s.tabBtn, customTab === t.value && s.tabBtnActive]} onPress={() => setCustomTab(t.value)}>
+            <Text style={[s.tabText, customTab === t.value && s.tabTextActive]}>
+              {t.label} ({t.value === 'all' ? customPayments.length : customPayments.filter(p => p.payment_status === t.value).length})
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+        </>
+      )}
 
       {loading ? (
         <View style={s.center}><ActivityIndicator color={Colors.primary} /></View>
@@ -186,7 +395,8 @@ function FinancePaymentsScreenContent() {
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
         >
-          {isWeb ? (
+          {sourceTab === 'subscription' ? (
+            isWeb ? (
             <View style={s.table}>
               <View style={s.tableHead}>
                 <Text style={[s.thCell, { flex: 2 }]}>Customer</Text>
@@ -252,6 +462,75 @@ function FinancePaymentsScreenContent() {
                 );
               })
             )
+          )
+          ) : (
+            isWeb ? (
+            <View style={s.table}>
+              <View style={s.tableHead}>
+                <Text style={[s.thCell, { flex: 2 }]}>Customer</Text>
+                <Text style={[s.thCell, { flex: 2 }]}>Order Type</Text>
+                <Text style={[s.thCell, { flex: 2 }]}>Reference</Text>
+                <Text style={[s.thCell, { width: 90, textAlign: 'right' }]}>Amount</Text>
+                <Text style={[s.thCell, { width: 90, textAlign: 'center' }]}>Status</Text>
+                <Text style={[s.thCell, { width: 100, textAlign: 'right' }]}>Date</Text>
+              </View>
+              {filteredCustom.length === 0 ? (
+                <View style={s.emptyState}>
+                  <Sparkles size={36} color={Colors.textDisabled} strokeWidth={1.2} />
+                  <Text style={s.emptyTitle}>No customization payments found</Text>
+                </View>
+              ) : (
+                filteredCustom.map((p, idx) => {
+                  const cfg = CUSTOM_STATUS_CONFIG[p.payment_status] ?? CUSTOM_STATUS_CONFIG.unpaid;
+                  return (
+                    <View key={p.id} style={[s.tableRow, idx % 2 === 1 && s.tableRowAlt]}>
+                      <View style={[s.tdCell, { flex: 2 }]}>
+                        <Text style={s.tdPrimary}>{p.profile?.full_name ?? 'Unknown'}</Text>
+                        <Text style={s.tdSub}>{p.profile?.mobile ?? ''}</Text>
+                      </View>
+                      <Text style={[s.tdCell, { flex: 2 }, s.tdSec]} numberOfLines={1}>{p.order_type === 'garland' ? 'Custom Garland' : 'Custom Flowers'}</Text>
+                      <Text style={[s.tdCell, { flex: 2 }, s.tdMono]} numberOfLines={1}>{p.razorpay_payment_id ?? p.razorpay_order_id}</Text>
+                      <Text style={[s.tdCell, { width: 90, textAlign: 'right' }, s.tdBold]}>{fmt(p.total_price)}</Text>
+                      <View style={[s.tdCell, { width: 90, alignItems: 'center' }]}>
+                        <View style={[s.statusPill, { backgroundColor: cfg.bg }]}>
+                          {cfg.icon}
+                          <Text style={[s.statusText, { color: cfg.text }]}>{cfg.label}</Text>
+                        </View>
+                      </View>
+                      <Text style={[s.tdCell, { width: 100, textAlign: 'right' }, s.tdDate]}>{format(new Date(p.created_at), 'dd MMM yyyy')}</Text>
+                    </View>
+                  );
+                })
+              )}
+            </View>
+          ) : (
+            filteredCustom.length === 0 ? (
+              <View style={s.emptyState}>
+                <Sparkles size={36} color={Colors.textDisabled} strokeWidth={1.2} />
+                <Text style={s.emptyTitle}>No customization payments found</Text>
+              </View>
+            ) : (
+              filteredCustom.map(p => {
+                const cfg = CUSTOM_STATUS_CONFIG[p.payment_status] ?? CUSTOM_STATUS_CONFIG.unpaid;
+                return (
+                  <View key={p.id} style={s.mobileCard}>
+                    <View style={s.mobileCardInfo}>
+                      <Text style={s.mobileCardName}>{p.profile?.full_name ?? 'Unknown'}</Text>
+                      <Text style={s.mobileCardSub}>{p.order_type === 'garland' ? 'Custom Garland' : 'Custom Flowers'} · {p.profile?.mobile ?? ''}</Text>
+                      <Text style={s.mobileCardRef} numberOfLines={1}>{p.razorpay_payment_id ?? p.razorpay_order_id}</Text>
+                    </View>
+                    <View style={s.mobileCardRight}>
+                      <Text style={s.mobileCardAmt}>{fmt(p.total_price)}</Text>
+                      <View style={[s.statusPill, { backgroundColor: cfg.bg }]}>
+                        <Text style={[s.statusText, { color: cfg.text }]}>{cfg.label}</Text>
+                      </View>
+                      <Text style={s.mobileCardDate}>{format(new Date(p.created_at), 'dd MMM yy')}</Text>
+                    </View>
+                  </View>
+                );
+              })
+            )
+          )
           )}
         </ScrollView>
       )}
@@ -276,15 +555,23 @@ const s = StyleSheet.create({
   summaryPillValue: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, marginTop: 2 },
   searchRow: { paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border, gap: Spacing[2] },
   searchRowWeb: { paddingHorizontal: Spacing[8] },
-  periodPills: { flexDirection: 'row', gap: Spacing[2] },
+  periodPills: { flexDirection: 'row', gap: Spacing[2], alignItems: 'center' },
   periodPill: { paddingVertical: Spacing[1], paddingHorizontal: Spacing[3], borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.neutral[50] },
   periodPillActive: { backgroundColor: Colors.primarySurface, borderColor: Colors.primary },
   periodPillText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
   periodPillTextActive: { color: Colors.primary, fontFamily: Typography.fontFamily.sansSemiBold },
+  periodDivider: { width: 1, height: 24, backgroundColor: Colors.border },
+  filterRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
+  rangeField: { width: 152 },
+  rangeClear: { padding: Spacing[2] },
   searchWrap: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], backgroundColor: Colors.neutral[50], borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingHorizontal: Spacing[3], paddingVertical: Spacing[2] },
   searchInput: { flex: 1, fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary, outlineStyle: 'none' } as any,
   tabScroll: { backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border, maxHeight: 48, flexGrow: 0 },
   tabs: { flexDirection: 'row', paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], gap: Spacing[2] },
+  sourceTabBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], paddingVertical: Spacing[2], paddingHorizontal: Spacing[4], borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.neutral[50] },
+  sourceTabBtnActive: { backgroundColor: Colors.primarySurface, borderColor: Colors.primary },
+  sourceTabText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
+  sourceTabTextActive: { color: Colors.primary, fontFamily: Typography.fontFamily.sansSemiBold },
   tabBtn: { paddingVertical: Spacing[1], paddingHorizontal: Spacing[3], borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.neutral[50] },
   tabBtnActive: { backgroundColor: Colors.primarySurface, borderColor: Colors.primary },
   tabText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },

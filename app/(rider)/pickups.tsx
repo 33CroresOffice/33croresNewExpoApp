@@ -49,7 +49,9 @@ interface PickupItem {
   unit_type: string | null;
   price_per_unit: number | null;
   total_price: number | null;
+  entered_price: number | null;
   price_set_by: 'vendor' | 'rider' | null;
+  garland_details: { quantity: number; size: string }[] | null;
   flower_type: { display_name: string; unit_type: string } | null;
 }
 
@@ -145,14 +147,14 @@ export default function RiderPickups() {
       }
       rId = riderData.id;
       setRiderId(rId);
-      const { data: cutoff } = await supabase.rpc('get_pickup_cutoff_time');
+      const { data: cutoff } = await supabase.rpc('get_flower_pickup_cutoff_time');
       setPickupCutoffTime(cutoff ?? null);
     }
 
     const { data, error } = await supabase
       .from('procurement_orders')
       .select(
-        'id, order_number, status, requirement_date, order_date, total_amount, notes, pickup_notes, pickup_assigned_at, picked_up_at, vendor:vendors(business_name, contact_person, mobile, address, city), items:procurement_order_items(id, flower_type_id, quantity, unit_type, price_per_unit, total_price, price_set_by, flower_type:flower_types(display_name, unit_type))'
+        'id, order_number, status, requirement_date, order_date, total_amount, notes, pickup_notes, pickup_assigned_at, picked_up_at, vendor:vendors(business_name, contact_person, mobile, address, city), items:procurement_order_items(id, flower_type_id, quantity, unit_type, price_per_unit, total_price, entered_price, price_set_by, garland_details, flower_type:flower_types(display_name, unit_type))'
       )
       .eq('pickup_rider_id', rId)
       .not('status', 'eq', 'cancelled')
@@ -186,6 +188,16 @@ export default function RiderPickups() {
     load();
   }, [load]);
 
+  // Realtime: reload when item_unavailability changes so vendor-side marks sync instantly
+  useEffect(() => {
+    const channel = supabase
+      .channel('rider-pickups-item-unavailability')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'item_unavailability' }, () => { load(); })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'item_unavailability' }, () => { load(); })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [load]);
+
   const onRefresh = () => {
     setRefreshing(true);
     load();
@@ -197,7 +209,8 @@ export default function RiderPickups() {
     setPickupError(null);
     const inputs: Record<string, string> = {};
     o.items?.forEach((it) => {
-      inputs[it.id] = it.total_price != null ? String(it.total_price) : '';
+      const display = it.entered_price != null ? it.entered_price : it.total_price;
+      inputs[it.id] = display != null ? String(display) : '';
     });
     setPriceInputs(inputs);
     // If every available item already has a price saved in DB, treat as already saved
@@ -236,8 +249,8 @@ export default function RiderPickups() {
       setShowUnavailableModal(false);
       setUnavailableReason('');
       setUnavailableTargetItemId(null);
-      // Update local state
-      setUnavailableItems(prev => ({ ...prev, [unavailableTargetItemId]: { reason: unavailableReason.trim() || null, status: 'pending' } }));
+      // Reload to sync with any vendor-side changes and confirm the insert
+      load();
     } catch (e: any) {
       setUnavailableError(e.message ?? 'Failed to mark item unavailable');
     }
@@ -247,7 +260,7 @@ export default function RiderPickups() {
   const markPickedUp = async () => {
     if (!selected) return;
     if (isPickupCutoffPassed()) {
-      setPickupError('Pickup time is already over.');
+      setPickupError('Flower pickup time is already over.');
       return;
     }
     // Only require prices for items that are NOT unavailable
@@ -270,7 +283,7 @@ export default function RiderPickups() {
     if (error) {
       const msg = error.message || '';
       if (msg.includes('cutoff') || msg.includes('check_violation')) {
-        setPickupError('Pickup time is already over.');
+        setPickupError('Flower pickup time is already over.');
       } else {
         setPickupError('Failed to mark as picked up. Try again.');
       }
@@ -285,7 +298,7 @@ export default function RiderPickups() {
     if (!selected?.items) return;
     setPriceError(null);
 
-    const updates: { id: string; price_per_unit: number; quantity: number }[] = [];
+    const updates: { id: string; price_per_unit: number; quantity: number; entered_price: number }[] = [];
     for (const it of selected.items) {
       // Vendor-set prices are locked — skip them
       if (it.price_set_by === 'vendor') continue;
@@ -301,7 +314,7 @@ export default function RiderPickups() {
       }
       const qty = Number(it.quantity);
       const perUnit = qty > 0 ? Math.round((totalPrice / qty) * 100) / 100 : 0;
-      updates.push({ id: it.id, price_per_unit: perUnit, quantity: qty });
+      updates.push({ id: it.id, price_per_unit: perUnit, quantity: qty, entered_price: totalPrice });
     }
 
     if (updates.length === 0) {
@@ -318,14 +331,13 @@ export default function RiderPickups() {
       }
     }
     for (const u of updates) {
-      // total_price is a generated column (quantity * price_per_unit) — computed by DB
-      const derivedTotal = Math.round(u.price_per_unit * u.quantity * 100) / 100;
-      newTotal += derivedTotal;
+      newTotal += u.entered_price;
       const { error } = await supabase
         .rpc('update_pickup_item_prices', {
           p_item_id: u.id,
           p_price_per_unit: u.price_per_unit,
           p_total_price: 0,
+          p_entered_price: u.entered_price,
         });
       if (error) {
         setSavingPrices(false);
@@ -348,7 +360,7 @@ export default function RiderPickups() {
 
     const updatedItems = selected.items.map((it) => {
       const u = updates.find((x) => x.id === it.id);
-      return u ? { ...it, price_per_unit: u.price_per_unit, total_price: Math.round(u.price_per_unit * u.quantity * 100) / 100 } : it;
+      return u ? { ...it, price_per_unit: u.price_per_unit, entered_price: u.entered_price, total_price: u.entered_price } : it;
     });
     setSelected({ ...selected, items: updatedItems, total_amount: Math.round(newTotal * 100) / 100 });
     setOrders((prev) => prev.map((o) => (o.id === selected.id ? { ...o, items: updatedItems, total_amount: Math.round(newTotal * 100) / 100 } : o)));
@@ -398,6 +410,15 @@ export default function RiderPickups() {
               <Text style={mStyles.itemQty}>
                 {Number(it.quantity)} {it.unit_type ?? it.flower_type?.unit_type ?? 'units'}
               </Text>
+              {it.garland_details && it.garland_details.length > 0 && (
+                <View style={mStyles.garlandBadgeRow}>
+                  {it.garland_details.map((g, gi) => (
+                    <View key={gi} style={mStyles.garlandBadge}>
+                      <Text style={mStyles.garlandBadgeText}>{g.quantity} Garland{g.quantity !== 1 ? 's' : ''}{g.size ? ` – ${g.size}` : ''}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
               {unavail && (
                 <View style={mStyles.unavailBadge}>
                   <XCircle size={10} color={Colors.error} strokeWidth={2} />
@@ -441,9 +462,9 @@ export default function RiderPickups() {
               </View>
             ) : (
               <View style={{ alignItems: 'flex-end' }}>
-                {it.total_price != null && (
+                {(it.entered_price ?? it.total_price) != null && (
                   <Text style={mStyles.itemPrice}>
-                    ₹{Number(it.total_price).toLocaleString('en-IN')}
+                    ₹{Number(it.entered_price ?? it.total_price).toLocaleString('en-IN')}
                   </Text>
                 )}
                 {it.price_per_unit != null && (
@@ -513,7 +534,7 @@ export default function RiderPickups() {
             {isPickupCutoffPassed() ? (
               <View style={[mStyles.pickupBtn, mStyles.pickupBtnDisabled]}>
                 <CheckCircle2 size={16} color="#FFF" strokeWidth={2} />
-                <Text style={mStyles.pickupBtnText}>Pickup time is already over</Text>
+                <Text style={mStyles.pickupBtnText}>Flower pickup time is already over</Text>
               </View>
             ) : (
               <TouchableOpacity
@@ -1117,6 +1138,9 @@ const mStyles = StyleSheet.create({
   },
   unavailBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
   unavailBadgeText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.error },
+  garlandBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
+  garlandBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.primarySurface, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
+  garlandBadgeText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.primary },
   unavailTag: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, paddingHorizontal: 10, backgroundColor: Colors.errorSurface, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.error + '30' },
   unavailTagText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.error },
   markUnavailBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 5, paddingHorizontal: 8, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.error + '40', backgroundColor: Colors.errorSurface, marginTop: 4 },

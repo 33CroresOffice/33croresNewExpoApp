@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
+import { BackHandler } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlertCircle, ArrowLeft, MapPin, Calendar, ChevronLeft, ChevronRight, RotateCcw, Clock } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
@@ -20,6 +21,8 @@ import Button from '@/components/ui/Button';
 import { format, addDays, startOfDay } from 'date-fns';
 import { getMinSubscriptionStartDate, isPastCutoffIST } from '@/utils/istCutoff';
 import RazorpayWebView from '@/components/ui/RazorpayWebView';
+import PaymentProcessingOverlay from '@/components/ui/PaymentProcessingOverlay';
+import { paymentState } from '@/utils/paymentState';
 
 let RazorpayCheckout: any = null;
 if (Platform.OS !== 'web') {
@@ -40,6 +43,8 @@ export default function CheckoutScreen() {
   const [paying, setPaying] = useState(false);
   const [error, setError] = useState('');
   const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
+  const [processing, setProcessing] = useState(false);
+  const [processingFailed, setProcessingFailed] = useState<string | null>(null);
 
   const pastCutoff = isPastCutoffIST();
   const minDate = renewalMinDate ?? getMinSubscriptionStartDate();
@@ -96,6 +101,15 @@ export default function CheckoutScreen() {
     }, [loading, loadAddresses])
   );
 
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (paying || processing || processingFailed) return true;
+      return false;
+    });
+    return () => sub.remove();
+  }, [paying, processing, processingFailed]);
+
   const formatPrice = (paise: number) => `₹${(paise / 100).toLocaleString('en-IN')}`;
 
   const invokeFn = async (fnName: string, body: object) => {
@@ -109,6 +123,8 @@ export default function CheckoutScreen() {
   };
 
   const completePayment = async (orderId: string) => {
+    setProcessing(true);
+    paymentState.start();
     const { data: verifyData, error: verifyError } = await invokeFn('verify-razorpay-payment', {
       razorpay_order_id: orderId,
       razorpay_payment_id: `pay_sim_${Date.now()}`,
@@ -118,8 +134,9 @@ export default function CheckoutScreen() {
       renew_from_subscription_id: renewFromSubscriptionId ?? null,
       start_date: format(startDate, 'yyyy-MM-dd'),
     });
+    paymentState.end();
     if (verifyError) {
-      setError(verifyData?.error || verifyError.message || 'Payment verification failed');
+      setProcessingFailed(verifyData?.error || verifyError.message || 'Payment verification failed');
       setPaying(false);
       return;
     }
@@ -129,7 +146,7 @@ export default function CheckoutScreen() {
         params: { subscriptionId: verifyData.subscription_id, isRenewal: renewFromSubscriptionId ? '1' : '0' },
       });
     } else {
-      setError(verifyData?.error || 'Payment failed. Please try again.');
+      setProcessingFailed(verifyData?.error || 'Payment failed. Please try again.');
       setPaying(false);
     }
   };
@@ -158,6 +175,8 @@ export default function CheckoutScreen() {
   const handleWebViewCallback = async (params: Record<string, string>) => {
     setWebViewUrl(null);
     setPaying(true);
+    setProcessing(true);
+    paymentState.start();
 
     try {
       const { data, error } = await supabase.functions.invoke('verify-razorpay-payment', {
@@ -173,9 +192,10 @@ export default function CheckoutScreen() {
           start_date: format(startDate, 'yyyy-MM-dd'),
         },
       });
+      paymentState.end();
 
       if (error || !data?.success) {
-        setError((data as any)?.error || error?.message || 'Payment verification failed. Please try again.');
+        setProcessingFailed((data as any)?.error || error?.message || 'Payment verification failed. Please try again.');
         setPaying(false);
       } else {
         router.replace({
@@ -184,7 +204,8 @@ export default function CheckoutScreen() {
         });
       }
     } catch (err) {
-      setError('Something went wrong: ' + String(err));
+      paymentState.end();
+      setProcessingFailed('Something went wrong. Please check your payment status in Orders before retrying.');
       setPaying(false);
     }
   };
@@ -215,6 +236,10 @@ export default function CheckoutScreen() {
   };
 
   const handlePay = async () => {
+    if (paymentState.isActive()) {
+      setError('A payment is already being processed. Please wait.');
+      return;
+    }
     if (!selectedAddress) {
       setError('Please add a delivery address before proceeding');
       return;
@@ -312,6 +337,8 @@ export default function CheckoutScreen() {
     razorpay_order_id: string;
     razorpay_signature: string;
   }) => {
+    setProcessing(true);
+    paymentState.start();
     const { data: verifyData, error: verifyError } = await invokeFn('verify-razorpay-payment', {
       razorpay_payment_id: paymentData.razorpay_payment_id,
       razorpay_order_id: paymentData.razorpay_order_id,
@@ -321,8 +348,9 @@ export default function CheckoutScreen() {
       renew_from_subscription_id: renewFromSubscriptionId ?? null,
       start_date: format(startDate, 'yyyy-MM-dd'),
     });
+    paymentState.end();
     if (verifyError) {
-      setError(verifyData?.error || verifyError.message || 'Payment verification failed');
+      setProcessingFailed(verifyData?.error || verifyError.message || 'Payment verification failed');
       setPaying(false);
       return;
     }
@@ -332,7 +360,7 @@ export default function CheckoutScreen() {
         params: { subscriptionId: verifyData.subscription_id, isRenewal: renewFromSubscriptionId ? '1' : '0' },
       });
     } else {
-      setError(verifyData?.error || 'Payment failed. Please try again.');
+      setProcessingFailed(verifyData?.error || 'Payment failed. Please try again.');
       setPaying(false);
     }
   };
@@ -357,7 +385,11 @@ export default function CheckoutScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          style={styles.backBtn}
+          disabled={paying || processing}
+        >
           <ArrowLeft size={22} color={Colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.title}>Checkout</Text>
@@ -508,6 +540,13 @@ export default function CheckoutScreen() {
           onCancel={() => { setWebViewUrl(null); setPaying(false); }}
         />
       )}
+
+      <PaymentProcessingOverlay
+        visible={processing || !!processingFailed}
+        status={processingFailed ? 'failed' : 'processing'}
+        message={processingFailed ?? undefined}
+        onDismiss={() => { setProcessingFailed(null); setPaying(false); }}
+      />
 
       <Modal visible={!!error} transparent animationType="fade" onRequestClose={() => setError('')}>
         <View style={styles.errorOverlay}>

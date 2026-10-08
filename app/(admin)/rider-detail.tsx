@@ -9,6 +9,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeft, Bike, Phone, MapPin, Package, CreditCard, Calendar, CircleCheck as CheckCircle, Circle as XCircle, Clock, Plus, X, Truck, Star, ChevronDown, ChevronRight, Pencil, CircleAlert as AlertCircle, Users, ChartBar as BarChart3, IndianRupee, BedDouble } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { format, subDays, subMonths, startOfMonth, endOfMonth } from 'date-fns';
+
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const todayISTStr = () => new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+const yesterdayISTStr = () => new Date(Date.now() + IST_OFFSET_MS - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -82,7 +86,10 @@ function RiderDetailScreenContent() {
 
   const [dateFrom, setDateFrom] = useState<Date | null>(null);
   const [dateTo, setDateTo] = useState<Date | null>(null);
-  const [deliveryDatePreset, setDeliveryDatePreset] = useState<'today' | 'yesterday' | 'custom' | null>('today');
+  const [deliveryDatePreset, setDeliveryDatePreset] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
+  const [assignedDatePreset, setAssignedDatePreset] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
+  const [assignedDateFrom, setAssignedDateFrom] = useState<Date | null>(null);
+  const [assignedDateTo, setAssignedDateTo] = useState<Date | null>(null);
   const [assignedOrdersFilter, setAssignedOrdersFilter] = useState<string>('all');
 
   const [showLeaveModal, setShowLeaveModal] = useState(false);
@@ -96,21 +103,73 @@ function RiderDetailScreenContent() {
 
   const load = useCallback(async () => {
     try {
-      const [riderRes, assignRes, deliveredRes, attRes, payoutRes, leaveRes, zoneRes, locRes] = await Promise.all([
+      const [riderRes, assignRes, attRes, payoutRes, leaveRes, zoneRes, locRes] = await Promise.all([
         supabase.from('riders').select('*').eq('id', id).maybeSingle(),
-        supabase.from('rider_order_assignments').select('*, order:orders(id, scheduled_date, status, user:profiles(full_name, mobile))').eq('rider_id', id).order('assigned_at', { ascending: false }).limit(50),
-        supabase.from('rider_order_assignments').select('*, order:orders(id, scheduled_date, status, user:profiles(full_name, mobile))').eq('rider_id', id).eq('status', 'delivered').order('delivered_at', { ascending: false }),
+        supabase.from('rider_order_assignments').select('*').eq('rider_id', id).neq('status', 'reassigned').order('assigned_at', { ascending: false }),
         supabase.from('rider_attendance').select('*').eq('rider_id', id).order('date', { ascending: false }).limit(60),
         supabase.from('rider_payouts').select('*').eq('rider_id', id).order('created_at', { ascending: false }),
         supabase.from('rider_leave_requests').select('*').eq('rider_id', id).order('leave_date', { ascending: false }),
         supabase.from('rider_zone_assignments').select('*, locality:localities(id, locality_name)').eq('rider_id', id).order('created_at', { ascending: false }),
         supabase.from('localities').select('id, locality_name').order('locality_name'),
       ]);
+
+      const rawAssignments = assignRes.data ?? [];
+      const orderIds = rawAssignments.map((a: any) => a.order_id).filter(Boolean);
+      const customOrderIds = rawAssignments.map((a: any) => a.custom_order_id).filter(Boolean);
+      const [ordersRes, customOrdersRes] = await Promise.all([
+        orderIds.length > 0
+          ? supabase.from('orders').select('id, scheduled_date, status, user_id, subscription_id').in('id', orderIds)
+          : Promise.resolve({ data: [] }),
+        customOrderIds.length > 0
+          ? supabase.from('custom_orders').select('id, delivery_date, status, user_id').in('id', customOrderIds)
+          : Promise.resolve({ data: [] }),
+      ]);
+
+      const orders = ordersRes.data ?? [];
+      const customOrders = customOrdersRes.data ?? [];
+      const subscriptionIds = orders.map((order: any) => order.subscription_id).filter(Boolean);
+      const profileIds = [...orders.map((order: any) => order.user_id), ...customOrders.map((order: any) => order.user_id)].filter(Boolean);
+      const [subscriptionsRes, profilesRes] = await Promise.all([
+        subscriptionIds.length > 0
+          ? supabase.from('subscriptions').select('id, status').in('id', subscriptionIds)
+          : Promise.resolve({ data: [] }),
+        profileIds.length > 0
+          ? supabase.from('profiles').select('id, full_name, mobile').in('id', profileIds)
+          : Promise.resolve({ data: [] }),
+      ]);
+
+      const orderMap: Record<string, any> = {};
+      const customOrderMap: Record<string, any> = {};
+      const subscriptionMap: Record<string, any> = {};
+      const profileMap: Record<string, any> = {};
+      (subscriptionsRes.data ?? []).forEach((subscription: any) => { subscriptionMap[subscription.id] = subscription; });
+      (profilesRes.data ?? []).forEach((profile: any) => { profileMap[profile.id] = profile; });
+      orders.forEach((order: any) => {
+        orderMap[order.id] = { ...order, subscription: subscriptionMap[order.subscription_id] ?? null, user: profileMap[order.user_id] ?? null };
+      });
+      customOrders.forEach((order: any) => {
+        customOrderMap[order.id] = { ...order, user: profileMap[order.user_id] ?? null };
+      });
+
+      const enrichedAssignments = rawAssignments.map((assignment: any) => ({
+        ...assignment,
+        order: assignment.order_id ? orderMap[assignment.order_id] ?? null : null,
+        custom_order: assignment.custom_order_id ? customOrderMap[assignment.custom_order_id] ?? null : null,
+      }));
+      const seen = new Set<string>();
+      const filteredAssignments = enrichedAssignments.filter((assignment: any) => {
+        const key = assignment.custom_order_id ?? assignment.order_id;
+        if (!key || seen.has(key)) return false;
+        if (assignment.order_id && assignment.order?.subscription && assignment.order.subscription.status !== 'active') return false;
+        seen.add(key);
+        return true;
+      });
+
       setZoneAssignments(zoneRes.data ?? []);
       setAllLocalities(locRes.data ?? []);
       if (riderRes.data) setRider(riderRes.data);
-      setAssignments(assignRes.data ?? []);
-      setDeliveredAssignments(deliveredRes.data ?? []);
+      setAssignments(filteredAssignments);
+      setDeliveredAssignments(filteredAssignments.filter((assignment: any) => assignment.status === 'delivered'));
       setAttendance(attRes.data ?? []);
       setPayouts(payoutRes.data ?? []);
       setLeaveRequests(leaveRes.data ?? []);
@@ -224,10 +283,19 @@ function RiderDetailScreenContent() {
   };
 
   const fmt = (n: number) => `₹${n.toLocaleString('en-IN')}`;
+  const getAssignmentTargetId = (assignment: any) => assignment.order_id ?? assignment.custom_order_id;
+  const getAssignmentLabel = (assignment: any) => assignment.order_id
+    ? `Order #${assignment.order_id.slice(-8).toUpperCase()}`
+    : assignment.custom_order_id
+      ? `Custom order #${assignment.custom_order_id.slice(-8).toUpperCase()}`
+      : 'Invalid assignment';
+  const getAssignmentCustomer = (assignment: any) => assignment.order?.user ?? assignment.custom_order?.user;
+  const getAssignmentScheduledDate = (assignment: any) => assignment.order?.scheduled_date ?? assignment.custom_order?.delivery_date ?? null;
+  const getAssignmentTypeLabel = (assignment: any) => assignment.order_id ? 'Subscription' : 'Customize';
 
-  const totalDeliveries = assignments.filter(a => a.status === 'delivered').length;
+  const totalDeliveries = deliveredAssignments.length;
   const totalFailed = assignments.filter(a => a.status === 'failed').length;
-  const successRate = assignments.length > 0 ? Math.round(totalDeliveries / assignments.length * 100) : 0;
+  const successRate = (totalDeliveries + totalFailed) > 0 ? Math.round(totalDeliveries / (totalDeliveries + totalFailed) * 100) : 0;
   const presentDays = attendance.filter(a => a.status === 'present').length;
   const halfDays = attendance.filter(a => a.status === 'half_day').length;
   const totalPaid = payouts.filter(p => p.status === 'paid').reduce((s, p) => s + p.final_amount, 0);
@@ -256,7 +324,7 @@ function RiderDetailScreenContent() {
   const TABS: { key: Tab; label: string; count?: number }[] = [
     { key: 'overview',       label: 'Overview' },
     { key: 'assigned_orders', label: 'Assigned Orders', count: assignments.length },
-    { key: 'assignments',     label: 'Deliveries', count: assignments.length },
+    { key: 'assignments',     label: 'Deliveries', count: deliveredAssignments.length },
     { key: 'attendance',  label: 'Attendance', count: attendance.length },
     { key: 'payouts',     label: 'Payouts',    count: payouts.length },
     { key: 'leave',       label: 'Leave',      count: leaveRequests.length },
@@ -367,20 +435,23 @@ function RiderDetailScreenContent() {
                 assignments.slice(0, 5).map(a => {
                   const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
                   return (
-                    <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => a.order_id && router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
+                    <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => getAssignmentTargetId(a) && router.push({ pathname: a.order_id ? '/(admin)/order-detail' as any : '/(admin)/custom-order-detail' as any, params: { id: getAssignmentTargetId(a) } })} activeOpacity={0.8}>
                       <View style={[s.assignStatusBar, { backgroundColor: cfg.color }]} />
                       <View style={s.assignBody}>
                         <View style={s.assignTop}>
-                          <Text style={s.assignOrderId}>{a.order_id ? `Order #${a.order_id.slice(-8).toUpperCase()}` : 'Unlinked assignment'}</Text>
+                          <Text style={s.assignOrderId}>{getAssignmentLabel(a)}</Text>
+                          <View style={[s.orderTypeBadge, a.order_id ? s.subscriptionBadge : s.customizeBadge]}>
+                            <Text style={[s.orderTypeBadgeText, { color: a.order_id ? Colors.primary : Colors.accentDark }]}>{getAssignmentTypeLabel(a)}</Text>
+                          </View>
                           <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
                             <Text style={[s.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
                           </View>
                         </View>
-                        {a.order?.user && <Text style={s.assignCustomer}>{a.order.user.full_name ?? a.order.user.mobile}</Text>}
+                        {getAssignmentCustomer(a) && <Text style={s.assignCustomer}>{getAssignmentCustomer(a).full_name ?? getAssignmentCustomer(a).mobile}</Text>}
                         <View style={s.assignMeta}>
                           <Calendar size={11} color={Colors.textTertiary} strokeWidth={1.8} />
                           <Text style={s.assignDate}>{format(new Date(a.assigned_at), 'dd MMM · HH:mm')}</Text>
-                          {a.order?.scheduled_date && <><Text style={s.dot}>·</Text><Text style={s.assignDate}>{format(new Date(a.order.scheduled_date), 'dd MMM yyyy')}</Text></>}
+                          {getAssignmentScheduledDate(a) && <><Text style={s.dot}>·</Text><Text style={s.assignDate}>{format(new Date(getAssignmentScheduledDate(a)!), 'dd MMM yyyy')}</Text></>}
                         </View>
                       </View>
                       <ChevronRight size={14} color={Colors.textTertiary} strokeWidth={1.8} />
@@ -395,9 +466,19 @@ function RiderDetailScreenContent() {
         {/* ASSIGNED ORDERS */}
         {activeTab === 'assigned_orders' && (() => {
           const statusFilter = assignedOrdersFilter;
-          const filtered = statusFilter === 'all'
-            ? assignments
-            : assignments.filter(a => a.status === statusFilter);
+          const filtered = assignments.filter(a => {
+            if (statusFilter !== 'all' && a.status !== statusFilter) return false;
+            const date = (getAssignmentScheduledDate(a) ?? a.assigned_at ?? '').slice(0, 10);
+            const todayStr = todayISTStr();
+            const yesterdayStr = yesterdayISTStr();
+            if (assignedDatePreset === 'today' && date !== todayStr) return false;
+            if (assignedDatePreset === 'yesterday' && date !== yesterdayStr) return false;
+            if (assignedDatePreset === 'custom') {
+              if (assignedDateFrom && date < format(assignedDateFrom, 'yyyy-MM-dd')) return false;
+              if (assignedDateTo && date > format(assignedDateTo, 'yyyy-MM-dd')) return false;
+            }
+            return true;
+          });
           return (
           <>
             <View style={[s.assignStats, isWeb && s.assignStatsWeb]}>
@@ -408,7 +489,7 @@ function RiderDetailScreenContent() {
             </View>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
-              {(['all', 'assigned', 'accepted', 'picked_up', 'delivered', 'failed', 'reassigned'] as const).map(st => {
+              {(['all', 'assigned', 'accepted', 'picked_up', 'delivered', 'failed'] as const).map(st => {
                 const count = st === 'all' ? assignments.length : assignments.filter(a => a.status === st).length;
                 const cfg = st === 'all' ? null : ASSIGN_STATUS_CONFIG[st] ?? ASSIGN_STATUS_CONFIG.assigned;
                 const isActive = statusFilter === st;
@@ -428,26 +509,57 @@ function RiderDetailScreenContent() {
               })}
             </ScrollView>
 
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
+              {(['all', 'today', 'yesterday', 'custom'] as const).map(key => (
+                <TouchableOpacity
+                  key={key}
+                  style={[s.attMonthChip, assignedDatePreset === key && s.attMonthChipActive]}
+                  onPress={() => {
+                    setAssignedDatePreset(key);
+                    if (key !== 'custom') { setAssignedDateFrom(null); setAssignedDateTo(null); }
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[s.attMonthChipText, assignedDatePreset === key && s.attMonthChipTextActive]}>
+                    {key === 'all' ? 'All dates' : key === 'today' ? 'Today' : key === 'yesterday' ? 'Yesterday' : 'Custom date'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            {assignedDatePreset === 'custom' && (
+              <View style={[s.dateFilterRow, isWeb && s.dateFilterRowWeb]}>
+                <View style={s.dateFilterPicker}>
+                  <DatePickerField label="From" value={assignedDateFrom} onChange={setAssignedDateFrom} maxDate={assignedDateTo ?? undefined} />
+                </View>
+                <View style={s.dateFilterPicker}>
+                  <DatePickerField label="To" value={assignedDateTo} onChange={setAssignedDateTo} minDate={assignedDateFrom ?? undefined} />
+                </View>
+              </View>
+            )}
+
             {filtered.length === 0 ? (
-              <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={assignments.length === 0 ? 'No orders assigned yet' : 'No orders match this filter'} sub={assignments.length === 0 ? 'Assign orders to this rider to see them here.' : 'Try a different status filter.'} />
+              <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={assignments.length === 0 ? 'No orders assigned yet' : 'No orders match this filter'} sub={assignments.length === 0 ? 'Assign orders to this rider to see them here.' : 'Try a different status or date filter.'} />
             ) : (
               filtered.map(a => {
                 const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
                 return (
-                  <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => a.order_id && router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
+                  <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => getAssignmentTargetId(a) && router.push({ pathname: a.order_id ? '/(admin)/order-detail' as any : '/(admin)/custom-order-detail' as any, params: { id: getAssignmentTargetId(a) } })} activeOpacity={0.8}>
                     <View style={[s.assignStatusBar, { backgroundColor: cfg.color }]} />
                     <View style={s.assignBody}>
                       <View style={s.assignTop}>
-                        <Text style={s.assignOrderId}>{a.order_id ? `Order #${a.order_id.slice(-8).toUpperCase()}` : 'Unlinked assignment'}</Text>
+                        <Text style={s.assignOrderId}>{getAssignmentLabel(a)}</Text>
+                        <View style={[s.orderTypeBadge, a.order_id ? s.subscriptionBadge : s.customizeBadge]}>
+                          <Text style={[s.orderTypeBadgeText, { color: a.order_id ? Colors.primary : Colors.accentDark }]}>{getAssignmentTypeLabel(a)}</Text>
+                        </View>
                         <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
                           <Text style={[s.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
                         </View>
                       </View>
-                      {a.order?.user && <Text style={s.assignCustomer}>{a.order.user.full_name ?? a.order.user.mobile}</Text>}
+                      {getAssignmentCustomer(a) && <Text style={s.assignCustomer}>{getAssignmentCustomer(a).full_name ?? getAssignmentCustomer(a).mobile}</Text>}
                       <View style={s.assignMeta}>
                         <Calendar size={11} color={Colors.textTertiary} strokeWidth={1.8} />
                         <Text style={s.assignDate}>{format(new Date(a.assigned_at), 'dd MMM yyyy · HH:mm')}</Text>
-                        {a.order?.scheduled_date && <><Text style={s.dot}>·</Text><Text style={s.assignDate}>Due: {format(new Date(a.order.scheduled_date), 'dd MMM yyyy')}</Text></>}
+                        {getAssignmentScheduledDate(a) && <><Text style={s.dot}>·</Text><Text style={s.assignDate}>Due: {format(new Date(getAssignmentScheduledDate(a)!), 'dd MMM yyyy')}</Text></>}
                         {a.delivery_fee > 0 && <><Text style={s.dot}>·</Text><Text style={s.assignFee}>{fmt(a.delivery_fee)}</Text></>}
                         {a.distance_km && <><Text style={s.dot}>·</Text><Text style={s.assignDist}>{a.distance_km} km</Text></>}
                       </View>
@@ -469,14 +581,15 @@ function RiderDetailScreenContent() {
           <>
             <View style={[s.assignStats, isWeb && s.assignStatsWeb]}>
               <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.success }]}>{deliveredAssignments.length}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.error }]}>0</Text><Text style={s.assignStatLabel}>Failed</Text></View>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>0</Text><Text style={s.assignStatLabel}>In Progress</Text></View>
-              <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{deliveredAssignments.length > 0 ? '100%' : '0%'}</Text><Text style={s.assignStatLabel}>Success</Text></View>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.error }]}>{assignments.filter(a => a.status === 'failed').length}</Text><Text style={s.assignStatLabel}>Failed</Text></View>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>{assignments.filter(a => ['assigned', 'accepted', 'picked_up'].includes(a.status)).length}</Text><Text style={s.assignStatLabel}>In Progress</Text></View>
+              <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{(deliveredAssignments.length + assignments.filter(a => a.status === 'failed').length) > 0 ? `${Math.round(deliveredAssignments.length / (deliveredAssignments.length + assignments.filter(a => a.status === 'failed').length) * 100)}%` : '0%'}</Text><Text style={s.assignStatLabel}>Success</Text></View>
             </View>
 
             {/* Date Preset Chips */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
               {([
+                { key: 'all', label: 'All dates' },
                 { key: 'today', label: 'Today' },
                 { key: 'yesterday', label: 'Yesterday' },
                 { key: 'custom', label: 'Custom Date' },
@@ -490,7 +603,7 @@ function RiderDetailScreenContent() {
                       if (opt.key === 'custom') {
                         setDeliveryDatePreset('custom');
                       } else {
-                        setDeliveryDatePreset(prev => prev === opt.key ? null : opt.key);
+                        setDeliveryDatePreset(opt.key);
                         setDateFrom(null);
                         setDateTo(null);
                       }
@@ -522,8 +635,8 @@ function RiderDetailScreenContent() {
             )}
 
             {(() => {
-              const todayStr = format(new Date(), 'yyyy-MM-dd');
-              const yesterdayStr = format(subDays(new Date(), 1), 'yyyy-MM-dd');
+              const todayStr = todayISTStr();
+              const yesterdayStr = yesterdayISTStr();
               const filtered = deliveredAssignments.filter(a => {
                 const d = a.delivered_at ? a.delivered_at.slice(0, 10) : (a.assigned_at ? a.assigned_at.slice(0, 10) : '');
                 if (deliveryDatePreset === 'today' && d !== todayStr) return false;
@@ -540,16 +653,19 @@ function RiderDetailScreenContent() {
                 filtered.map(a => {
                 const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
                 return (
-                  <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => a.order_id && router.push({ pathname: '/(admin)/order-detail' as any, params: { id: a.order_id } })} activeOpacity={0.8}>
+                  <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => getAssignmentTargetId(a) && router.push({ pathname: a.order_id ? '/(admin)/order-detail' as any : '/(admin)/custom-order-detail' as any, params: { id: getAssignmentTargetId(a) } })} activeOpacity={0.8}>
                     <View style={[s.assignStatusBar, { backgroundColor: cfg.color }]} />
                     <View style={s.assignBody}>
                       <View style={s.assignTop}>
-                        <Text style={s.assignOrderId}>{a.order_id ? `Order #${a.order_id.slice(-8).toUpperCase()}` : 'Unlinked assignment'}</Text>
+                        <Text style={s.assignOrderId}>{getAssignmentLabel(a)}</Text>
+                        <View style={[s.orderTypeBadge, a.order_id ? s.subscriptionBadge : s.customizeBadge]}>
+                          <Text style={[s.orderTypeBadgeText, { color: a.order_id ? Colors.primary : Colors.accentDark }]}>{getAssignmentTypeLabel(a)}</Text>
+                        </View>
                         <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
                           <Text style={[s.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
                         </View>
                       </View>
-                      {a.order?.user && <Text style={s.assignCustomer}>{a.order.user.full_name ?? a.order.user.mobile}</Text>}
+                      {getAssignmentCustomer(a) && <Text style={s.assignCustomer}>{getAssignmentCustomer(a).full_name ?? getAssignmentCustomer(a).mobile}</Text>}
                       <View style={s.assignMeta}>
                         <Calendar size={11} color={Colors.textTertiary} strokeWidth={1.8} />
                         <Text style={s.assignDate}>{format(new Date(a.delivered_at ?? a.assigned_at), 'dd MMM · HH:mm')}</Text>
@@ -1071,6 +1187,10 @@ const s = StyleSheet.create({
   swapNote: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.warning, marginTop: 2 },
   statusBadge: { paddingHorizontal: Spacing[2], paddingVertical: 3, borderRadius: Radius.full },
   statusBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11 },
+  orderTypeBadge: { paddingHorizontal: Spacing[2], paddingVertical: 3, borderRadius: Radius.full },
+  subscriptionBadge: { backgroundColor: Colors.primarySurface },
+  customizeBadge: { backgroundColor: Colors.accentSurface },
+  orderTypeBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10 },
   attStats: { flexDirection: 'row', gap: Spacing[3] },
   attStatsWeb: { gap: Spacing[4] },
   attMonthChips: { flexDirection: 'row', gap: Spacing[2], paddingVertical: Spacing[1] },

@@ -92,6 +92,7 @@ export default function AdminLayout() {
       <Tabs.Screen name="procurement-orders"  options={{ href: null }} />
       <Tabs.Screen name="warehouse-receipts"  options={{ href: null }} />
       <Tabs.Screen name="procurement-order-detail" options={{ href: null }} />
+      <Tabs.Screen name="record-vendor-payment"   options={{ href: null }} />
 <Tabs.Screen name="finance"             options={{ href: null }} />
       <Tabs.Screen name="finance-payments"    options={{ href: null }} />
       <Tabs.Screen name="vendor-payments"       options={{ href: null }} />
@@ -113,6 +114,7 @@ export default function AdminLayout() {
       <Tabs.Screen name="admin-login-logs"          options={{ href: null }} />
       <Tabs.Screen name="logs"                     options={{ href: null }} />
       <Tabs.Screen name="create-subscription"      options={{ href: null }} />
+      <Tabs.Screen name="notification-module"      options={{ href: null }} />
       <Tabs.Screen name="notification-templates"   options={{ href: null }} />
       <Tabs.Screen name="notification-logs"        options={{ href: null }} />
       <Tabs.Screen name="send-notification"        options={{ href: null }} />

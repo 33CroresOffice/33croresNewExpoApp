@@ -18,9 +18,11 @@ import {
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
-import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, parseISO } from 'date-fns';
+import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, parseISO, isBefore, startOfDay } from 'date-fns';
 import { resolveRider } from '@/utils/riderLookup';
 import { todayISTString, performAttendanceCheckIn, getCheckInErrorMessage } from '@/utils/attendanceCheckIn';
+import { getCurrentMonthIST } from '@/utils/riderPeriod';
+import { calculateMonthlyAttendanceCounts } from '@/utils/monthlyAttendance';
 
 const GRADIENT_TOP = '#1A2E3A';
 const GRADIENT_MID = '#1E3D50';
@@ -86,6 +88,8 @@ export default function RiderAttendance() {
   const [refreshing, setRefreshing] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
   const [geoError, setGeoError] = useState('');
+  const [rankingPresentDays, setRankingPresentDays] = useState<number | null>(null);
+  const [rankingAbsentDays, setRankingAbsentDays] = useState<number | null>(null);
 
   // Selected date (ISO string yyyy-MM-dd), default today
   const [selectedDate, setSelectedDate] = useState<string>(todayISTString());
@@ -109,22 +113,44 @@ export default function RiderAttendance() {
       setRiderId(rId);
     }
 
-    const [attendRes, locRes] = await Promise.all([
+    const currentMonthStr = getCurrentMonthIST();
+
+    const [attendRes, locRes, rankingRes] = await Promise.all([
       supabase
         .from('rider_attendance')
         .select('id, date, status, check_in_time, check_out_time, notes')
         .eq('rider_id', rId)
         .gte('date', format(monthStart, 'yyyy-MM-dd'))
         .lte('date', format(monthEnd, 'yyyy-MM-dd'))
-        .order('date', { ascending: false }),
+        .order('date', { ascending: false })
+        .order('created_at', { ascending: false }),
       supabase
         .from('attendance_locations')
         .select('id, name, latitude, longitude, radius_meters')
         .eq('is_active', true),
+      supabase
+        .from('rider_monthly_rankings')
+        .select('present_days, absent_days')
+        .eq('rider_id', rId)
+        .eq('month', currentMonthStr)
+        .maybeSingle(),
     ]);
 
-    if (attendRes.data) setAttendance(attendRes.data as AttendanceRecord[]);
+    if (attendRes.data) {
+      const latestByDate = new Map<string, AttendanceRecord>();
+      (attendRes.data as AttendanceRecord[]).forEach((record) => {
+        if (!latestByDate.has(record.date)) latestByDate.set(record.date, record);
+      });
+      setAttendance(Array.from(latestByDate.values()));
+    }
     if (locRes.data) setLocations(locRes.data as AttendanceLocation[]);
+    if (rankingRes.data) {
+      setRankingPresentDays(rankingRes.data.present_days ?? null);
+      setRankingAbsentDays(rankingRes.data.absent_days ?? null);
+    } else {
+      setRankingPresentDays(null);
+      setRankingAbsentDays(null);
+    }
     setLoading(false);
     setRefreshing(false);
   }, [profile?.id, riderId]);
@@ -302,21 +328,28 @@ export default function RiderAttendance() {
       const { coordinates, matchedLocation } = await performAttendanceCheckIn(locations);
 
       const todayStr = todayISTString();
-      const { error } = await supabase
+      const { data: savedRecord, error } = await supabase
         .from('rider_attendance')
         .upsert({
           rider_id: riderId,
           date: todayStr,
           status: 'present' as const,
+          notes: '',
           check_in_time: new Date().toISOString(),
           check_in_location_id: matchedLocation.id,
           check_in_latitude: coordinates.latitude,
           check_in_longitude: coordinates.longitude,
-        }, { onConflict: 'rider_id,date' });
+        }, { onConflict: 'rider_id,date' })
+        .select('id, date, status, check_in_time, check_out_time, notes')
+        .maybeSingle();
 
-      if (error) {
+      if (error || !savedRecord) {
         setGeoError('Could not save your attendance. Please check your connection and try again.');
       } else {
+        setAttendance((previous) => [
+          savedRecord as AttendanceRecord,
+          ...previous.filter((record) => record.date !== todayStr),
+        ]);
         await load();
       }
     } catch (err) {
@@ -327,16 +360,33 @@ export default function RiderAttendance() {
   };
 
   // ── Derived ────────────────────────────────────────────────────────────────
+  const getRecordForDate = (date: string): AttendanceRecord | null => {
+    const records = attendance.filter((record) => record.date === date);
+    return records.find((record) => record.status === 'present') ?? records[0] ?? null;
+  };
+
   const getRecordForDay = (day: Date): AttendanceRecord | null =>
-    attendance.find((a) => isSameDay(parseISO(a.date), day)) ?? null;
+    getRecordForDate(format(day, 'yyyy-MM-dd'));
 
-  const selectedRecord = attendance.find((a) => a.date === selectedDate) ?? null;
+  const selectedRecord = getRecordForDate(selectedDate);
   const todayStr = todayISTString();
-  const todayRecord = attendance.find((a) => a.date === todayStr) ?? null;
+  const todayRecord = getRecordForDate(todayStr);
 
-  const presentCount = attendance.filter((a) => a.status === 'present').length;
-  const absentCount  = attendance.filter((a) => a.status === 'absent').length;
-  const daysElapsed  = Math.min(new Date().getDate(), daysInMonth.length);
+  // Past days (before today IST) with no DB record — used for calendar coloring only
+  const todayDateObj = startOfDay(new Date());
+  const implicitAbsentDays = daysInMonth.filter((day) => {
+    if (!isBefore(startOfDay(day), todayDateObj)) return false;
+    return !attendance.some((r) => r.date === format(day, 'yyyy-MM-dd'));
+  });
+
+  const calculatedCounts = calculateMonthlyAttendanceCounts(
+    attendance,
+    getCurrentMonthIST(),
+    todayStr,
+  );
+  const presentCount = calculatedCounts.present;
+  const absentCount = calculatedCounts.absent;
+  const daysElapsed = Math.min(new Date().getDate() - 1, daysInMonth.length);
 
   const attendanceRate = daysElapsed > 0
     ? Math.round((presentCount / daysElapsed) * 100)
@@ -370,14 +420,22 @@ export default function RiderAttendance() {
             const isToday = isSameDay(day, todayDate);
             const dateStr = format(day, 'yyyy-MM-dd');
             const isSelected = selectedDate === dateStr;
-            const statusConf = record ? STATUS_CONFIG[record.status] : null;
+            const isPast = isBefore(startOfDay(day), startOfDay(todayDate));
+            const isImplicitAbsent = isPast && !record;
+            const statusConf = record
+              ? STATUS_CONFIG[record.status]
+              : isImplicitAbsent
+                ? STATUS_CONFIG.absent
+                : null;
 
             return (
               <TouchableOpacity
                 key={day.toISOString()}
                 style={[
                   calStyles.dayCell,
-                  statusConf && !isSelected && { backgroundColor: statusConf.bg },
+                  statusConf && !isSelected && {
+                    backgroundColor: isImplicitAbsent ? '#FFEBEE' : statusConf.bg,
+                  },
                   isSelected && calStyles.selectedCell,
                   isToday && !isSelected && calStyles.todayCell,
                 ]}
@@ -386,14 +444,20 @@ export default function RiderAttendance() {
               >
                 <Text style={[
                   calStyles.dayNumber,
-                  statusConf && !isSelected && { color: statusConf.color },
+                  statusConf && !isSelected && {
+                    color: isImplicitAbsent ? '#EF9A9A' : statusConf.color,
+                  },
                   isToday && !isSelected && calStyles.todayNumber,
                   isSelected && calStyles.selectedNumber,
                 ]}>
                   {format(day, 'd')}
                 </Text>
                 {statusConf && !isSelected && (
-                  <statusConf.Icon size={10} color={statusConf.color} strokeWidth={2} />
+                  <statusConf.Icon
+                    size={10}
+                    color={isImplicitAbsent ? '#EF9A9A' : statusConf.color}
+                    strokeWidth={2}
+                  />
                 )}
                 {isSelected && (
                   <View style={calStyles.selectedDot} />
@@ -476,7 +540,13 @@ export default function RiderAttendance() {
   const renderSelectedDayPanel = () => {
     const isToday = selectedDate === todayStr;
     const selectedDateObj = parseISO(selectedDate);
-    const conf = selectedRecord ? STATUS_CONFIG[selectedRecord.status] : null;
+    const isPastDay = isBefore(startOfDay(selectedDateObj), startOfDay(new Date()));
+    const isSelectedImplicitAbsent = isPastDay && !selectedRecord;
+    const conf = selectedRecord
+      ? STATUS_CONFIG[selectedRecord.status]
+      : isSelectedImplicitAbsent
+        ? STATUS_CONFIG.absent
+        : null;
 
     return (
       <View style={styles.dayPanel}>
@@ -490,9 +560,17 @@ export default function RiderAttendance() {
             </View>
           </View>
           {conf ? (
-            <View style={[styles.dayPanelBadge, { backgroundColor: conf.bg }]}>
-              <conf.Icon size={12} color={conf.color} strokeWidth={2} />
-              <Text style={[styles.dayPanelBadgeText, { color: conf.color }]}>{conf.label}</Text>
+            <View style={[
+              styles.dayPanelBadge,
+              { backgroundColor: isSelectedImplicitAbsent ? '#FFEBEE' : conf.bg },
+            ]}>
+              <conf.Icon size={12} color={isSelectedImplicitAbsent ? '#EF9A9A' : conf.color} strokeWidth={2} />
+              <Text style={[
+                styles.dayPanelBadgeText,
+                { color: isSelectedImplicitAbsent ? '#EF9A9A' : conf.color },
+              ]}>
+                {conf.label}
+              </Text>
             </View>
           ) : (
             <View style={[styles.dayPanelBadge, { backgroundColor: Colors.neutral[100] }]}>
@@ -607,45 +685,77 @@ export default function RiderAttendance() {
     );
   };
 
-  const renderAttendanceLog = () =>
-    attendance.length === 0 ? (
-      <View style={styles.emptyState}>
-        <CalendarDays size={32} color={Colors.textTertiary} strokeWidth={1.5} />
-        <Text style={styles.emptyTitle}>No records this month</Text>
-      </View>
-    ) : (
+  const renderAttendanceLog = () => {
+    // Merge DB records with implicit absent days, sorted newest first
+    type LogEntry = { key: string; date: string; record: AttendanceRecord | null; implicit: boolean };
+    const logEntries: LogEntry[] = [];
+
+    // Add all DB records
+    attendance.forEach((record) => {
+      logEntries.push({ key: record.id, date: record.date, record, implicit: false });
+    });
+
+    // Add implicit absents (past days with no record)
+    implicitAbsentDays.forEach((day) => {
+      const dateStr = format(day, 'yyyy-MM-dd');
+      logEntries.push({ key: `implicit-${dateStr}`, date: dateStr, record: null, implicit: true });
+    });
+
+    // Sort newest first
+    logEntries.sort((a, b) => b.date.localeCompare(a.date));
+
+    if (logEntries.length === 0) {
+      return (
+        <View style={styles.emptyState}>
+          <CalendarDays size={32} color={Colors.textTertiary} strokeWidth={1.5} />
+          <Text style={styles.emptyTitle}>No records this month</Text>
+        </View>
+      );
+    }
+
+    return (
       <View style={styles.listCard}>
-        {attendance.map((record, i) => {
-          const conf = STATUS_CONFIG[record.status];
-          const isSelected = record.date === selectedDate;
+        {logEntries.map((entry, i) => {
+          const conf = entry.record ? STATUS_CONFIG[entry.record.status] : STATUS_CONFIG.absent;
+          const isSelected = entry.date === selectedDate;
+          const isImplicit = entry.implicit;
           return (
             <TouchableOpacity
-              key={record.id}
-              style={[styles.listRow, i === attendance.length - 1 && styles.listRowLast, isSelected && styles.listRowSelected]}
-              onPress={() => setSelectedDate(record.date)}
+              key={entry.key}
+              style={[
+                styles.listRow,
+                i === logEntries.length - 1 && styles.listRowLast,
+                isSelected && styles.listRowSelected,
+                isImplicit && styles.listRowImplicitAbsent,
+              ]}
+              onPress={() => setSelectedDate(entry.date)}
               activeOpacity={0.75}
             >
-              <View style={[styles.listIconWrap, { backgroundColor: conf.bg }]}>
-                <conf.Icon size={16} color={conf.color} strokeWidth={1.8} />
+              <View style={[styles.listIconWrap, { backgroundColor: isImplicit ? '#FFEBEE' : conf.bg }]}>
+                <conf.Icon size={16} color={isImplicit ? '#EF9A9A' : conf.color} strokeWidth={1.8} />
               </View>
               <View style={styles.listInfo}>
-                <Text style={styles.listDate}>{format(parseISO(record.date), 'EEEE, dd MMMM')}</Text>
-                {record.check_in_time && (
+                <Text style={styles.listDate}>{format(parseISO(entry.date), 'EEEE, dd MMMM')}</Text>
+                {entry.record?.check_in_time && (
                   <Text style={styles.listMeta}>
-                    In: {format(new Date(record.check_in_time), 'hh:mm a')}
-                    {record.check_out_time ? `  ·  Out: ${format(new Date(record.check_out_time), 'hh:mm a')}` : ''}
+                    In: {format(new Date(entry.record.check_in_time), 'hh:mm a')}
+                    {entry.record.check_out_time ? `  ·  Out: ${format(new Date(entry.record.check_out_time), 'hh:mm a')}` : ''}
                   </Text>
                 )}
-                {record.notes ? <Text style={styles.listNotes} numberOfLines={1}>{record.notes}</Text> : null}
+                {isImplicit && (
+                  <Text style={styles.listMeta}>No check-in recorded</Text>
+                )}
+                {entry.record?.notes ? <Text style={styles.listNotes} numberOfLines={1}>{entry.record.notes}</Text> : null}
               </View>
-              <View style={[styles.statusBadge, { backgroundColor: conf.bg }]}>
-                <Text style={[styles.statusBadgeText, { color: conf.color }]}>{conf.label}</Text>
+              <View style={[styles.statusBadge, { backgroundColor: isImplicit ? '#FFEBEE' : conf.bg }]}>
+                <Text style={[styles.statusBadgeText, { color: isImplicit ? '#EF9A9A' : conf.color }]}>{conf.label}</Text>
               </View>
             </TouchableOpacity>
           );
         })}
       </View>
     );
+  };
 
   return (
     <View style={[styles.container, { backgroundColor: '#EEF2F5' }]}>
@@ -1031,6 +1141,7 @@ const styles = StyleSheet.create({
   },
   listRowLast: { borderBottomWidth: 0 },
   listRowSelected: { backgroundColor: Colors.primarySurface },
+  listRowImplicitAbsent: { opacity: 0.85 },
   listIconWrap: {
     width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', flexShrink: 0,
   },

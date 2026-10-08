@@ -28,6 +28,8 @@ import { SubscriptionPlan, FlowerType, PlanFlowerRequirement, UnitType, ProductT
 import Badge from '@/components/ui/Badge';
 import PoojaPackageModal from '@/components/admin/PoojaPackageModal';
 
+type PlanTab = 'active' | 'inactive';
+
 const FREQ_OPTIONS = [
   { label: 'Weekly', value: 'weekly' },
   { label: 'Bi-weekly', value: 'biweekly' },
@@ -80,6 +82,11 @@ function AdminPlansScreenContent() {
   const [uploadingImage, setUploadingImage] = useState(false);
   const [flowerModalPlan, setFlowerModalPlan] = useState<SubscriptionPlan | null>(null);
   const [poojaModalPlan, setPoojaModalPlan] = useState<SubscriptionPlan | null>(null);
+  const [planTab, setPlanTab] = useState<PlanTab>('active');
+
+  const activePlans = plans.filter(plan => plan.is_active);
+  const inactivePlans = plans.filter(plan => !plan.is_active);
+  const filteredPlans = planTab === 'active' ? activePlans : inactivePlans;
 
   const load = async () => {
     try {
@@ -537,7 +544,7 @@ function AdminPlansScreenContent() {
             </View>
             <View>
               <Text style={s.pageTitle}>Subscription Plans</Text>
-              <Text style={s.pageSubtitle}>{plans.length} plans · {plans.filter(p => p.is_active).length} active</Text>
+              <Text style={s.pageSubtitle}>{plans.length} plans · {activePlans.length} active</Text>
             </View>
           </View>
           <TouchableOpacity style={s.createBtn} onPress={openCreate} activeOpacity={0.85}>
@@ -546,22 +553,26 @@ function AdminPlansScreenContent() {
           </TouchableOpacity>
         </View>
 
+        <PlanTabs activeTab={planTab} activeCount={activePlans.length} inactiveCount={inactivePlans.length} onChange={setPlanTab} />
+
         {/* Plan grid */}
         {loading ? (
           <View style={s.loadingWrap}><ActivityIndicator color={Colors.primary} /></View>
-        ) : plans.length === 0 ? (
+        ) : filteredPlans.length === 0 ? (
           <View style={s.emptyWrap}>
             <Package size={48} color={Colors.textDisabled} strokeWidth={1.2} />
-            <Text style={s.emptyTitle}>No plans yet</Text>
-            <Text style={s.emptySub}>Create your first subscription plan to get started.</Text>
-            <TouchableOpacity style={s.createBtn} onPress={openCreate}>
-              <Plus size={16} color={Colors.white} strokeWidth={2.5} />
-              <Text style={s.createBtnText}>Create Plan</Text>
-            </TouchableOpacity>
+            <Text style={s.emptyTitle}>{planTab === 'active' ? 'No active plans' : 'No inactive plans'}</Text>
+            <Text style={s.emptySub}>{planTab === 'active' ? 'Plans that are currently active will appear here.' : 'Inactive or hidden plans will appear here.'}</Text>
+            {plans.length === 0 && (
+              <TouchableOpacity style={s.createBtn} onPress={openCreate}>
+                <Plus size={16} color={Colors.white} strokeWidth={2.5} />
+                <Text style={s.createBtnText}>Create Plan</Text>
+              </TouchableOpacity>
+            )}
           </View>
         ) : (
           <View style={s.planGrid}>
-            {plans.map(plan => (
+            {filteredPlans.map(plan => (
               <PlanCard key={plan.id} plan={plan} />
             ))}
           </View>
@@ -592,26 +603,63 @@ function AdminPlansScreenContent() {
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
       >
+        <PlanTabs activeTab={planTab} activeCount={activePlans.length} inactiveCount={inactivePlans.length} onChange={setPlanTab} />
+
         {loading ? (
           <View style={s.loadingWrap}><ActivityIndicator color={Colors.primary} /></View>
-        ) : plans.length === 0 ? (
+        ) : filteredPlans.length === 0 ? (
           <View style={s.emptyWrap}>
             <Package size={48} color={Colors.textDisabled} strokeWidth={1.2} />
-            <Text style={s.emptyTitle}>No plans yet</Text>
-            <Text style={s.emptySub}>Create your first subscription plan to get started.</Text>
-            <TouchableOpacity style={s.createBtn} onPress={openCreate}>
-              <Plus size={16} color={Colors.white} strokeWidth={2.5} />
-              <Text style={s.createBtnText}>Create Plan</Text>
-            </TouchableOpacity>
+            <Text style={s.emptyTitle}>{planTab === 'active' ? 'No active plans' : 'No inactive plans'}</Text>
+            <Text style={s.emptySub}>{planTab === 'active' ? 'Plans that are currently active will appear here.' : 'Inactive or hidden plans will appear here.'}</Text>
+            {plans.length === 0 && (
+              <TouchableOpacity style={s.createBtn} onPress={openCreate}>
+                <Plus size={16} color={Colors.white} strokeWidth={2.5} />
+                <Text style={s.createBtnText}>Create Plan</Text>
+              </TouchableOpacity>
+            )}
           </View>
         ) : (
           <View style={s.planList}>
-            {plans.map(plan => (
+            {filteredPlans.map(plan => (
               <PlanCard key={plan.id} plan={plan} />
             ))}
           </View>
         )}
       </ScrollView>
+    </View>
+  );
+}
+
+function PlanTabs({
+  activeTab,
+  activeCount,
+  inactiveCount,
+  onChange,
+}: {
+  activeTab: PlanTab;
+  activeCount: number;
+  inactiveCount: number;
+  onChange: (tab: PlanTab) => void;
+}) {
+  return (
+    <View style={s.tabs}>
+      {([
+        { key: 'active' as const, label: 'Active Plans', count: activeCount },
+        { key: 'inactive' as const, label: 'Inactive Plans', count: inactiveCount },
+      ]).map(tab => (
+        <TouchableOpacity
+          key={tab.key}
+          style={[s.tab, activeTab === tab.key && s.tabActive]}
+          onPress={() => onChange(tab.key)}
+          activeOpacity={0.8}
+        >
+          <Text style={[s.tabText, activeTab === tab.key && s.tabTextActive]}>{tab.label}</Text>
+          <View style={[s.tabCount, activeTab === tab.key && s.tabCountActive]}>
+            <Text style={[s.tabCountText, activeTab === tab.key && s.tabCountTextActive]}>{tab.count}</Text>
+          </View>
+        </TouchableOpacity>
+      ))}
     </View>
   );
 }
@@ -885,6 +933,15 @@ const s = StyleSheet.create({
   pageSubtitle: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary, marginTop: 2 },
   createBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: Colors.primary, paddingHorizontal: 16, paddingVertical: 10, borderRadius: Radius.md },
   createBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white },
+  tabs: { flexDirection: 'row', alignSelf: 'stretch', backgroundColor: Colors.neutral[100], borderRadius: Radius.md, padding: 4, gap: 4 },
+  tab: { flex: 1, minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: Spacing[3], borderRadius: Radius.sm },
+  tabActive: { backgroundColor: Colors.white, ...Shadow.sm },
+  tabText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textTertiary },
+  tabTextActive: { color: Colors.primary, fontFamily: Typography.fontFamily.sansSemiBold },
+  tabCount: { minWidth: 22, height: 22, paddingHorizontal: 6, borderRadius: Radius.full, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.neutral[200] },
+  tabCountActive: { backgroundColor: Colors.primarySurface },
+  tabCountText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  tabCountTextActive: { color: Colors.primary },
 
   // Plan grid (web)
   planGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing[4] },

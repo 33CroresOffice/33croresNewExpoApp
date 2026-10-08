@@ -24,6 +24,8 @@ import { useRouter } from 'expo-router';
 import { resolveRider } from '@/utils/riderLookup';
 import { todayISTString, performAttendanceCheckIn, getCheckInErrorMessage } from '@/utils/attendanceCheckIn';
 import { getCurrentMonthIST, getMonthRangeIST } from '@/utils/riderPeriod';
+import { calculateMonthlyAttendanceCounts } from '@/utils/monthlyAttendance';
+import { calculateOnTimeDeliveryDays } from '@/utils/onTimeDelivery';
 
 
 const GRADIENT_TOP = '#1A2E3A';
@@ -143,18 +145,40 @@ export default function RiderDashboard() {
     setTodayAttendance(todayAttendRes.data ?? null);
     setAttendanceLocations((locRes.data ?? []) as any[]);
 
-    const [rankRes, topRankingsRes, incentivesRes, evaluationsRes, referralsRes, referralConfigRes] = await Promise.all([
+    const [rankRes, topRankingsRes, incentivesRes, evaluationsRes, referralsRes, referralConfigRes, monthAttendRes, monthAssignRes] = await Promise.all([
       supabase.from('rider_monthly_rankings').select('rank_position, score, on_time_attendance_days, on_time_delivery_days, total_earned, deliveries, present_days, absent_days').eq('rider_id', riderData.id).eq('month', currentMonth).maybeSingle(),
-      supabase.from('rider_monthly_rankings').select('rider_id, rank_position, score, deliveries, present_days, total_earned').eq('month', currentMonth).order('rank_position', { ascending: true }).limit(3),
-      supabase.from('rider_incentives').select('id, name, amount, type, evaluation_basis, bonus_category').eq('is_active', true),
+      supabase.from('rider_monthly_rankings').select('rider_id, rank_position, score, deliveries, present_days, total_earned').eq('month', currentMonth).order('rank_position', { ascending: true }),
+      supabase.from('rider_incentives').select('id, name, amount, type, evaluation_basis, bonus_category, cutoff_time').eq('is_active', true),
       supabase.from('rider_incentive_evaluations').select('incentive_id, status, earned_amount').eq('rider_id', riderData.id).eq('month', currentMonth),
       supabase.from('rider_referrals').select('id, approval_status, reward_amount, completed_delivery_days, required_delivery_days, referred_name, referred_mobile').eq('referrer_rider_id', riderData.id),
       supabase.from('referral_config').select('reward_amount, required_completion_days').eq('is_active', true).order('created_at').limit(1).maybeSingle(),
+      supabase.from('rider_attendance').select('date, status').eq('rider_id', riderData.id).gte('date', monthStart).lt('date', nextMonth),
+      supabase.from('rider_order_assignments').select('order_id, custom_order_id, status, delivered_at').eq('rider_id', riderData.id).neq('status', 'reassigned').gte('assigned_at', monthStartISO).lt('assigned_at', nextMonthISO),
     ]);
+
+    const monthAssignments = (monthAssignRes.data ?? []) as any[];
+    const subOrderIds = monthAssignments.filter((a) => a.order_id).map((a) => a.order_id);
+    const customOrderIds = monthAssignments.filter((a) => a.custom_order_id).map((a) => a.custom_order_id);
+    const [monthOrdersRes, monthCustomOrdersRes] = await Promise.all([
+      subOrderIds.length > 0
+        ? supabase.from('orders').select('id, scheduled_date').in('id', subOrderIds)
+        : Promise.resolve({ data: [] }),
+      customOrderIds.length > 0
+        ? supabase.from('custom_orders').select('id, delivery_date').in('id', customOrderIds)
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const deliveryCutoff = ((incentivesRes.data ?? []) as any[]).find((i) => i.bonus_category === 'on_time_delivery')?.cutoff_time ?? null;
+    const liveOnTimeDeliveryDays = calculateOnTimeDeliveryDays(
+      monthAssignments,
+      (monthOrdersRes.data ?? []) as any[],
+      (monthCustomOrdersRes.data ?? []) as any[],
+      deliveryCutoff,
+    );
 
     const myRanking = rankRes.data as any;
     const onTimeAttendCount = Number(myRanking?.on_time_attendance_days ?? 0);
-    const onTimeDeliverCount = Number(myRanking?.on_time_delivery_days ?? 0);
+    const onTimeDeliverCount = liveOnTimeDeliveryDays;
 
     const referralRows = (referralsRes.data ?? []) as any[];
     const refConfig = referralConfigRes.data as any;
@@ -173,12 +197,18 @@ export default function RiderDashboard() {
       pendingCount,
     });
 
+    const monthlyCounts = calculateMonthlyAttendanceCounts(
+      (monthAttendRes.data ?? []) as any[],
+      currentMonth,
+      todayStr,
+    );
+
     setOnTimeAttendance(onTimeAttendCount);
     setOnTimeDelivery(onTimeDeliverCount);
     setMetrics({
       deliveries: Number(myRanking?.deliveries ?? 0),
-      present: Number(myRanking?.present_days ?? 0),
-      absent: Number(myRanking?.absent_days ?? 0),
+      present: monthlyCounts.present,
+      absent: monthlyCounts.absent,
     });
 
     const evaluationMap = new Map<string, { status: string; earned_amount: number }>();
@@ -194,6 +224,7 @@ export default function RiderDashboard() {
       const basis = incentive.evaluation_basis ?? incentive.type;
       const category = incentive.bonus_category;
       const evaluation = evaluationMap.get(incentive.id);
+      const noLeaveDisqualified = category === 'no_leave' && monthlyCounts.absent > 0;
       let eligibleCount = 0;
       let unitLabel = basis === 'per_day' ? 'days' : 'month';
 
@@ -203,7 +234,7 @@ export default function RiderDashboard() {
       } else if (category === 'on_time_delivery') {
         eligibleCount = onTimeDeliverCount;
         unitLabel = 'days';
-      } else if (evaluation?.status === 'passed' && amount > 0) {
+      } else if (!noLeaveDisqualified && evaluation?.status === 'passed' && amount > 0) {
         eligibleCount = basis === 'per_day'
           ? Math.round(evaluation.earned_amount / amount)
           : 1;
@@ -235,10 +266,11 @@ export default function RiderDashboard() {
     const rankingRows = (topRankingsRes.data ?? []) as any[];
     if (rankingRows.length > 0) {
       const riderIds = rankingRows.map((entry: any) => entry.rider_id);
-      const { data: riderNames } = await supabase.from('riders').select('id, full_name, profile_photo_url').in('id', riderIds);
+      const { data: riderNames } = await supabase.from('riders').select('id, full_name, profile_photo_url, is_active').in('id', riderIds).eq('is_active', true);
       const riderMap = new Map<string, { full_name: string; profile_photo_url: string | null }>();
       (riderNames ?? []).forEach((entry: any) => riderMap.set(entry.id, { full_name: entry.full_name, profile_photo_url: entry.profile_photo_url ?? null }));
-      setRankings(rankingRows.map((entry: any) => ({
+      const activeRankingRows = rankingRows.filter((entry: any) => riderMap.has(entry.rider_id)).slice(0, 3);
+      setRankings(activeRankingRows.map((entry: any) => ({
         rider_id: entry.rider_id,
         rider_name: riderMap.get(entry.rider_id)?.full_name ?? 'Rider',
         rank_position: entry.rank_position,

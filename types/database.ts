@@ -15,10 +15,22 @@ export type NotificationChannel = 'sms' | 'whatsapp' | 'push' | 'in_app';
 export type NotificationEventType =
   | 'subscription_expiring_3days'
   | 'subscription_expiring_1day'
+  | 'subscription_expiring_5days'
+  | 'subscription_expiring_today'
   | 'subscription_expired'
+  | 'subscription_expired_1day'
+  | 'subscription_expired_3days'
+  | 'subscription_expired_5days'
+  | 'subscription_expired_10days'
+  | 'subscription_expired_15days'
+  | 'subscription_expired_30days'
+  | 'subscription_expired_90days'
+  | 'subscription_expired_180days'
   | 'subscription_renewed'
   | 'subscription_activated'
   | 'subscription_paused'
+  | 'subscription_starting_tomorrow'
+  | 'subscription_resuming_tomorrow'
   | 'payment_pending'
   | 'payment_received'
   | 'renewal_due'
@@ -41,7 +53,26 @@ export type NotificationEventType =
   | 'booking_payment_completed_pandit'
   | 'booking_payment_completed_customer'
   | 'booking_settled'
+  | 'item_unavailable'
+  | 'custom_order_placed'
+  | 'custom_order_priced'
+  | 'custom_order_delivered'
+  | 'special_info'
+  | 'festival_greeting'
+  | 'marketing_promo'
+  | 'vendor_procurement_order'
+  | 'vendor_payment_received'
+  | 'vendor_welcome'
+  | 'admin_custom_order_alert'
+  | 'admin_unassigned_alert'
+  | 'admin_rider_no_show'
+  | 'admin_vendor_payment_overdue'
+  | 'admin_cron_failure'
+  | 'admin_daily_digest'
   | 'custom';
+
+export type NotificationRecipientType = 'customer' | 'vendor' | 'admin';
+export type NotificationPriority = 'normal' | 'high' | 'critical';
 
 export interface PanjiEntry {
   id: string;
@@ -111,7 +142,12 @@ export interface NotificationTemplate {
   msg91_template_id: string | null;
   msg91_whatsapp_template_id: string | null;
   msg91_whatsapp_namespace: string | null;
+  msg91_whatsapp_variables: string[] | null;
   send_at_days_before: number | null;
+  recipient_type: NotificationRecipientType;
+  priority: NotificationPriority;
+  sound_enabled: boolean;
+  reminder_stage: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -135,6 +171,8 @@ export interface NotificationLog {
   subscription_id: string | null;
   order_id: string | null;
   triggered_by: string | null;
+  recipient_type: NotificationRecipientType;
+  reminder_stage: string | null;
   created_at: string;
   user?: Pick<Profile, 'id' | 'full_name' | 'mobile'>;
   triggered_by_profile?: Pick<Profile, 'id' | 'full_name'>;
@@ -165,6 +203,10 @@ export interface InAppNotification {
   related_subscription_id: string | null;
   related_order_id: string | null;
   related_booking_id: string | null;
+  related_procurement_order_id: string | null;
+  priority: NotificationPriority;
+  dismissed_at: string | null;
+  metadata: Record<string, unknown>;
   created_at: string;
 }
 
@@ -172,6 +214,7 @@ export interface NotificationPreferences {
   user_id: string;
   push_enabled: boolean;
   in_app_enabled: boolean;
+  marketing_enabled: boolean;
   updated_at: string;
 }
 

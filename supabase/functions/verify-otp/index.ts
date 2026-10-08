@@ -48,8 +48,9 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Demo account: accept fixed OTP 123456 without database lookup
-    if (mobile === "9876543210" && String(otp) === "123456") {
+    // Demo accounts: accept fixed OTP 123456 without an OTP request
+    if ((mobile === "9876543210" || mobile === "9999999999") && String(otp) === "123456") {
+      const isDemoRider = mobile === "9999999999";
       const secret = (await getSecret(supabase, "OTP_SECRET")) ?? "";
       const password = `petal_${mobile}_${secret}`;
       const email = `${mobile}@petal.app`;
@@ -98,12 +99,45 @@ Deno.serve(async (req: Request) => {
         const { error: profileError } = await supabase.from("profiles").insert({
           id: userId,
           mobile,
-          full_name: "Demo User",
+          full_name: isDemoRider ? "Demo Rider" : "Demo User",
           role: "customer",
           is_verified: true,
         });
         if (profileError) {
           console.error("Demo profile creation error:", profileError);
+        }
+      }
+
+      if (isDemoRider) {
+        const { data: existingRider } = await supabase
+          .from("riders")
+          .select("id")
+          .eq("mobile", mobile)
+          .maybeSingle();
+
+        if (existingRider) {
+          await supabase
+            .from("riders")
+            .update({ profile_id: userId, is_active: true, approval_status: "approved" })
+            .eq("id", existingRider.id);
+        } else {
+          const { error: riderError } = await supabase.from("riders").insert({
+            profile_id: userId,
+            full_name: "Demo Rider",
+            mobile,
+            vehicle_type: "bike",
+            vehicle_number: "DEMO-001",
+            zone: "General",
+            is_active: true,
+            approval_status: "approved",
+          });
+          if (riderError) {
+            console.error("Demo rider creation error:", riderError);
+            return new Response(
+              JSON.stringify({ success: false, error: "Unable to prepare demo rider account" }),
+              { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
         }
       }
 

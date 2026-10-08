@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Image, TextInput, ScrollView } from 'react-native';
 import { router, usePathname } from 'expo-router';
 import {
   LayoutDashboard, ClipboardList, Flower2, Users, LogOut, ChevronRight,
@@ -7,7 +7,7 @@ import {
   Receipt, CreditCard, ChartPie as PieChart, Tag, MessageSquare, Bike,
   MapPin, ShieldCheck, Activity, CirclePlus as PlusCircle, Smartphone, Building2,
   Bell, Send, FileText, UserCog, Shield, CalendarDays, ShieldCheck as LoginLogIcon,
-  KeyRound, Truck, CircleDollarSign, Zap, SlidersHorizontal, Wallet, Clock, Sparkles, Flame, Inbox, Award,
+  KeyRound, Truck, CircleDollarSign, Zap, SlidersHorizontal, Wallet, Clock, Sparkles, Flame, Inbox, Award, Search, X,
 } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius } from '@/constants/theme';
 import { useAuthStore } from '@/store/authStore';
@@ -46,6 +46,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: 'Customize Order',  icon: Sparkles,        href: '/(admin)/customize-order' },
       { label: 'Customers',        icon: Users,           href: '/(admin)/operations-customers' },
       { label: 'Payment History',  icon: CreditCard,     href: '/(admin)/payment-history' },
+      { label: 'Check Payment',     icon: ClipboardList,  href: '/(admin)/check-payment' },
     ],
   },
   {
@@ -78,8 +79,9 @@ const NAV_SECTIONS: NavSection[] = [
     module: 'finance',
     items: [
       { label: 'Overview', icon: BarChart3,  href: '/(admin)/finance' },
-      { label: 'Payments', icon: CreditCard, href: '/(admin)/finance-payments' },
+      { label: 'Payment Received', icon: CreditCard, href: '/(admin)/finance-payments' },
       { label: 'Vendor Payments', icon: CircleDollarSign, href: '/(admin)/vendor-payments' },
+      { label: 'Flower Payments', icon: Flower2, href: '/(admin)/flower-payments' },
       { label: 'Rider Payouts', icon: Wallet,     href: '/(admin)/rider-payouts' },
       { label: 'Expenses', icon: Receipt,    href: '/(admin)/expenses' },
       { label: 'Ledger',   icon: PieChart,   href: '/(admin)/ledger' },
@@ -124,9 +126,10 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Notifications',
     module: 'notifications',
     items: [
-      { label: 'Templates',         icon: FileText, href: '/(admin)/notification-templates' },
-      { label: 'Send Notification', icon: Send,     href: '/(admin)/send-notification' },
-      { label: 'Delivery Logs',     icon: Bell,     href: '/(admin)/notification-logs' },
+      { label: 'Notification Module', icon: Zap,       href: '/(admin)/notification-module' },
+      { label: 'Templates',           icon: FileText,  href: '/(admin)/notification-templates' },
+      { label: 'Send Notification',   icon: Send,      href: '/(admin)/send-notification' },
+      { label: 'Delivery Logs',       icon: Bell,      href: '/(admin)/notification-logs' },
     ],
   },
   {
@@ -145,11 +148,14 @@ const SYSTEM_ITEMS: (NavItem & { module: string })[] = [
   { label: 'Roles & Access',    icon: Shield,       href: '/(admin)/roles',             module: 'roles' },
   { label: 'Secret Keys',       icon: KeyRound,     href: '/(admin)/secret-keys',      module: 'secret_keys' },
   { label: 'Cron Monitor',      icon: Clock,        href: '/(admin)/cron-monitor',     module: 'logs' },
+  { label: 'Cron Management',   icon: Clock,        href: '/(admin)/cron-management', module: 'logs' },
 ];
 
 export default function AdminSidebar() {
   const pathname = usePathname();
+  const [search, setSearch] = useState('');
   const { signOut, profile, isSuperAdmin, adminRole, hasModule, customRoleName, customRoleColor } = useAuthStore();
+  const q = search.trim().toLowerCase();
 
   const isActive = (href: string) => {
     if (href === '/(admin)') return pathname === '/' || pathname === '/(admin)' || pathname === '/index';
@@ -178,6 +184,18 @@ export default function AdminSidebar() {
   const visibleSections = NAV_SECTIONS.filter((s) => hasModule(s.module));
   const visibleSystemItems = SYSTEM_ITEMS.filter((i) => isSuperAdmin || hasModule(i.module));
 
+  const searchableItems = [
+    ...visibleSections.flatMap((s) =>
+      s.items
+        .filter((item) => !item.superAdminOnly || isSuperAdmin)
+        .map((item) => ({ ...item, section: s.title })),
+    ),
+    ...visibleSystemItems.map((item) => ({ ...item, section: 'System' })),
+  ];
+  const searchResults = q
+    ? searchableItems.filter((item) => item.label.toLowerCase().includes(q))
+    : null;
+
   return (
     <View style={styles.sidebar}>
       <View style={styles.brand}>
@@ -188,7 +206,47 @@ export default function AdminSidebar() {
         </View>
       </View>
 
+      <View style={styles.searchWrap}>
+        <Search size={14} color={Colors.textTertiary} strokeWidth={1.8} />
+        <TextInput
+          style={styles.searchInput}
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search menu..."
+          placeholderTextColor={Colors.textDisabled}
+        />
+        {search.length > 0 && (
+          <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <X size={13} color={Colors.textTertiary} strokeWidth={2} />
+          </TouchableOpacity>
+        )}
+      </View>
+
       <View style={[styles.nav, { overflowY: 'auto' } as any]}>
+        {searchResults ? (
+          searchResults.length === 0 ? (
+            <Text style={styles.searchEmpty}>No menu items found</Text>
+          ) : (
+            <ScrollView keyboardShouldPersistTaps="handled">
+              {searchResults.map((item) => (
+                <TouchableOpacity
+                  key={item.href + item.label}
+                  style={[styles.navItem, isActive(item.href) && styles.navItemActive]}
+                  onPress={() => router.push(item.href as any)}
+                >
+                  <item.icon size={17} color={isActive(item.href) ? Colors.primary : Colors.textSecondary} strokeWidth={isActive(item.href) ? 2.2 : 1.8} />
+                  <View style={styles.searchResultInfo}>
+                    <Text style={[styles.navLabel, isActive(item.href) && styles.navLabelActive]} numberOfLines={1}>
+                      {item.label}
+                    </Text>
+                    <Text style={styles.searchSection}>{item.section}</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )
+        ) : (
+        <>
         {visibleSections.map((section) => (
           <View key={section.title} style={styles.section}>
             <Text style={styles.sectionLabel}>{section.title.toUpperCase()}</Text>
@@ -201,6 +259,8 @@ export default function AdminSidebar() {
             <Text style={styles.sectionLabel}>SYSTEM</Text>
             {visibleSystemItems.map(renderNavItem)}
           </View>
+        )}
+        </>
         )}
       </View>
 
@@ -266,6 +326,40 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing[3],
     paddingHorizontal: Spacing[3],
     gap: Spacing[1],
+  },
+  searchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+    marginHorizontal: Spacing[3],
+    marginTop: Spacing[3],
+    paddingHorizontal: Spacing[3],
+    height: 34,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.neutral[50],
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  searchInput: {
+    flex: 1,
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+    paddingVertical: 0,
+  },
+  searchResultInfo: { flex: 1 },
+  searchSection: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: 10,
+    color: Colors.textTertiary,
+    marginTop: 1,
+  },
+  searchEmpty: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textTertiary,
+    paddingHorizontal: Spacing[3],
+    paddingVertical: Spacing[3],
   },
   section: { marginBottom: Spacing[2] },
   sectionLabel: {

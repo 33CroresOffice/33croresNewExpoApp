@@ -4,20 +4,21 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Bike, UserMinus, Square, CheckSquare, ChevronRight, Truck, MapPin, User, RefreshCw, AlertCircle, Filter, ChevronDown, ArrowUp, ArrowDown, ListOrdered, ArrowRightLeft, Zap, CircleCheck as CheckCircle } from 'lucide-react-native';
+import { ArrowLeft, Bike, UserMinus, Square, CheckSquare, ChevronRight, Truck, MapPin, User, RefreshCw, AlertCircle, Filter, ChevronDown, ArrowUp, ArrowDown, ListOrdered, ArrowRightLeft, Zap, CircleCheck as CheckCircle, Star } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { usePageVisibility } from '@/hooks/usePageVisibility';
-import { format, parseISO, startOfToday } from 'date-fns';
+import { format } from 'date-fns';
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import DatePickerField from '@/components/ui/DatePickerField';
 import { getEffectiveStatus } from '@/utils/subscriptionStatus';
 
-type Tab = 'assigned' | 'unassigned';
+type Tab = 'assigned' | 'unassigned' | 'history';
 
 interface AssignedOrder {
   assignment_id: string;
   order_id: string | null;
+  subscription_id: string | null;
   status: string;
   subscription_status: string;
   scheduled_date: string;
@@ -37,6 +38,8 @@ interface AssignedOrder {
   swapped_from_rider_id: string | null;
   swap_reason: string | null;
   auto_assigned: boolean;
+  is_primary_rider: boolean;
+  standing_only: boolean;
 }
 
 interface UnassignedOrder {
@@ -70,10 +73,12 @@ const SUBSCRIPTION_STATUS_CONFIG: Record<string, { label: string; color: string;
   paused:    { label: 'Paused',    color: '#B45309', bg: '#FEF3C7' },
   expired:   { label: 'Expired',   color: '#DC2626', bg: '#FEE2E2' },
   pending:   { label: 'Pending',   color: '#D97706', bg: '#FFEDD5' },
-  cancelled: { label: 'Cancelled', color: '#6B7280', bg: '#F3F4F6' },
+  cancelled: { label: 'Discontinued', color: '#6B7280', bg: '#F3F4F6' },
   renewed:       { label: 'Renewed',       color: '#0369A1', bg: '#E0F2FE' },
   scheduled_pause:{ label: 'Pause Scheduled', color: '#7C3AED', bg: '#EDE9FE' },
 };
+
+const ACTIVE_ASSIGNMENT_STATUSES = ['assigned', 'accepted', 'picked_up', 'delivered'];
 
 export default function RiderAssignmentOrdersScreen() {
   return (
@@ -109,43 +114,31 @@ function RiderAssignmentOrdersContent() {
   const [riders, setRiders] = useState<any[]>([]);
   const [leaveSet, setLeaveSet] = useState<Set<string>>(new Set());
   const [activeCountMap, setActiveCountMap] = useState<Map<string, number>>(new Map());
-  const [showReassignedOnly, setShowReassignedOnly] = useState(false);
 
   const [redistributing, setRedistributing] = useState(false);
-  const [redistributeResult, setRedistributeResult] = useState<{ redistributed: number; failed: number } | null>(null);
+  const [redistributeResult, setRedistributeResult] = useState<{ redistributed: number; failed: number; skipped_primary: number } | null>(null);
   const [showRedistributeResult, setShowRedistributeResult] = useState(false);
 
-  const [showManualReassignModal, setShowManualReassignModal] = useState(false);
-  const [manualReassignRider, setManualReassignRider] = useState<any | null>(null);
-  const [manualReassignStartDate, setManualReassignStartDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [manualReassignEndDate, setManualReassignEndDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [manualReassignOrders, setManualReassignOrders] = useState<any[]>([]);
-  const [manualAllOrders, setManualAllOrders] = useState<any[]>([]);
-  const [manualSelectedIds, setManualSelectedIds] = useState<Set<string>>(new Set());
-  const [manualReplacementRider, setManualReplacementRider] = useState<any | null>(null);
-  const [manualRiderSearch, setManualRiderSearch] = useState('');
-  const [manualLoadingOrders, setManualLoadingOrders] = useState(false);
-  const [manualReassigning, setManualReassigning] = useState(false);
-  const [showManualConfirm, setShowManualConfirm] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [assignedRes, unassignedRes, ridersRes, leaveRes] = await Promise.all([
+      const [assignedRes, unassignedRes, ridersRes, leaveRes, subsRes] = await Promise.all([
         supabase
           .from('rider_order_assignments')
           .select(`
             id, order_id, status, assigned_at, delivery_sequence, rider_id, swapped_from_rider_id, swap_reason, auto_assigned,
             order:orders(
-              id, scheduled_date, status,
+              id, scheduled_date, status, subscription_id,
               user:profiles(full_name, mobile),
-              subscription:subscriptions(status, start_date, end_date, new_end_date, pause_start_date, pause_until, plan:subscription_plans(name), delivery_address:addresses(apartment_name, street, landmark, city, state, pincode))
+              subscription:subscriptions(status, start_date, end_date, new_end_date, pause_start_date, pause_until, primary_rider_id, plan:subscription_plans(name), delivery_address:addresses(apartment_name, street, landmark, city, state, pincode))
             ),
             rider:riders!rider_order_assignments_rider_id_fkey(full_name, mobile)
           `)
-          .in('status', ['assigned', 'accepted', 'picked_up'])
-          .order('assigned_at', { ascending: false }),
+          .in('status', [...ACTIVE_ASSIGNMENT_STATUSES, 'delivered', 'failed', 'reassigned'])
+          .order('assigned_at', { ascending: false })
+          .limit(500),
         supabase
           .from('orders')
           .select(`
@@ -157,21 +150,25 @@ function RiderAssignmentOrdersContent() {
           .order('scheduled_date', { ascending: true }),
         supabase.from('riders').select('id, full_name, mobile, zone, vehicle_type, is_active').eq('is_active', true).order('full_name'),
         supabase.from('rider_leave_requests').select('rider_id, leave_date, end_date').eq('status', 'approved'),
+        supabase
+          .from('subscriptions')
+          .select(`
+            id, status, start_date, end_date, new_end_date, pause_start_date, pause_until, next_delivery_date, primary_rider_id,
+            plan:subscription_plans(name),
+            user:profiles(full_name, mobile),
+            delivery_address:addresses(apartment_name, street, landmark, city, state, pincode)
+          `)
+          .not('primary_rider_id', 'is', null),
       ]);
 
       if (assignedRes.error) throw new Error(assignedRes.error.message);
       if (unassignedRes.error) throw new Error(unassignedRes.error.message);
+      if (subsRes.error) throw new Error(subsRes.error.message);
 
       setRiders(ridersRes.data ?? []);
       const today = new Date().toISOString().split('T')[0];
       const leaves = new Set((leaveRes.data ?? []).filter((l: any) => l.leave_date <= today && l.end_date >= today).map((l: any) => l.rider_id as string));
       setLeaveSet(leaves);
-
-      const countMap = new Map<string, number>();
-      (assignedRes.data ?? []).filter((a: any) => ['assigned', 'accepted', 'picked_up'].includes(a.status)).forEach((a: any) => {
-        countMap.set(a.rider_id, (countMap.get(a.rider_id) ?? 0) + 1);
-      });
-      setActiveCountMap(countMap);
 
       const todayStr = new Date().toISOString().split('T')[0];
       const activeSubsRes = await supabase
@@ -185,12 +182,14 @@ function RiderAssignmentOrdersContent() {
       const assigned: AssignedOrder[] = (assignedRes.data ?? []).map((row: any) => ({
         assignment_id: row.id,
         order_id: row.order_id ?? null,
+        subscription_id: row.order?.subscription_id ?? null,
         status: row.status,
         delivery_sequence: row.delivery_sequence ?? null,
         rider_id: row.rider_id ?? '',
         swapped_from_rider_id: row.swapped_from_rider_id ?? null,
         swap_reason: row.swap_reason ?? null,
         auto_assigned: row.auto_assigned ?? false,
+        is_primary_rider: row.order?.subscription?.primary_rider_id != null && row.order?.subscription?.primary_rider_id === row.rider_id,
         subscription_status: row.order?.subscription ? getEffectiveStatus(row.order.subscription) : 'active',
         scheduled_date: row.order?.scheduled_date ?? '',
         rider_name: row.rider?.full_name ?? 'Unknown',
@@ -204,6 +203,7 @@ function RiderAssignmentOrdersContent() {
         address_city: row.order?.subscription?.delivery_address?.city ?? '',
         address_state: row.order?.subscription?.delivery_address?.state ?? '',
         address_pincode: row.order?.subscription?.delivery_address?.pincode ?? '',
+        standing_only: false,
       }));
 
       const unassigned: UnassignedOrder[] = (unassignedRes.data ?? []).map((row: any) => ({
@@ -219,7 +219,77 @@ function RiderAssignmentOrdersContent() {
         address_pincode: row.subscription?.delivery_address?.pincode ?? '',
       }));
 
-      setAssignedOrders(assigned);
+      // One row per customer subscription in the Assigned tab. The
+      // subscription's primary rider is the standing assignment; today's
+      // delivery status never removes it. Live (not-yet-delivered) daily
+      // assignments take precedence so in-flight statuses and sequences show.
+      const riderLookup = new Map<string, { name: string; mobile: string }>();
+      (ridersRes.data ?? []).forEach((r: any) => riderLookup.set(r.id, { name: r.full_name ?? 'Unknown', mobile: r.mobile ?? '' }));
+
+      const activeByKey = new Map<string, AssignedOrder>();
+      const historyRows: AssignedOrder[] = [];
+      for (const row of assigned) {
+        if (!ACTIVE_ASSIGNMENT_STATUSES.includes(row.status)) {
+          historyRows.push(row);
+          continue;
+        }
+        const key = row.subscription_id || row.order_id || row.assignment_id;
+        const existing = activeByKey.get(key);
+        if (!existing || (row.scheduled_date || '') > (existing.scheduled_date || '')) {
+          activeByKey.set(key, row);
+        }
+      }
+
+      const subsWithPrimary = (subsRes.data ?? []) as any[];
+      const coveredSubs = new Set<string>();
+      const standing: AssignedOrder[] = [];
+      for (const row of activeByKey.values()) {
+        // Delivered daily orders are covered by the subscription's standing
+        // row below; a delivered row without a primary rider is unassigned.
+        if (row.status === 'delivered' && row.subscription_id) {
+          continue;
+        }
+        standing.push(row);
+        if (row.subscription_id) coveredSubs.add(row.subscription_id);
+      }
+      for (const sub of subsWithPrimary) {
+        if (coveredSubs.has(sub.id)) continue;
+        const prior = activeByKey.get(sub.id);
+        const p = riderLookup.get(sub.primary_rider_id);
+        standing.push({
+          assignment_id: sub.id,
+          order_id: prior?.order_id ?? null,
+          subscription_id: sub.id,
+          status: 'assigned',
+          subscription_status: getEffectiveStatus(sub),
+          scheduled_date: prior?.scheduled_date ?? sub.next_delivery_date ?? '',
+          rider_id: sub.primary_rider_id,
+          rider_name: p?.name ?? 'Unknown',
+          rider_mobile: p?.mobile ?? '',
+          customer_name: sub.user?.full_name ?? sub.user?.mobile ?? 'Unknown',
+          customer_mobile: sub.user?.mobile ?? '',
+          plan_name: sub.plan?.name ?? '',
+          address_apartment: sub.delivery_address?.apartment_name ?? '',
+          address_street: sub.delivery_address?.street ?? '',
+          address_landmark: sub.delivery_address?.landmark ?? '',
+          address_city: sub.delivery_address?.city ?? '',
+          address_state: sub.delivery_address?.state ?? '',
+          address_pincode: sub.delivery_address?.pincode ?? '',
+          delivery_sequence: prior?.delivery_sequence ?? null,
+          swapped_from_rider_id: null,
+          swap_reason: null,
+          auto_assigned: false,
+          is_primary_rider: true,
+          standing_only: true,
+        });
+      }
+      setAssignedOrders([...historyRows, ...standing]);
+
+      const countMap = new Map<string, number>();
+      standing.forEach((row) => {
+        countMap.set(row.rider_id, (countMap.get(row.rider_id) ?? 0) + 1);
+      });
+      setActiveCountMap(countMap);
       setUnassignedOrders(unassigned);
       setSelectedIds(new Set());
     } catch (e: any) {
@@ -251,27 +321,71 @@ function RiderAssignmentOrdersContent() {
 
   const handleBulkUnassign = async () => {
     setBulkUnassigning(true);
-    let success = 0;
-    let failed = 0;
     const ids = Array.from(selectedIds);
-    for (const assignmentId of ids) {
-      const { error: updateError } = await supabase
-        .from('rider_order_assignments')
-        .update({ status: 'reassigned', is_reassigned: true })
-        .eq('id', assignmentId);
-      if (updateError) {
-        failed++;
-      } else {
-        const order = assignedOrders.find(o => o.assignment_id === assignmentId);
-        if (order) {
-          await supabase.from('orders').update({ status: 'scheduled' }).eq('id', order.order_id);
-        }
-        success++;
+    const selected = assignedOrders.filter((o) => ids.includes(o.assignment_id));
+
+    // Delivery history is permanent: end the standing relationship by
+    // clearing each subscription's primary rider instead of touching rows.
+    const subscriptionIds = Array.from(new Set(
+      selected
+        .filter((o) => o.subscription_id)
+        .map((o) => o.subscription_id as string)
+    ));
+    if (subscriptionIds.length > 0) {
+      const { error: clearErr } = await supabase
+        .from('subscriptions')
+        .update({ primary_rider_id: null })
+        .in('id', subscriptionIds);
+      if (clearErr) {
+        setBulkUnassigning(false);
+        setShowBulkConfirm(false);
+        setError('Unassign failed: ' + clearErr.message);
+        return;
       }
     }
+
+    // Only real assignment rows with an in-flight order get marked
+    // reassigned; subscription-backed rows have no assignment record and
+    // their order_id may point at a delivered order that must not change.
+    const unassignable = selected.filter(
+      (o) => !o.standing_only && ['assigned', 'accepted', 'picked_up'].includes(o.status)
+    );
+    const unassignIds = unassignable.map(o => o.assignment_id);
+    const orderIds = unassignable
+      .filter(o => o.order_id)
+      .map(o => o.order_id as string);
+
+    if (unassignIds.length > 0) {
+      const { error: assignError } = await supabase
+        .from('rider_order_assignments')
+        .update({ status: 'reassigned', is_reassigned: true })
+        .in('id', unassignIds);
+
+      if (assignError) {
+        setBulkUnassigning(false);
+        setShowBulkConfirm(false);
+        setError('Unassign failed: ' + assignError.message);
+        return;
+      }
+
+      if (orderIds.length > 0) {
+        const { error: orderError } = await supabase
+          .from('orders')
+          .update({ status: 'scheduled' })
+          .in('id', orderIds);
+        if (orderError) {
+          setBulkUnassigning(false);
+          setShowBulkConfirm(false);
+          setError('Orders were unassigned but moving them back failed: ' + orderError.message);
+          load();
+          return;
+        }
+      }
+    }
+
     setBulkUnassigning(false);
     setShowBulkConfirm(false);
-    setBulkResult({ success, failed });
+    setBulkResult({ success: selected.length, failed: 0 });
     setSelectedIds(new Set());
     load();
     setTimeout(() => setBulkResult(null), 5000);
@@ -284,86 +398,11 @@ function RiderAssignmentOrdersContent() {
     setRedistributing(false);
     if (error) { setError(error.message); return; }
     const result = data as any;
-    setRedistributeResult({ redistributed: result?.redistributed ?? 0, failed: result?.failed ?? 0 });
+    setRedistributeResult({ redistributed: result?.redistributed ?? 0, failed: result?.failed ?? 0, skipped_primary: result?.skipped_primary ?? 0 });
     setShowRedistributeResult(true);
     load();
   };
 
-  const openManualReassign = (rider?: any) => {
-    setManualReassignRider(rider ?? null);
-    setManualReassignStartDate(format(new Date(), 'yyyy-MM-dd'));
-    setManualReassignEndDate(format(new Date(), 'yyyy-MM-dd'));
-    setManualReassignOrders([]);
-    setManualAllOrders([]);
-    setManualSelectedIds(new Set());
-    setManualReplacementRider(null);
-    setManualRiderSearch('');
-    setShowManualReassignModal(true);
-  };
-
-  const loadManualOrders = async () => {
-    if (!manualReassignRider) return;
-    setManualLoadingOrders(true);
-    const { data } = await supabase
-      .from('rider_order_assignments')
-      .select('*, order:orders(id, scheduled_date, status, user:profiles(full_name, mobile), subscription:subscriptions(plan:subscription_plans(name), status, start_date, end_date, delivery_address:addresses(apartment_name, street, landmark, city, state, pincode)))')
-      .eq('rider_id', manualReassignRider.id)
-      .in('status', ['assigned', 'accepted', 'picked_up'])
-      .order('assigned_at', { ascending: false });
-    const rows = (data ?? []).map((a: any) => ({
-      ...a,
-      order: Array.isArray(a.order) ? a.order[0] : a.order,
-    }));
-    setManualAllOrders(rows);
-    setManualLoadingOrders(false);
-  };
-
-  useEffect(() => {
-    if (showManualReassignModal && manualReassignRider) loadManualOrders();
-  }, [manualReassignRider, showManualReassignModal]);
-
-  useEffect(() => {
-    const inRange = (a: any) => {
-      const sub = a.order?.subscription ? (Array.isArray(a.order.subscription) ? a.order.subscription[0] : a.order.subscription) : null;
-      if (sub?.start_date) {
-        const subEnd = sub.end_date ?? '9999-12-31';
-        return sub.start_date <= manualReassignEndDate && subEnd >= manualReassignStartDate;
-      }
-      const d = a.order?.scheduled_date;
-      if (!d) return false;
-      return d >= manualReassignStartDate && d <= manualReassignEndDate;
-    };
-    setManualReassignOrders(manualAllOrders.filter(inRange));
-    setManualSelectedIds(prev => new Set([...prev].filter(id => manualAllOrders.some((a: any) => a.id === id && inRange(a)))));
-  }, [manualAllOrders, manualReassignStartDate, manualReassignEndDate]);
-
-  const toggleManualSelect = (id: string) => {
-    setManualSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  };
-
-  const doManualReassign = async () => {
-    if (!manualReplacementRider || manualSelectedIds.size === 0) return;
-    setManualReassigning(true);
-    const { data, error } = await supabase.rpc('manual_reassign_orders', {
-      p_assignment_ids: Array.from(manualSelectedIds),
-      p_new_rider_id: manualReplacementRider.id,
-      p_reason: `Manual reassignment: ${manualReassignRider?.full_name ?? 'rider'} on leave`,
-      p_start_date: manualReassignStartDate,
-      p_end_date: manualReassignEndDate,
-    });
-    setManualReassigning(false);
-    if (error) { setError(error.message); return; }
-    setShowManualConfirm(false);
-    setShowManualReassignModal(false);
-    const result = data as any;
-    setBulkResult({ success: result?.reassigned ?? 0, failed: result?.failed ?? 0 });
-    setTimeout(() => setBulkResult(null), 5000);
-    load();
-  };
 
   const riderOptions = useMemo(() => {
     const riders = new Map<string, string>();
@@ -376,16 +415,16 @@ function RiderAssignmentOrdersContent() {
 
   const SUB_STATUS_FILTERS = ['active', 'pending', 'paused', 'expired'];
 
+  const liveAssignedOrders = useMemo(() => assignedOrders.filter((o) => ACTIVE_ASSIGNMENT_STATUSES.includes(o.status)), [assignedOrders]);
+  const historyOrders = useMemo(() => assignedOrders.filter((o) => !ACTIVE_ASSIGNMENT_STATUSES.includes(o.status)), [assignedOrders]);
+
   const filteredAssignedOrders = useMemo(() => {
-    let result = assignedOrders;
+    let result = activeTab === 'history' ? historyOrders : liveAssignedOrders;
     if (selectedRiderId) {
       result = result.filter((order) => order.rider_name + '|' + order.rider_mobile === selectedRiderId);
     }
     if (subStatusFilter) {
       result = result.filter((order) => order.subscription_status === subStatusFilter);
-    }
-    if (showReassignedOnly) {
-      result = result.filter((order) => order.swapped_from_rider_id !== null);
     }
     if (selectedRiderId) {
       result = [...result].sort((a, b) => {
@@ -395,7 +434,7 @@ function RiderAssignmentOrdersContent() {
       });
     }
     return result;
-  }, [assignedOrders, selectedRiderId, subStatusFilter, showReassignedOnly]);
+  }, [liveAssignedOrders, historyOrders, activeTab, selectedRiderId, subStatusFilter]);
 
   const [sequencing, setSequencing] = useState(false);
   const [sequenceError, setSequenceError] = useState<string | null>(null);
@@ -494,17 +533,25 @@ function RiderAssignmentOrdersContent() {
     });
   }, [statusSearchQuery]);
 
+  const riderFilteredOrders = useMemo(() => {
+    if (!selectedRiderId) return liveAssignedOrders;
+    return liveAssignedOrders.filter((order) => order.rider_name + '|' + order.rider_mobile === selectedRiderId);
+  }, [liveAssignedOrders, selectedRiderId]);
+
+  // Status counts are computed from the rider-filtered set (before the
+  // status filter itself is applied) so they reflect the chosen rider but
+  // stay fixed while a status filter is active.
   const subStatusCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    assignedOrders.forEach((order) => {
+    riderFilteredOrders.forEach((order) => {
       counts[order.subscription_status] = (counts[order.subscription_status] ?? 0) + 1;
     });
     return counts;
-  }, [assignedOrders]);
+  }, [riderFilteredOrders]);
 
   const selectedCount = selectedIds.size;
   const allSelected = filteredAssignedOrders.length > 0 && filteredAssignedOrders.every((order) => selectedIds.has(order.assignment_id));
-  const headerTitle = activeTab === 'assigned' ? 'Assigned Orders' : 'Unassigned Orders';
+  const headerTitle = activeTab === 'unassigned' ? 'Unassigned Orders' : 'Assigned Orders';
 
   const formatFullAddress = (apt: string, street: string, landmark: string, city: string, state: string, pincode: string): string => {
     const parts = [apt, street, landmark, city, state, pincode].filter(Boolean);
@@ -513,7 +560,7 @@ function RiderAssignmentOrdersContent() {
 
   const riderAssignmentSummary = useMemo(() => {
     const counts = new Map<string, { riderName: string; total: number; activeCustomerKeys: Set<string> }>();
-    assignedOrders.forEach((order) => {
+    riderFilteredOrders.forEach((order) => {
       const riderId = order.rider_name + '|' + order.rider_mobile;
       const entry = counts.get(riderId) ?? {
         riderName: order.rider_name,
@@ -522,12 +569,12 @@ function RiderAssignmentOrdersContent() {
       };
       entry.total += 1;
       if (order.subscription_status === 'active') {
-        entry.activeCustomerKeys.add(order.customer_mobile || order.customer_name || order.order_id);
+        entry.activeCustomerKeys.add(order.customer_mobile || order.customer_name || order.order_id || order.assignment_id);
       }
       counts.set(riderId, entry);
     });
     return Array.from(counts.entries()).sort((a, b) => b[1].total - a[1].total || a[1].riderName.localeCompare(b[1].riderName));
-  }, [assignedOrders]);
+  }, [riderFilteredOrders, subStatusFilter]);
 
   const renderRiderAssignmentSummary = () => (
     <View style={styles.summaryCard}>
@@ -540,7 +587,7 @@ function RiderAssignmentOrdersContent() {
           {totalActiveSubs != null && (
             <Text style={styles.summaryActiveRef}>{totalActiveSubs} active subs</Text>
           )}
-          <Text style={styles.summaryTotal}>{assignedOrders.length} assigned</Text>
+          <Text style={styles.summaryTotal}>{riderFilteredOrders.length} assigned</Text>
         </View>
       </View>
       <View style={styles.summaryTableHeader}>
@@ -576,12 +623,12 @@ function RiderAssignmentOrdersContent() {
   );
 
   const renderAssignedList = () => {
-    if (assignedOrders.length === 0) {
+    if (filteredAssignedOrders.length === 0) {
       return (
         <View style={styles.emptyState}>
           <Bike size={36} color={Colors.textDisabled} strokeWidth={1.2} />
-          <Text style={styles.emptyTitle}>No assigned orders</Text>
-          <Text style={styles.emptySub}>Orders assigned to riders will appear here.</Text>
+          <Text style={styles.emptyTitle}>{activeTab === 'history' ? 'No past assignments' : 'No assigned customers'}</Text>
+          <Text style={styles.emptySub}>{activeTab === 'history' ? 'Failed and reassigned records will appear here.' : 'Orders assigned to riders will appear here.'}</Text>
         </View>
       );
     }
@@ -716,10 +763,18 @@ function RiderAssignmentOrdersContent() {
           </View>
         ) : null}
 
+        {activeTab === 'assigned' ? (
         <View style={styles.bulkActionBar}>
-          <TouchableOpacity style={styles.selectToggle} onPress={toggleSelectAll} activeOpacity={0.7}>
+          <TouchableOpacity
+            style={styles.selectToggle}
+            onPress={toggleSelectAll}
+            activeOpacity={0.7}
+            disabled={filteredAssignedOrders.length === 0}
+          >
             {allSelected ? <CheckSquare size={18} color={Colors.primary} /> : <Square size={18} color={Colors.textTertiary} />}
-            <Text style={styles.selectToggleText}>{allSelected ? 'Deselect All' : 'Select All'}</Text>
+            <Text style={styles.selectToggleText}>
+              {allSelected ? `Deselect All (${filteredAssignedOrders.length})` : `Select All (${filteredAssignedOrders.length})`}
+            </Text>
           </TouchableOpacity>
           {selectedRiderId && (
             <TouchableOpacity style={styles.sequenceBtn} onPress={autoAssignSequence} disabled={sequencing} activeOpacity={0.8}>
@@ -734,6 +789,7 @@ function RiderAssignmentOrdersContent() {
             </TouchableOpacity>
           ) : null}
         </View>
+        ) : null}
         {selectedRiderId && (
           <View style={styles.sequenceLegendBar}>
             <ListOrdered size={13} color={Colors.primary} strokeWidth={2} />
@@ -748,12 +804,18 @@ function RiderAssignmentOrdersContent() {
         ) : null}
 
         {filteredAssignedOrders.map((order) => {
-          const cfg = ASSIGN_STATUS_CONFIG[order.status] ?? ASSIGN_STATUS_CONFIG.assigned;
+          const cfg = activeTab === 'assigned'
+            ? ASSIGN_STATUS_CONFIG.assigned
+            : (ASSIGN_STATUS_CONFIG[order.status] ?? ASSIGN_STATUS_CONFIG.assigned);
           const subStatusCfg = SUBSCRIPTION_STATUS_CONFIG[order.subscription_status] ?? null;
           const isSelected = selectedIds.has(order.assignment_id);
           return (
             <View key={order.assignment_id} style={[styles.orderCard, isSelected && styles.orderCardSelected]}>
-              <TouchableOpacity style={styles.checkbox} onPress={() => toggleSelect(order.assignment_id)} activeOpacity={0.7}>
+              <TouchableOpacity
+                style={styles.checkbox}
+                onPress={() => toggleSelect(order.assignment_id)}
+                activeOpacity={0.7}
+              >
                 {isSelected ? <CheckSquare size={20} color={Colors.primary} /> : <Square size={20} color={Colors.textDisabled} />}
               </TouchableOpacity>
 
@@ -795,6 +857,12 @@ function RiderAssignmentOrdersContent() {
                     <View style={styles.riderPill}>
                       <Bike size={11} color={Colors.primary} strokeWidth={2.2} />
                       <Text style={styles.riderPillText} numberOfLines={1}>{order.rider_name}{order.rider_mobile ? ' · ' + order.rider_mobile : ''}</Text>
+                      {order.is_primary_rider && (
+                        <View style={styles.primaryBadge}>
+                          <Star size={8} color={Colors.warning} strokeWidth={2.5} fill={Colors.warning} />
+                          <Text style={styles.primaryBadgeText}>PRIMARY</Text>
+                        </View>
+                      )}
                     </View>
                     {selectedRiderId && (
                       <View style={styles.sequenceControls}>
@@ -923,9 +991,11 @@ function RiderAssignmentOrdersContent() {
           <View>
             <Text style={styles.headerTitle}>{headerTitle}</Text>
             <Text style={styles.headerSubtitle}>
-              {activeTab === 'assigned'
-                ? assignedOrders.length + ' order' + (assignedOrders.length !== 1 ? 's' : '') + ' assigned'
-                : unassignedOrders.length + ' order' + (unassignedOrders.length !== 1 ? 's' : '') + ' unassigned'}
+              {activeTab === 'unassigned'
+                ? unassignedOrders.length + ' order' + (unassignedOrders.length !== 1 ? 's' : '') + ' unassigned'
+                : activeTab === 'history'
+                  ? historyOrders.length + ' past assignment' + (historyOrders.length !== 1 ? 's' : '')
+                  : liveAssignedOrders.length + ' customer' + (liveAssignedOrders.length !== 1 ? 's' : '') + ' assigned'}
             </Text>
           </View>
         </View>
@@ -941,7 +1011,7 @@ function RiderAssignmentOrdersContent() {
               </>
             )}
           </TouchableOpacity>
-          <TouchableOpacity style={styles.manualReassignBtn} onPress={() => openManualReassign()} activeOpacity={0.8}>
+          <TouchableOpacity style={styles.manualReassignBtn} onPress={() => router.push('/(admin)/manual-reassign' as any)} activeOpacity={0.8}>
             <ArrowRightLeft size={14} color={Colors.primary} strokeWidth={2} />
             <Text style={styles.manualReassignBtnText}>Manual Reassign</Text>
           </TouchableOpacity>
@@ -955,7 +1025,7 @@ function RiderAssignmentOrdersContent() {
         >
           <Bike size={15} color={activeTab === 'assigned' ? Colors.primary : Colors.textTertiary} strokeWidth={1.8} />
           <Text style={[styles.tabText, activeTab === 'assigned' && styles.tabTextActive]}>
-            Assigned ({assignedOrders.length})
+            Assigned ({liveAssignedOrders.length})
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -967,15 +1037,15 @@ function RiderAssignmentOrdersContent() {
             Unassigned ({unassignedOrders.length})
           </Text>
         </TouchableOpacity>
-        {activeTab === 'assigned' && (
-          <TouchableOpacity
-            style={[styles.tab, showReassignedOnly && styles.tabActive]}
-            onPress={() => setShowReassignedOnly(p => !p)}
-          >
-            <ArrowRightLeft size={15} color={showReassignedOnly ? Colors.primary : Colors.textTertiary} strokeWidth={1.8} />
-            <Text style={[styles.tabText, showReassignedOnly && styles.tabTextActive]}>Reassigned</Text>
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'history' && styles.tabActive]}
+          onPress={() => setActiveTab('history')}
+        >
+          <ArrowRightLeft size={15} color={activeTab === 'history' ? Colors.primary : Colors.textTertiary} strokeWidth={1.8} />
+          <Text style={[styles.tabText, activeTab === 'history' && styles.tabTextActive]}>
+            History ({historyOrders.length})
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {bulkResult ? (
@@ -1003,13 +1073,13 @@ function RiderAssignmentOrdersContent() {
           <View style={styles.loadingWrap}>
             <ActivityIndicator size="large" color={Colors.primary} />
           </View>
-        ) : activeTab === 'assigned' ? (
+        ) : activeTab === 'unassigned' ? (
+          renderUnassignedList()
+        ) : (
           <View style={[styles.contentColumns, isWeb && styles.contentColumnsWeb]}>
             <View style={styles.orderListColumn}>{renderAssignedList()}</View>
             {renderRiderAssignmentSummary()}
           </View>
-        ) : (
-          renderUnassignedList()
         )}
       </ScrollView>
 
@@ -1043,213 +1113,12 @@ function RiderAssignmentOrdersContent() {
             <Text style={styles.dialogTitle}>Redistribution Complete</Text>
             <Text style={styles.dialogText}>
               {redistributeResult?.redistributed ?? 0} order(s) reassigned to backup riders.
+              {(redistributeResult?.skipped_primary ?? 0) > 0 ? `\n${redistributeResult?.skipped_primary} order(s) skipped (primary rider locked).` : ''}
               {(redistributeResult?.failed ?? 0) > 0 ? `\n${redistributeResult?.failed} order(s) could not be reassigned (no available rider).` : ''}
             </Text>
             <View style={styles.dialogActions}>
               <TouchableOpacity style={[styles.dialogConfirmBtn, { backgroundColor: Colors.primary }]} onPress={() => setShowRedistributeResult(false)}>
                 <Text style={styles.dialogConfirmText}>Done</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-      <Modal visible={showManualReassignModal} transparent animationType="fade" onRequestClose={() => setShowManualReassignModal(false)}>
-        <View style={styles.overlay}>
-          <View style={styles.manualModal}>
-            <View style={styles.manualHeader}>
-              <Text style={styles.manualTitle}>Manual Reassign</Text>
-              <TouchableOpacity onPress={() => setShowManualReassignModal(false)}><Text style={styles.manualClose}>✕</Text></TouchableOpacity>
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.manualScroll}>
-              {/* Rider selector */}
-              <Text style={styles.manualFieldLabel}>Select Rider *</Text>
-              {manualReassignRider ? (
-                <View style={styles.manualSelectedRider}>
-                  <View style={styles.manualRiderAvatar}><Text style={styles.manualRiderAvatarText}>{manualReassignRider.full_name.charAt(0)}</Text></View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.manualRiderName}>{manualReassignRider.full_name}</Text>
-                    <Text style={styles.manualRiderMeta}>{manualReassignRider.zone} · {activeCountMap.get(manualReassignRider.id) ?? 0} active</Text>
-                  </View>
-                  <TouchableOpacity onPress={() => { setManualReassignRider(null); setManualReassignOrders([]); }}><Text style={styles.manualClearBtn}>Clear</Text></TouchableOpacity>
-                </View>
-              ) : (
-                <View style={styles.manualRiderList}>
-                  {riders.filter(r => !riderSearchQuery.trim() || r.full_name.toLowerCase().includes(riderSearchQuery.toLowerCase())).slice(0, 8).map(r => (
-                    <TouchableOpacity key={r.id} style={styles.manualRiderItem} onPress={() => setManualReassignRider(r)}>
-                      <View style={styles.manualRiderAvatar}><Text style={styles.manualRiderAvatarText}>{r.full_name.charAt(0)}</Text></View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.manualRiderName}>{r.full_name}</Text>
-                        <Text style={styles.manualRiderMeta}>{r.zone} · {activeCountMap.get(r.id) ?? 0} active{leaveSet.has(r.id) ? ' · On Leave' : ''}</Text>
-                      </View>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-
-              {/* Date range */}
-              <View style={styles.manualDateRow}>
-                <View style={{ flex: 1 }}>
-                  <DatePickerField
-                    label="Start Date"
-                    required
-                    value={manualReassignStartDate ? parseISO(manualReassignStartDate) : null}
-                    onChange={(d) => {
-                      const nextStart = format(d, 'yyyy-MM-dd');
-                      setManualReassignStartDate(nextStart);
-                      if (!manualReassignEndDate || manualReassignEndDate < nextStart) {
-                        setManualReassignEndDate(nextStart);
-                      }
-                    }}
-                    minDate={startOfToday()}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <DatePickerField
-                    label="End Date"
-                    required
-                    value={manualReassignEndDate ? parseISO(manualReassignEndDate) : null}
-                    onChange={(d) => setManualReassignEndDate(format(d, 'yyyy-MM-dd'))}
-                    minDate={manualReassignStartDate ? parseISO(manualReassignStartDate) : startOfToday()}
-                  />
-                </View>
-              </View>
-
-              {/* Order list */}
-              {manualReassignRider && (
-                <View>
-                  <View style={styles.manualOrderHeader}>
-                    <Text style={styles.manualFieldLabel}>Orders ({manualReassignOrders.length})</Text>
-                    {manualReassignOrders.length > 0 && (
-                      <View style={styles.manualSelectAllRow}>
-                        <TouchableOpacity onPress={() => setManualSelectedIds(new Set(manualReassignOrders.map((o: any) => o.id)))}>
-                          <Text style={styles.manualSelectAllText}>Select All</Text>
-                        </TouchableOpacity>
-                        <Text style={styles.manualSep}>·</Text>
-                        <TouchableOpacity onPress={() => setManualSelectedIds(new Set())}>
-                          <Text style={styles.manualClearAllText}>Clear All</Text>
-                        </TouchableOpacity>
-                      </View>
-                    )}
-                  </View>
-                  {manualLoadingOrders ? (
-                    <ActivityIndicator color={Colors.primary} size="small" style={{ paddingVertical: Spacing[4] }} />
-                  ) : manualReassignOrders.length === 0 ? (
-                    <Text style={styles.manualEmptyText}>No active orders found for this rider in the selected date range.</Text>
-                  ) : (
-                    <View style={styles.manualOrderList}>
-                      {manualReassignOrders.map((a: any) => {
-                        const isSelected = manualSelectedIds.has(a.id);
-                        const order = Array.isArray(a.order) ? a.order[0] : a.order;
-                        const user = order?.user ? (Array.isArray(order.user) ? order.user[0] : order.user) : null;
-                        const sub = order?.subscription ? (Array.isArray(order.subscription) ? order.subscription[0] : order.subscription) : null;
-                        const addr = sub?.delivery_address ? (Array.isArray(sub.delivery_address) ? sub.delivery_address[0] : sub.delivery_address) : null;
-                        const customerName = user?.full_name || user?.mobile || 'Unknown';
-                        const fullAddr = addr ? formatFullAddress(addr.apartment_name, addr.street, addr.landmark, addr.city, addr.state, addr.pincode) : '';
-                        return (
-                          <TouchableOpacity key={a.id} style={[styles.manualOrderItem, isSelected && styles.manualOrderItemSelected]} onPress={() => toggleManualSelect(a.id)} activeOpacity={0.8}>
-                            {isSelected ? <CheckSquare size={18} color={Colors.primary} strokeWidth={2} /> : <Square size={18} color={Colors.textDisabled} strokeWidth={2} />}
-                            <View style={{ flex: 1, gap: 2 }}>
-                              <Text style={styles.manualOrderCustomer}>{customerName}</Text>
-                              <Text style={styles.manualOrderMeta}>{formatOrderReference(a.order_id)} · {order?.scheduled_date ? format(new Date(order.scheduled_date), 'dd MMM') : ''}</Text>
-                              {fullAddr ? <Text style={styles.manualOrderAddr} numberOfLines={2}>{fullAddr}</Text> : null}
-                            </View>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  )}
-                </View>
-              )}
-
-              {/* Replacement rider */}
-              {manualSelectedIds.size > 0 && (
-                <View>
-                  <Text style={styles.manualFieldLabel}>Replacement Rider *</Text>
-                  {manualReplacementRider ? (
-                    <View style={styles.manualSelectedRider}>
-                      <View style={styles.manualRiderAvatar}><Text style={styles.manualRiderAvatarText}>{manualReplacementRider.full_name.charAt(0)}</Text></View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.manualRiderName}>{manualReplacementRider.full_name}</Text>
-                        <Text style={styles.manualRiderMeta}>{manualReplacementRider.zone} · {activeCountMap.get(manualReplacementRider.id) ?? 0} active</Text>
-                      </View>
-                      <TouchableOpacity onPress={() => setManualReplacementRider(null)}><Text style={styles.manualClearBtn}>Clear</Text></TouchableOpacity>
-                    </View>
-                  ) : (
-                    <View>
-                      <View style={styles.manualSearchWrap}>
-                        <Text style={styles.manualSearchIcon}>🔍</Text>
-                        <TextInput style={styles.manualSearchInput} value={manualRiderSearch} onChangeText={setManualRiderSearch} placeholder="Search replacement rider…" placeholderTextColor={Colors.textDisabled} />
-                      </View>
-                      <View style={styles.manualRiderList}>
-                        {riders.filter(r => r.id !== manualReassignRider?.id && !leaveSet.has(r.id) && (!manualRiderSearch.trim() || r.full_name.toLowerCase().includes(manualRiderSearch.toLowerCase()))).slice(0, 6).map(r => (
-                          <TouchableOpacity key={r.id} style={styles.manualRiderItem} onPress={() => { setManualReplacementRider(r); setManualRiderSearch(''); }}>
-                            <View style={styles.manualRiderAvatar}><Text style={styles.manualRiderAvatarText}>{r.full_name.charAt(0)}</Text></View>
-                            <View style={{ flex: 1 }}>
-                              <Text style={styles.manualRiderName}>{r.full_name}</Text>
-                              <Text style={styles.manualRiderMeta}>{r.zone} · {activeCountMap.get(r.id) ?? 0} active</Text>
-                            </View>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    </View>
-                  )}
-                </View>
-              )}
-
-              {/* Summary */}
-              {manualSelectedIds.size > 0 && manualReplacementRider && (
-                <View style={styles.manualSummary}>
-                  <Text style={styles.manualSummaryText}>{manualSelectedIds.size} order(s) → {manualReplacementRider.full_name}</Text>
-                </View>
-              )}
-            </ScrollView>
-
-            <View style={styles.manualFooter}>
-              <TouchableOpacity style={styles.dialogCancelBtn} onPress={() => setShowManualReassignModal(false)}>
-                <Text style={styles.dialogCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.dialogConfirmBtn, { backgroundColor: Colors.primary }, (manualSelectedIds.size === 0 || !manualReplacementRider) && { opacity: 0.5 }]}
-                onPress={() => setShowManualConfirm(true)}
-                disabled={manualSelectedIds.size === 0 || !manualReplacementRider || manualReassigning}
-              >
-                {manualReassigning ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={styles.dialogConfirmText}>Reassign ({manualSelectedIds.size})</Text>}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-      <Modal visible={showManualConfirm} transparent animationType="fade" onRequestClose={() => setShowManualConfirm(false)}>
-        <View style={styles.overlay}>
-          <View style={styles.dialog}>
-            <View style={[styles.dialogIcon, { backgroundColor: Colors.primarySurface }]}>
-              <ArrowRightLeft size={28} color={Colors.primary} />
-            </View>
-            <Text style={styles.dialogTitle}>Confirm Reassignment</Text>
-            <View style={{ width: '100%', gap: Spacing[2], marginVertical: Spacing[2] }}>
-              <View style={styles.manualConfirmRow}>
-                <Text style={styles.manualConfirmLabel}>From Rider</Text>
-                <Text style={styles.manualConfirmValue}>{manualReassignRider?.full_name}</Text>
-              </View>
-              <View style={styles.manualConfirmRow}>
-                <Text style={styles.manualConfirmLabel}>To Rider</Text>
-                <Text style={styles.manualConfirmValue}>{manualReplacementRider?.full_name}</Text>
-              </View>
-              <View style={styles.manualConfirmRow}>
-                <Text style={styles.manualConfirmLabel}>Date Range</Text>
-                <Text style={styles.manualConfirmValue}>{manualReassignStartDate} → {manualReassignEndDate} (returns after end date)</Text>
-              </View>
-              <View style={styles.manualConfirmRow}>
-                <Text style={styles.manualConfirmLabel}>Orders</Text>
-                <Text style={styles.manualConfirmValue}>{manualSelectedIds.size} selected</Text>
-              </View>
-            </View>
-            <View style={styles.dialogActions}>
-              <TouchableOpacity style={styles.dialogCancelBtn} onPress={() => setShowManualConfirm(false)}>
-                <Text style={styles.dialogCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.dialogConfirmBtn} onPress={doManualReassign} disabled={manualReassigning}>
-                {manualReassigning ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={styles.dialogConfirmText}>Confirm</Text>}
               </TouchableOpacity>
             </View>
           </View>
@@ -1565,6 +1434,8 @@ const styles = StyleSheet.create({
   reassignedBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 9, color: '#4F46E5' },
   autoBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: Spacing[1], paddingVertical: 2, borderRadius: Radius.sm, backgroundColor: '#FEF3C7' },
   autoBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 9, color: '#B45309' },
+  primaryBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 4, paddingVertical: 1, borderRadius: Radius.sm, backgroundColor: '#FFF8E1', marginLeft: 4 },
+  primaryBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 8, color: '#F59E0B' },
   manualModal: {
     width: '100%',
     maxWidth: 480,

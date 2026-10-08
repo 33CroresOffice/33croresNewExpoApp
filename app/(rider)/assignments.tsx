@@ -398,6 +398,16 @@ export default function RiderAssignments() {
     return parts.filter(Boolean).join(', ') || '—';
   };
 
+  const formatAddressWithPrice = (d?: OrderDetail) => {
+    const addr = formatAddressFromDetail(d);
+    if (d?.order_type === 'subscription' && d.per_day_price != null && d.per_day_price > 0) {
+      const rupees = d.per_day_price / 100;
+      const priceStr = rupees % 1 === 0 ? rupees.toString() : rupees.toFixed(2);
+      return `${addr} (₹${priceStr})`;
+    }
+    return addr;
+  };
+
   const renderCustomItems = (d?: OrderDetail) => {
     if (!d?.custom_items || d.custom_items.length === 0) return null;
     return (
@@ -667,7 +677,7 @@ export default function RiderAssignments() {
             <View style={mStyles.cardDetailRow}>
               <MapPin size={13} color={Colors.textTertiary} strokeWidth={1.8} />
               <Text style={mStyles.cardDetailText}>
-                {formatAddressFromDetail(d)}
+                {formatAddressWithPrice(d)}
               </Text>
               {!expanded && (
                 <View style={[mStyles.chevronWrap, expanded && mStyles.chevronExpanded]}>
@@ -678,7 +688,7 @@ export default function RiderAssignments() {
             {expanded && (
               <View style={mStyles.pickupTimeRow}>
                 <Clock size={13} color={Colors.primary} strokeWidth={1.8} />
-                <Text style={mStyles.pickupTimeLabel}>Today's Pickup Time:</Text>
+                <Text style={mStyles.pickupTimeLabel}>Today's Order Pickup Time:</Text>
                 <Text style={mStyles.pickupTimeValue}>{formatPickupTime(a.picked_up_at)}</Text>
               </View>
             )}
@@ -887,12 +897,12 @@ export default function RiderAssignments() {
                     )}
                     <View style={wStyles.deliveryCardAddrRow}>
                       <MapPin size={12} color={Colors.textTertiary} strokeWidth={1.8} />
-                      <Text style={wStyles.deliveryCardAddr}>{formatAddressFromDetail(d)}</Text>
+                      <Text style={wStyles.deliveryCardAddr}>{formatAddressWithPrice(d)}</Text>
                     </View>
                     {expanded && (
                       <View style={wStyles.pickupTimeRow}>
                         <Clock size={12} color={Colors.primary} strokeWidth={1.8} />
-                        <Text style={wStyles.pickupTimeLabel}>Today's Pickup Time:</Text>
+                        <Text style={wStyles.pickupTimeLabel}>Today's Order Pickup Time:</Text>
                         <Text style={wStyles.pickupTimeValue}>{formatPickupTime(a.picked_up_at)}</Text>
                       </View>
                     )}

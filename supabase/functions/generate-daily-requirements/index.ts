@@ -7,6 +7,41 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
+const allowedUnitTypes = new Set([
+  "kg", "grams", "pieces", "bunch", "stems", "dozen", "ml", "litre", "packet", "tray", "box", "meter",
+]);
+
+function normalizeUnitType(value: string | null | undefined, fallback: string): string {
+  const unit = (value ?? "").trim().toLowerCase();
+  const aliases: Record<string, string> = {
+    g: "grams",
+    gm: "grams",
+    gram: "grams",
+    grams: "grams",
+    pc: "pieces",
+    pcs: "pieces",
+    piece: "pieces",
+    pieces: "pieces",
+    bundle: "bunch",
+    bundles: "bunch",
+    garland: "bunch",
+    garlands: "bunch",
+    kilo: "kg",
+    kilos: "kg",
+    kilogram: "kg",
+    kilograms: "kg",
+    l: "litre",
+    liter: "litre",
+    liters: "litre",
+    litre: "litre",
+    litres: "litre",
+    meter: "meter",
+    meters: "meter",
+  };
+  const normalized = aliases[unit] ?? unit;
+  return allowedUnitTypes.has(normalized) ? normalized : fallback;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
@@ -102,7 +137,7 @@ Deno.serve(async (req: Request) => {
 
         let effectiveFlowerId = originalFlowerId;
         let effectiveQty = Number(req.quantity_per_delivery);
-        let effectiveUnit = req.unit_type;
+        let effectiveUnit = normalizeUnitType(req.unit_type, req.unit_type);
         let originalId: string | null = null;
 
         if (subRule) {
@@ -113,7 +148,7 @@ Deno.serve(async (req: Request) => {
               effectiveQty = Number(subRule.alternate_quantity);
             }
             if (subRule.alternate_unit_type) {
-              effectiveUnit = subRule.alternate_unit_type;
+              effectiveUnit = normalizeUnitType(subRule.alternate_unit_type, req.unit_type);
             }
           } else {
             originalId = originalFlowerId;
@@ -171,7 +206,7 @@ Deno.serve(async (req: Request) => {
 
           let effectiveFlowerId = originalFlowerId;
           let effectiveQty = qty;
-          let effectiveUnit = unit || match.unit_type;
+          let effectiveUnit = normalizeUnitType(unit, match.unit_type);
           let originalId: string | null = null;
 
           if (subRule) {
@@ -182,7 +217,7 @@ Deno.serve(async (req: Request) => {
                 effectiveQty = Number(subRule.alternate_quantity);
               }
               if (subRule.alternate_unit_type) {
-                effectiveUnit = subRule.alternate_unit_type;
+                effectiveUnit = normalizeUnitType(subRule.alternate_unit_type, match.unit_type);
               }
             } else {
               originalId = originalFlowerId;

@@ -16,6 +16,8 @@ import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { format } from 'date-fns';
 import StatusChip from '@/components/ui/StatusChip';
+import TodayTrackModule from '@/components/admin/TodayTrackModule';
+import CustomOrderNotification from '@/components/admin/CustomOrderNotification';
 
 const MD3 = {
   surface: '#FFFBFE',
@@ -369,6 +371,8 @@ export default function AdminDashboard() {
       >
         <Text style={mStyles.dateText}>{format(new Date(), 'EEEE, dd MMMM yyyy')}</Text>
 
+        <CustomOrderNotification />
+
         <View style={mStyles.metricsGrid}>
           {metricCards.map((card) => {
             const Icon = card.icon;
@@ -549,6 +553,12 @@ function WebDashboard({ metrics, recentOrders, recentCustomers, upcomingPauses, 
           <Text style={wStyles.refreshText}>Refresh</Text>
         </TouchableOpacity>
       </View>
+
+      {/* ── CUSTOMIZE ORDER ALERT ── */}
+      <CustomOrderNotification />
+
+      {/* ── TODAY'S TRACK ── */}
+      <TodayTrackModule />
 
       {/* ── SUBSCRIPTION ── */}
       <View style={wStyles.groupCard}>

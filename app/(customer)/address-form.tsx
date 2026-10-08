@@ -24,6 +24,8 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
+const OTHER_APARTMENT_ID = 'other';
+
 const PLACE_CATEGORIES = [
   { label: 'Individual', value: 'individual' },
   { label: 'Apartment', value: 'apartment' },
@@ -64,7 +66,7 @@ interface Apartment {
 
 export default function AddressFormScreen() {
   const insets = useSafeAreaInsets();
-  const { id, returnTo, planId } = useLocalSearchParams<{ id?: string; returnTo?: string; planId?: string }>();
+  const { id, returnTo, planId, subscriptionId } = useLocalSearchParams<{ id?: string; returnTo?: string; planId?: string; subscriptionId?: string }>();
   const { profile } = useAuthStore();
 
   const [placeCategory, setPlaceCategory] = useState('individual');
@@ -79,6 +81,7 @@ export default function AddressFormScreen() {
   const [label, setLabel] = useState('Home');
   const [isDefault, setIsDefault] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [addingApartment, setAddingApartment] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const [localities, setLocalities] = useState<Locality[]>([]);
@@ -130,7 +133,10 @@ export default function AddressFormScreen() {
 
   // Whether the apartment field should show as a free-text input (no apartments in locality)
   const showCustomApartmentInput =
-    placeCategory === 'apartment' && localityId && !loadingApartments && apartments.length === 0;
+    placeCategory === 'apartment' &&
+    localityId &&
+    !loadingApartments &&
+    (apartments.length === 0 || apartmentId === OTHER_APARTMENT_ID);
 
   const filteredLocalities = localities.filter(l =>
     l.locality_name.toLowerCase().includes(localitySearch.toLowerCase().trim()) ||
@@ -201,13 +207,55 @@ export default function AddressFormScreen() {
         fetchApartments(data.locality_id).then(() => {
           if (data.apartment_id) {
             setApartmentId(String(data.apartment_id));
-          } else if (data.apartment_name && placeCategory === 'apartment') {
+          } else if (data.apartment_name && data.place_category === 'apartment') {
+            setApartmentId(OTHER_APARTMENT_ID);
             setCustomApartmentName(data.apartment_name);
           }
         });
       }
     });
   }, [id, fetchApartments]);
+
+  const addCustomApartment = useCallback(async (): Promise<Apartment | null> => {
+    const apartmentName = customApartmentName.trim();
+    if (!localityId || !apartmentName) return null;
+
+    const existingApartment = apartments.find(
+      (apartment) => apartment.apartment_name?.trim().toLowerCase() === apartmentName.toLowerCase(),
+    );
+    if (existingApartment) {
+      setApartmentId(String(existingApartment.id));
+      setCustomApartmentName(existingApartment.apartment_name ?? apartmentName);
+      return existingApartment;
+    }
+
+    setAddingApartment(true);
+    const { data, error } = await supabase
+      .from('flower__apartment')
+      .insert({
+        locality_id: localityId,
+        apartment_name: apartmentName,
+        status: 'active',
+      })
+      .select('id, locality_id, apartment_name, status')
+      .single();
+    setAddingApartment(false);
+
+    if (error || !data) {
+      setErrors((current) => ({ ...current, apartment: 'Could not add this apartment. Please try again.' }));
+      return null;
+    }
+
+    const newApartment = data as Apartment;
+    setApartments((current) =>
+      [...current, newApartment].sort((a, b) => (a.apartment_name ?? '').localeCompare(b.apartment_name ?? '')),
+    );
+    setApartmentId(String(newApartment.id));
+    setCustomApartmentName(newApartment.apartment_name ?? apartmentName);
+    setApartmentDropdown(false);
+    setErrors((current) => ({ ...current, apartment: '' }));
+    return newApartment;
+  }, [apartments, customApartmentName, localityId]);
 
   const validate = () => {
     const e: Record<string, string> = {};
@@ -239,20 +287,11 @@ export default function AddressFormScreen() {
 
       if (placeCategory === 'apartment') {
         if (showCustomApartmentInput && customApartmentName.trim()) {
-          const { data: newApt, error: aptError } = await supabase
-            .from('flower__apartment')
-            .insert({
-              locality_id: localityId,
-              apartment_name: customApartmentName.trim(),
-              status: 'active',
-            })
-            .select('id, apartment_name')
-            .single();
-          if (!aptError && newApt) {
-            finalApartmentId = newApt.id;
-            finalApartmentName = newApt.apartment_name;
-          }
-        } else if (apartmentId) {
+          const newApartment = await addCustomApartment();
+          if (!newApartment) return;
+          finalApartmentId = newApartment.id;
+          finalApartmentName = newApartment.apartment_name;
+        } else if (apartmentId && apartmentId !== OTHER_APARTMENT_ID) {
           finalApartmentId = Number(apartmentId);
           finalApartmentName = selectedApartment?.apartment_name ?? null;
         }
@@ -298,6 +337,28 @@ export default function AddressFormScreen() {
         router.replace({
           pathname: '/(customer)/custom-order',
           params: { newAddressId: inserted?.id ?? '' },
+        });
+      } else if (returnTo === 'subscription' && subscriptionId) {
+        let addrId = id;
+        if (!addrId) {
+          const { data: inserted } = await supabase
+            .from('addresses')
+            .select('id')
+            .eq('user_id', profile.id)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+          addrId = inserted?.id;
+        }
+        if (addrId) {
+          await supabase
+            .from('subscriptions')
+            .update({ delivery_address_id: addrId })
+            .eq('id', subscriptionId);
+        }
+        router.replace({
+          pathname: '/(customer)/subscription-detail' as any,
+          params: { id: subscriptionId },
         });
       } else {
         router.replace('/(customer)/addresses');
@@ -455,10 +516,14 @@ export default function AddressFormScreen() {
                   <View style={styles.customAptInfo}>
                     <View style={styles.customAptBadge}>
                       <Plus size={12} color={Colors.primary} strokeWidth={2.5} />
-                      <Text style={styles.customAptBadgeText}>New apartment</Text>
+                      <Text style={styles.customAptBadgeText}>
+                        {apartments.length === 0 ? 'New apartment' : 'Custom apartment'}
+                      </Text>
                     </View>
                     <Text style={styles.customAptInfoText}>
-                      No apartments found in {selectedLocality?.locality_name ?? 'this locality'}. Enter the name below to add it.
+                      {apartments.length === 0
+                        ? `No apartments found in ${selectedLocality?.locality_name ?? 'this locality'}. Enter the name below.`
+                        : `Enter the apartment name for ${selectedLocality?.locality_name ?? 'this locality'}.`}
                     </Text>
                   </View>
                   <TextInput
@@ -469,6 +534,35 @@ export default function AddressFormScreen() {
                     placeholderTextColor={Colors.textDisabled}
                   />
                   {errors.apartment ? <Text style={styles.errorText}>{errors.apartment}</Text> : null}
+                  <TouchableOpacity
+                    style={styles.addApartmentBtn}
+                    onPress={() => { void addCustomApartment(); }}
+                    disabled={addingApartment || !customApartmentName.trim()}
+                    activeOpacity={0.7}
+                  >
+                    {addingApartment ? (
+                      <ActivityIndicator size="small" color={Colors.primary} />
+                    ) : (
+                      <Plus size={15} color={customApartmentName.trim() ? Colors.primary : Colors.textDisabled} strokeWidth={2.2} />
+                    )}
+                    <Text style={[styles.addApartmentText, !customApartmentName.trim() && styles.addApartmentTextDisabled]}>
+                      {addingApartment ? 'Adding apartment...' : 'Add apartment to list'}
+                    </Text>
+                  </TouchableOpacity>
+                  {apartments.length > 0 && (
+                    <TouchableOpacity
+                      style={styles.backToListBtn}
+                      onPress={() => {
+                        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                        setApartmentId('');
+                        setCustomApartmentName('');
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <ChevronDown size={14} color={Colors.primary} strokeWidth={2} style={{ transform: [{ rotate: '90deg' }] }} />
+                      <Text style={styles.backToListText}>Back to apartment list</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               ) : (
                 /* Normal dropdown with search */
@@ -492,7 +586,11 @@ export default function AddressFormScreen() {
                     disabled={!localityId}
                   >
                     <View style={styles.dropdownBtnLeft}>
-                      <Building2 size={16} color={selectedApartment ? Colors.primary : Colors.textDisabled} strokeWidth={1.8} />
+                      <Building2
+                        size={16}
+                        color={selectedApartment || apartmentId === OTHER_APARTMENT_ID ? Colors.primary : Colors.textDisabled}
+                        strokeWidth={1.8}
+                      />
                       {loadingApartments ? (
                         <ActivityIndicator size="small" color={Colors.primary} />
                       ) : (
@@ -500,11 +598,13 @@ export default function AddressFormScreen() {
                           style={[styles.dropdownBtnText, !selectedApartment && styles.dropdownPlaceholder]}
                           numberOfLines={1}
                         >
-                          {selectedApartment
-                            ? selectedApartment.apartment_name ?? '(Unnamed)'
-                            : localityId
-                              ? 'Select apartment'
-                              : 'Select locality first'}
+                          {apartmentId === OTHER_APARTMENT_ID
+                            ? customApartmentName || 'Other'
+                            : selectedApartment
+                              ? selectedApartment.apartment_name ?? '(Unnamed)'
+                              : localityId
+                                ? 'Select apartment'
+                                : 'Select locality first'}
                         </Text>
                       )}
                     </View>
@@ -538,7 +638,26 @@ export default function AddressFormScreen() {
                       </View>
 
                       <ScrollView style={styles.dropdownScroll} showsVerticalScrollIndicator={false} nestedScrollEnabled>
-                        {filteredApartments.length === 0 ? (
+                        {('other'.includes(apartmentSearch.toLowerCase().trim()) || apartmentSearch.trim() === '') && (
+                          <TouchableOpacity
+                            style={[styles.dropdownItem, apartmentId === OTHER_APARTMENT_ID && styles.dropdownItemActive]}
+                            onPress={() => {
+                              LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                              setApartmentId(OTHER_APARTMENT_ID);
+                              setCustomApartmentName('');
+                              setApartmentDropdown(false);
+                              setApartmentSearch('');
+                            }}
+                            activeOpacity={0.7}
+                          >
+                            <View style={styles.dropdownItemLeft}>
+                              <Plus size={15} color={apartmentId === OTHER_APARTMENT_ID ? Colors.primary : Colors.textTertiary} strokeWidth={1.8} />
+                              <Text style={[styles.dropdownItemText, apartmentId === OTHER_APARTMENT_ID && styles.dropdownItemTextActive]}>Other</Text>
+                            </View>
+                            {apartmentId === OTHER_APARTMENT_ID && <Check size={14} color={Colors.primary} strokeWidth={2.5} />}
+                          </TouchableOpacity>
+                        )}
+                        {filteredApartments.length === 0 && !'other'.includes(apartmentSearch.toLowerCase().trim()) && apartmentSearch.trim() !== '' ? (
                           <View style={styles.dropdownEmptyItem}>
                             <Text style={styles.dropdownEmptyText}>No apartments found</Text>
                           </View>
@@ -811,6 +930,35 @@ const styles = StyleSheet.create({
     fontSize: Typography.size.xs,
     color: Colors.textTertiary,
     lineHeight: 16,
+  },
+  addApartmentBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing[2],
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing[2],
+    backgroundColor: Colors.primarySurface,
+  },
+  addApartmentText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.primary,
+  },
+  addApartmentTextDisabled: { color: Colors.textDisabled },
+  backToListBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    paddingVertical: Spacing[1],
+  },
+  backToListText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.xs,
+    color: Colors.primary,
   },
 
   // Pincode read-only

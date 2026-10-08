@@ -19,11 +19,13 @@ import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 
 const { width } = Dimensions.get('window');
+const DEMO_RIDER_MOBILE = '9999999999';
 
 export default function RiderOtpVerifyScreen() {
   const insets = useSafeAreaInsets();
   const { mobile, channel } = useLocalSearchParams<{ mobile: string; channel: string }>();
   const { setSession, loadProfile } = useAuthStore();
+  const isDemoRider = mobile === DEMO_RIDER_MOBILE;
 
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
@@ -139,7 +141,7 @@ export default function RiderOtpVerifyScreen() {
     } finally {
       setLoading(false);
     }
-  }, [otp, mobile]);
+  }, [otp, mobile, isDemoRider]);
 
   useEffect(() => {
     if (otp.length === 6 && !loading) {
@@ -151,6 +153,13 @@ export default function RiderOtpVerifyScreen() {
     setResending(true);
     setError('');
     try {
+      if (isDemoRider) {
+        setCountdown(300);
+        setOtp('');
+        setResending(false);
+        return;
+      }
+
       const res = await fetch(`${SUPABASE_URL}/functions/v1/send-otp`, {
         method: 'POST',
         headers: {
@@ -206,9 +215,10 @@ export default function RiderOtpVerifyScreen() {
             </View>
             <Text style={styles.title}>Enter verification code</Text>
             <Text style={styles.subtitle}>
-              We sent a 6-digit code to{' '}
+              {isDemoRider ? 'Use the demo verification code for ' : 'We sent a 6-digit code to '}
               <Text style={styles.highlight}>+91 {mobile}</Text>
-              {' '}via {channel === 'whatsapp' ? 'WhatsApp' : 'SMS'}
+              {!isDemoRider && <> via {channel === 'whatsapp' ? 'WhatsApp' : 'SMS'}</>}
+              {isDemoRider && <Text style={styles.demoCode}>Demo code: 123456</Text>}
             </Text>
           </View>
 
@@ -304,6 +314,7 @@ const styles = StyleSheet.create({
     lineHeight: Typography.size.base * 1.6,
   },
   highlight: { fontFamily: Typography.fontFamily.sansSemiBold, color: Colors.textPrimary },
+  demoCode: { fontFamily: Typography.fontFamily.sansSemiBold, color: Colors.primary },
   otpSection: { gap: Spacing[4], alignItems: 'center' },
   timerRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   timerText: {

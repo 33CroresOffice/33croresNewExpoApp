@@ -8,7 +8,7 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Pause, MapPin, Calendar, Clock, History, TriangleAlert as AlertTriangle, RotateCcw, CircleCheck as CheckCircle, CalendarClock, Pencil, X, FileText, CreditCard, Receipt, Leaf } from 'lucide-react-native';
+import { ArrowLeft, Pause, MapPin, Calendar, Clock, History, TriangleAlert as AlertTriangle, RotateCcw, CircleCheck as CheckCircle, CalendarClock, Pencil, X, FileText, CreditCard, Receipt, Leaf, Edit3 } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { Subscription, SubscriptionRenewalHistory, Payment } from '@/types/database';
@@ -503,8 +503,27 @@ export default function SubscriptionDetailScreen() {
 
         <View style={styles.infoGrid}>
           <View style={styles.infoItem}>
-            <MapPin size={16} color={Colors.accent} />
-            <Text style={styles.infoLabel}>Delivery To</Text>
+            <View style={styles.infoItemHeader}>
+              <MapPin size={16} color={Colors.accent} />
+              <Text style={styles.infoLabel}>Delivery To</Text>
+              {effectiveStatus === 'active' && subscription.delivery_address && (
+                <TouchableOpacity
+                  style={styles.editAddrBtn}
+                  onPress={() => router.push({
+                    pathname: '/(customer)/address-form' as any,
+                    params: {
+                      id: subscription.delivery_address!.id,
+                      returnTo: 'subscription',
+                      subscriptionId: id as string,
+                    },
+                  })}
+                  activeOpacity={0.7}
+                >
+                  <Edit3 size={13} color={Colors.primary} strokeWidth={1.8} />
+                  <Text style={styles.editAddrBtnText}>Edit</Text>
+                </TouchableOpacity>
+              )}
+            </View>
             <Text style={styles.infoValue} numberOfLines={3}>
               {subscription.delivery_address
                 ? [
@@ -1134,6 +1153,28 @@ const styles = StyleSheet.create({
     gap: Spacing[1],
     borderWidth: 1,
     borderColor: Colors.border,
+  },
+  infoItemHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[1],
+  },
+  editAddrBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginLeft: 'auto',
+    paddingVertical: 2,
+    paddingHorizontal: Spacing[2],
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.primarySurface,
+  borderWidth: 1,
+    borderColor: Colors.primaryLight,
+  },
+  editAddrBtnText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: 10,
+    color: Colors.primary,
   },
   infoLabel: {
     fontFamily: Typography.fontFamily.sansRegular,

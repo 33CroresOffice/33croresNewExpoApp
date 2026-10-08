@@ -142,8 +142,7 @@ export default function RiderProfile() {
           .from('rider_monthly_rankings')
           .select('rider_id, rank_position, score, deliveries, present_days, total_earned')
           .eq('month', currentMonth)
-          .order('rank_position', { ascending: true })
-          .limit(3),
+          .order('rank_position', { ascending: true }),
         supabase
           .from('rider_monthly_rankings')
           .select('total_earned')
@@ -162,11 +161,13 @@ export default function RiderProfile() {
         const riderIds = (rankRes.data as any[]).map((r: any) => r.rider_id);
         const { data: riderNames } = await supabase
           .from('riders')
-          .select('id, full_name, profile_photo_url')
-          .in('id', riderIds);
+          .select('id, full_name, profile_photo_url, is_active')
+          .in('id', riderIds)
+          .eq('is_active', true);
         const riderMap = new Map<string, { full_name: string; profile_photo_url: string | null }>();
         (riderNames ?? []).forEach((r: any) => riderMap.set(r.id, { full_name: r.full_name, profile_photo_url: r.profile_photo_url ?? null }));
-        const entries: RankEntry[] = (rankRes.data as any[]).map((r: any) => ({
+        const activeRankingRows = (rankRes.data as any[]).filter((r: any) => riderMap.has(r.rider_id)).slice(0, 3);
+        const entries: RankEntry[] = activeRankingRows.map((r: any) => ({
           rider_id: r.rider_id,
           rider_name: riderMap.get(r.rider_id)?.full_name ?? 'Rider',
           rank_position: r.rank_position,

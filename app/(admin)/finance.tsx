@@ -6,16 +6,19 @@ import {
   Platform, ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { TrendingUp, TrendingDown, DollarSign, CreditCard, ArrowUpRight, ArrowDownRight, Receipt, Wallet, ChevronRight, ChartBar as BarChart3, ChartPie as PieChart, Bike } from 'lucide-react-native';
+import { TrendingUp, TrendingDown, DollarSign, CreditCard, ArrowUpRight, ArrowDownRight, Receipt, Wallet, ChevronRight, ChartBar as BarChart3, ChartPie as PieChart, Bike, Flower2, Sparkles, X } from 'lucide-react-native';
 import { router } from 'expo-router';
-import { format, subMonths, startOfMonth, endOfMonth } from 'date-fns';
+import { format, subMonths, startOfMonth, endOfMonth, startOfDay, endOfDay } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
+import DatePickerField from '@/components/ui/DatePickerField';
 
 interface FinanceSummary {
   totalRevenue: number;
   totalRefunds: number;
   netRevenue: number;
+  subscriptionRevenue: number;
+  customizationRevenue: number;
   totalVendorPayments: number;
   totalRiderPayouts: number;
   totalExpenses: number;
@@ -38,10 +41,12 @@ interface CategorySpend {
   color: string;
 }
 
-const PERIOD_OPTIONS = [
-  { label: 'This Month', value: 0 },
-  { label: 'Last Month', value: 1 },
-  { label: '3 Months', value: 3 },
+type Period = 'this_month' | 'last_month' | 'three_months' | 'custom';
+
+const PERIOD_OPTIONS: { label: string; value: Period }[] = [
+  { label: 'This Month', value: 'this_month' },
+  { label: 'Last Month', value: 'last_month' },
+  { label: '3 Months', value: 'three_months' },
 ];
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -69,7 +74,10 @@ function FinanceScreenContent() {
   const isWeb = Platform.OS === 'web';
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [period, setPeriod] = useState(0);
+  const [period, setPeriod] = useState<Period>('this_month');
+  const [rangeFrom, setRangeFrom] = useState<Date | null>(null);
+  const [rangeTo, setRangeTo] = useState<Date | null>(null);
+  const [openPicker, setOpenPicker] = useState<'from' | 'to' | null>(null);
   const [summary, setSummary] = useState<FinanceSummary | null>(null);
   const [monthlyBars, setMonthlyBars] = useState<MonthlyBar[]>([]);
   const [categorySpend, setCategorySpend] = useState<CategorySpend[]>([]);
@@ -78,13 +86,29 @@ function FinanceScreenContent() {
   const load = useCallback(async () => {
     try {
       const now = new Date();
-      const periodStart = startOfMonth(subMonths(now, period === 0 ? 0 : period));
-      const periodEnd = period === 0 ? now : endOfMonth(subMonths(now, 1));
+      let periodStart: Date;
+      let periodEnd: Date;
+      if (period === 'custom') {
+        if (!rangeFrom || !rangeTo) return;
+        periodStart = startOfDay(rangeFrom);
+        periodEnd = endOfDay(rangeTo);
+      } else if (period === 'last_month') {
+        periodStart = startOfMonth(subMonths(now, 1));
+        periodEnd = endOfMonth(subMonths(now, 1));
+      } else if (period === 'three_months') {
+        periodStart = startOfMonth(subMonths(now, 2));
+        periodEnd = endOfDay(now);
+      } else {
+        periodStart = startOfMonth(now);
+        periodEnd = endOfDay(now);
+      }
       const startStr = format(periodStart, 'yyyy-MM-dd');
       const endStr = format(periodEnd, 'yyyy-MM-dd');
 
-      const [paymentsRes, vendorPayRes, expensesRes, subsRes, ledgerRes, payoutsRes] = await Promise.all([
+      const [paymentsRes, customOrdersRes, vendorPayRes, expensesRes, subsRes, ledgerRes, payoutsRes] = await Promise.all([
         supabase.from('payments').select('amount, status, created_at')
+          .gte('created_at', startStr).lte('created_at', endStr + 'T23:59:59'),
+        supabase.from('custom_orders').select('total_price, payment_status, created_at')
           .gte('created_at', startStr).lte('created_at', endStr + 'T23:59:59'),
         supabase.from('vendor_payments').select('amount, status, payment_date')
           .gte('payment_date', startStr).lte('payment_date', endStr),
@@ -97,6 +121,7 @@ function FinanceScreenContent() {
       ]);
 
       const payments = paymentsRes.data ?? [];
+      const customOrders = customOrdersRes.data ?? [];
       const vendorPays = vendorPayRes.data ?? [];
       const expenses = expensesRes.data ?? [];
       const subs = subsRes.data ?? [];
@@ -106,6 +131,8 @@ function FinanceScreenContent() {
       const totalRevenue = payments.filter(p => p.status === 'success').reduce((s, p) => s + p.amount / 100, 0);
       const totalRefunds = payments.filter(p => p.status === 'refunded').reduce((s, p) => s + p.amount / 100, 0);
       const netRevenue = totalRevenue - totalRefunds;
+      const subscriptionRevenue = totalRevenue;
+      const customizationRevenue = customOrders.filter(o => o.payment_status === 'paid').reduce((s, o) => s + Number(o.total_price) / 100, 0);
       const totalVendorPayments = vendorPays.filter(p => p.status === 'completed').reduce((s, p) => s + Number(p.amount), 0);
       const totalRiderPayouts = payouts.filter(p => p.status === 'paid').reduce((s, p) => s + p.final_amount, 0);
       const totalExpenses = expenses.reduce((s, e) => s + Number(e.amount), 0);
@@ -117,25 +144,50 @@ function FinanceScreenContent() {
         return d >= periodStart && d <= periodEnd;
       }).length;
 
-      setSummary({ totalRevenue, totalRefunds, netRevenue, totalVendorPayments, totalRiderPayouts, totalExpenses, grossProfit, profitMargin, activeSubscriptions, newSubscriptions });
+      setSummary({ totalRevenue, totalRefunds, netRevenue, subscriptionRevenue, customizationRevenue, totalVendorPayments, totalRiderPayouts, totalExpenses, grossProfit, profitMargin, activeSubscriptions, newSubscriptions });
 
-      const bars: MonthlyBar[] = [];
-      for (let i = 5; i >= 0; i--) {
-        const m = subMonths(now, i);
-        const ms = format(startOfMonth(m), 'yyyy-MM-dd');
-        const me = format(endOfMonth(m), 'yyyy-MM-dd');
-        const [pR, vpR, eR, rpR] = await Promise.all([
-          supabase.from('payments').select('amount, status').gte('created_at', ms).lte('created_at', me + 'T23:59:59'),
-          supabase.from('vendor_payments').select('amount, status').gte('payment_date', ms).lte('payment_date', me),
-          supabase.from('expenses').select('amount').gte('expense_date', ms).lte('expense_date', me),
-          supabase.from('rider_payouts').select('final_amount, status, paid_at').gte('paid_at', ms).lte('paid_at', me + 'T23:59:59'),
-        ]);
+      const buckets: { start: Date; end: Date; label: string }[] = [];
+      if (period === 'three_months') {
+        for (let i = 2; i >= 0; i--) {
+          const m = subMonths(now, i);
+          buckets.push({ start: startOfMonth(m), end: endOfMonth(m), label: format(m, 'MMM') });
+        }
+      } else {
+        let bucketStart: Date;
+        let bucketEnd: Date;
+        if (period === 'custom') {
+          bucketStart = startOfDay(rangeFrom!);
+          bucketEnd = endOfDay(rangeTo!);
+        } else {
+          const m = period === 'last_month' ? subMonths(now, 1) : now;
+          bucketStart = startOfMonth(m);
+          bucketEnd = period === 'last_month' ? endOfMonth(m) : endOfDay(now);
+        }
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        let cur = bucketStart.getTime();
+        while (cur <= bucketEnd.getTime()) {
+          const wStart = new Date(cur);
+          const wEnd = new Date(Math.min(cur + 6 * DAY_MS, bucketEnd.getTime()));
+          buckets.push({ start: wStart, end: wEnd, label: format(wStart, 'dd MMM') });
+          cur += 7 * DAY_MS;
+        }
+      }
+      const bucketQueries = buckets.map(b => ({
+        label: b.label,
+        p: supabase.from('payments').select('amount, status').gte('created_at', format(b.start, 'yyyy-MM-dd')).lte('created_at', format(b.end, 'yyyy-MM-dd') + 'T23:59:59'),
+        vp: supabase.from('vendor_payments').select('amount, status').gte('payment_date', format(b.start, 'yyyy-MM-dd')).lte('payment_date', format(b.end, 'yyyy-MM-dd')),
+        e: supabase.from('expenses').select('amount').gte('expense_date', format(b.start, 'yyyy-MM-dd')).lte('expense_date', format(b.end, 'yyyy-MM-dd')),
+        rp: supabase.from('rider_payouts').select('final_amount, status, paid_at').gte('paid_at', format(b.start, 'yyyy-MM-dd')).lte('paid_at', format(b.end, 'yyyy-MM-dd') + 'T23:59:59'),
+      }));
+      const bucketResults = await Promise.all(bucketQueries.map(b => Promise.all([b.p, b.vp, b.e, b.rp])));
+      const bars = bucketQueries.map((b, i) => {
+        const [pR, vpR, eR, rpR] = bucketResults[i];
         const rev = (pR.data ?? []).filter(p => p.status === 'success').reduce((s, p) => s + p.amount / 100, 0);
         const vp = (vpR.data ?? []).filter(p => p.status === 'completed').reduce((s, p) => s + Number(p.amount), 0);
         const rp = (rpR.data ?? []).filter(p => p.status === 'paid').reduce((s, p) => s + Number(p.final_amount), 0);
         const exp = (eR.data ?? []).reduce((s, e) => s + Number(e.amount), 0);
-        bars.push({ month: format(m, 'MMM'), revenue: rev, expenses: vp + rp + exp, profit: rev - vp - rp - exp });
-      }
+        return { month: b.label, revenue: rev, expenses: vp + rp + exp, profit: rev - vp - rp - exp };
+      });
       setMonthlyBars(bars);
 
       const catMap: Record<string, number> = {};
@@ -148,12 +200,24 @@ function FinanceScreenContent() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [period]);
+  }, [period, rangeFrom, rangeTo]);
 
   usePageVisibility(load);
 
+  // Re-run whenever a filter changes (usePageVisibility only fires on focus/visibility)
+  useEffect(() => {
+    if (!loading) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period, rangeFrom, rangeTo]);
+
   const fmt = (n: number) => `₹${Math.abs(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
   const maxBar = Math.max(...monthlyBars.map(b => Math.max(b.revenue, b.expenses)), 1);
+
+  const clearRange = useCallback(() => {
+    setRangeFrom(null);
+    setRangeTo(null);
+    setPeriod('this_month');
+  }, []);
 
   if (loading) {
     return (
@@ -179,10 +243,50 @@ function FinanceScreenContent() {
 
       <View style={[s.periodRow, isWeb && s.periodRowWeb]}>
         {PERIOD_OPTIONS.map(p => (
-          <TouchableOpacity key={p.value} style={[s.periodBtn, period === p.value && s.periodBtnActive]} onPress={() => setPeriod(p.value)}>
+          <TouchableOpacity
+            key={p.value}
+            style={[s.periodBtn, period === p.value && s.periodBtnActive]}
+            onPress={() => setPeriod(p.value)}
+          >
             <Text style={[s.periodText, period === p.value && s.periodTextActive]}>{p.label}</Text>
           </TouchableOpacity>
         ))}
+        <View style={s.periodDivider} />
+        <View style={s.rangeField}>
+          <DatePickerField
+            label="From"
+            compact
+            value={rangeFrom}
+            open={openPicker === 'from'}
+            onOpenChange={(o) => setOpenPicker(o ? 'from' : null)}
+            maxDate={rangeTo ?? new Date()}
+            onChange={(d) => {
+              setRangeFrom(d);
+              if (rangeTo && d > rangeTo) setRangeTo(null);
+              setPeriod('custom');
+            }}
+          />
+        </View>
+        <View style={s.rangeField}>
+          <DatePickerField
+            label="To"
+            compact
+            value={rangeTo}
+            open={openPicker === 'to'}
+            onOpenChange={(o) => setOpenPicker(o ? 'to' : null)}
+            minDate={rangeFrom ?? undefined}
+            maxDate={new Date()}
+            onChange={(d) => {
+              setRangeTo(d);
+              if (rangeFrom) setPeriod('custom');
+            }}
+          />
+        </View>
+        {period === 'custom' && rangeFrom && rangeTo && (
+          <TouchableOpacity style={s.rangeClear} onPress={clearRange}>
+            <X size={14} color={Colors.textTertiary} strokeWidth={2} />
+          </TouchableOpacity>
+        )}
       </View>
 
       <ScrollView
@@ -194,9 +298,11 @@ function FinanceScreenContent() {
         {summary && (
           <>
             <View style={[s.metricsGrid, isWeb && s.metricsGridWeb]}>
-              <MetricCard icon={<TrendingUp size={18} color={Colors.success} strokeWidth={1.8} />} iconBg="#E8F5E9" label="Gross Revenue" value={fmt(summary.totalRevenue)} sub={`${summary.newSubscriptions} new subs`} isWeb={isWeb} />
+              <MetricCard icon={<TrendingUp size={18} color={Colors.success} strokeWidth={1.8} />} iconBg="#E8F5E9" label="Gross Revenue" value={fmt(summary.totalRevenue + summary.customizationRevenue)} sub={`${summary.newSubscriptions} new subs`} isWeb={isWeb} />
+              <MetricCard icon={<Flower2 size={18} color={Colors.primary} strokeWidth={1.8} />} iconBg={Colors.primarySurface} label="Subscription Revenue" value={fmt(summary.subscriptionRevenue)} sub="From subscriptions" isWeb={isWeb} onPress={() => router.push('/(admin)/finance-payments?tab=subscription' as any)} />
+              <MetricCard icon={<Sparkles size={18} color="#7B68EE" strokeWidth={1.8} />} iconBg="#F3F0FF" label="Customization Revenue" value={fmt(summary.customizationRevenue)} sub="Custom & garland orders" isWeb={isWeb} onPress={() => router.push('/(admin)/finance-payments?tab=customization' as any)} />
               <MetricCard icon={<DollarSign size={18} color={Colors.primary} strokeWidth={1.8} />} iconBg={Colors.primarySurface} label="Net Revenue" value={fmt(summary.netRevenue)} sub={summary.totalRefunds > 0 ? `−${fmt(summary.totalRefunds)} refunds` : 'No refunds'} isWeb={isWeb} />
-              <MetricCard icon={<TrendingDown size={18} color={Colors.warning} strokeWidth={1.8} />} iconBg="#FFF3E0" label="Vendor Costs" value={fmt(summary.totalVendorPayments)} sub="Procurement paid" isWeb={isWeb} />
+              <MetricCard icon={<TrendingDown size={18} color={Colors.warning} strokeWidth={1.8} />} iconBg="#FFF3E0" label="Vendor Costs" value={fmt(summary.totalVendorPayments)} sub="Procurement paid" isWeb={isWeb} onPress={() => router.push('/(admin)/vendor-payments' as any)} />
               <MetricCard icon={<Bike size={18} color={Colors.accent} strokeWidth={1.8} />} iconBg={Colors.accentSurface} label="Rider Payouts" value={fmt(summary.totalRiderPayouts)} sub="Delivery payouts" isWeb={isWeb} />
               <MetricCard icon={<Receipt size={18} color={Colors.secondary} strokeWidth={1.8} />} iconBg={Colors.secondarySurface} label="Expenses" value={fmt(summary.totalExpenses)} sub="Operational costs" isWeb={isWeb} />
               <MetricCard icon={<Wallet size={18} color={summary.grossProfit >= 0 ? Colors.success : Colors.error} strokeWidth={1.8} />} iconBg={summary.grossProfit >= 0 ? '#E8F5E9' : '#FFEBEE'} label="Gross Profit" value={fmt(summary.grossProfit)} valueColor={summary.grossProfit >= 0 ? Colors.success : Colors.error} sub={`${summary.profitMargin.toFixed(1)}% margin`} isWeb={isWeb} />
@@ -205,7 +311,15 @@ function FinanceScreenContent() {
 
             <View>
               <View style={s.sectionHeader}>
-                <Text style={s.sectionTitle}>Revenue vs. Costs (6 months)</Text>
+                <Text style={s.sectionTitle}>
+                  {period === 'custom' && rangeFrom && rangeTo
+                    ? `Revenue vs. Costs (${format(rangeFrom, 'dd MMM')} – ${format(rangeTo, 'dd MMM')}, weekly)`
+                    : period === 'last_month'
+                    ? 'Revenue vs. Costs (Last Month, weekly)'
+                    : period === 'three_months'
+                    ? 'Revenue vs. Costs (3 Months)'
+                    : 'Revenue vs. Costs (This Month, weekly)' }
+                </Text>
               </View>
               <View style={s.chartCard}>
                 <View style={s.legend}>
@@ -309,14 +423,19 @@ function FinanceScreenContent() {
   );
 }
 
-function MetricCard({ icon, iconBg, label, value, sub, valueColor, isWeb }: { icon: React.ReactNode; iconBg: string; label: string; value: string; sub?: string; valueColor?: string; isWeb: boolean }) {
+function MetricCard({ icon, iconBg, label, value, sub, valueColor, isWeb, onPress }: { icon: React.ReactNode; iconBg: string; label: string; value: string; sub?: string; valueColor?: string; isWeb: boolean; onPress?: () => void }) {
   return (
-    <View style={[s.metricCard, isWeb && s.metricCardWeb]}>
+    <TouchableOpacity
+      style={[s.metricCard, isWeb && s.metricCardWeb]}
+      onPress={onPress}
+      disabled={!onPress}
+      activeOpacity={onPress ? 0.7 : 1}
+    >
       <View style={[s.metricIcon, { backgroundColor: iconBg }]}>{icon}</View>
       <Text style={s.metricLabel}>{label}</Text>
       <Text style={[s.metricValue, valueColor ? { color: valueColor } : {}]}>{value}</Text>
       {sub ? <Text style={s.metricSub}>{sub}</Text> : null}
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -351,8 +470,11 @@ const s = StyleSheet.create({
   title: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.lg, color: Colors.textPrimary },
   titleWeb: { fontSize: Typography.size['2xl'] },
   subtitle: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginTop: 1 },
-  periodRow: { flexDirection: 'row', gap: Spacing[2], paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  periodRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing[2], paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border, zIndex: 2000, elevation: 2000 },
   periodRowWeb: { paddingHorizontal: Spacing[8] },
+  periodDivider: { width: 1, height: 24, backgroundColor: Colors.border, marginHorizontal: Spacing[1] },
+  rangeField: { width: 148 },
+  rangeClear: { padding: Spacing[2] },
   periodBtn: { paddingVertical: Spacing[2], paddingHorizontal: Spacing[4], borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.neutral[50] },
   periodBtnActive: { backgroundColor: Colors.primarySurface, borderColor: Colors.primary },
   periodText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
@@ -379,8 +501,8 @@ const s = StyleSheet.create({
   legendLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textSecondary },
   barChart: { flexDirection: 'row', alignItems: 'flex-end', gap: Spacing[2], height: 140 },
   barGroup: { flex: 1, alignItems: 'center', gap: Spacing[1] },
-  barStack: { flexDirection: 'row', alignItems: 'flex-end', gap: 2, flex: 1 },
-  bar: { flex: 1, borderRadius: 3, minHeight: 2 },
+  barStack: { flexDirection: 'row', alignItems: 'flex-end', gap: 3, alignSelf: 'stretch', justifyContent: 'center' },
+  bar: { width: 14, borderRadius: 3, minHeight: 3 },
   barLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 10, color: Colors.textTertiary },
   expenseTotal: { alignItems: 'center', paddingBottom: Spacing[4], borderBottomWidth: 1, borderBottomColor: Colors.border, marginBottom: Spacing[3] },
   expenseTotalAmt: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size['3xl'], color: Colors.textPrimary, letterSpacing: -0.8 },

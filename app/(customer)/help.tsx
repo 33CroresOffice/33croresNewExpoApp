@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Linking, Platform } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeft, ChevronDown, ChevronUp, Phone, Mail, MessageCircle } from 'lucide-react-native';
@@ -64,6 +64,14 @@ function FAQItem({ q, a }: { q: string; a: string }) {
 export default function HelpScreen() {
   const insets = useSafeAreaInsets();
 
+  const openContact = (url: string) => {
+    if (Platform.OS === 'web' && url.startsWith('https://wa.me/')) {
+      window.open(url, '_blank');
+      return;
+    }
+    Linking.openURL(url);
+  };
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
@@ -79,7 +87,11 @@ export default function HelpScreen() {
           <Text style={styles.sectionTitle}>Contact Us</Text>
           <Text style={styles.contactDesc}>Our support team is available Mon – Sat, 9 AM to 6 PM.</Text>
           <View style={styles.contactActions}>
-            <View style={styles.contactItem}>
+            <TouchableOpacity
+              style={styles.contactItem}
+              onPress={() => openContact('tel:+919776888887')}
+              activeOpacity={0.7}
+            >
               <View style={styles.contactIcon}>
                 <Phone size={18} color={Colors.primary} />
               </View>
@@ -87,8 +99,12 @@ export default function HelpScreen() {
                 <Text style={styles.contactLabel}>Call Us</Text>
                 <Text style={styles.contactValue}>+91-9776-88888-7</Text>
               </View>
-            </View>
-            <View style={[styles.contactItem, styles.contactBorder]}>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.contactItem, styles.contactBorder]}
+              onPress={() => openContact('mailto:contact@33crores.com')}
+              activeOpacity={0.7}
+            >
               <View style={styles.contactIcon}>
                 <Mail size={18} color={Colors.accent} />
               </View>
@@ -96,8 +112,12 @@ export default function HelpScreen() {
                 <Text style={styles.contactLabel}>Email Us</Text>
                 <Text style={styles.contactValue}>contact@33crores.com</Text>
               </View>
-            </View>
-            <View style={[styles.contactItem, styles.contactBorder]}>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.contactItem, styles.contactBorder]}
+              onPress={() => openContact('https://wa.me/919776888887')}
+              activeOpacity={0.7}
+            >
               <View style={styles.contactIcon}>
                 <MessageCircle size={18} color={Colors.success} />
               </View>
@@ -105,7 +125,7 @@ export default function HelpScreen() {
                 <Text style={styles.contactLabel}>WhatsApp</Text>
                 <Text style={styles.contactValue}>+91-9776-88888-7</Text>
               </View>
-            </View>
+            </TouchableOpacity>
           </View>
         </View>
 

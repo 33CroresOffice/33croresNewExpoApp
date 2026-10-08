@@ -48,7 +48,7 @@ export default function VendorProcurementOrderDetail() {
         .select('*')
         .eq('id', id).maybeSingle(),
       supabase.from('procurement_order_items')
-        .select('*, flower_type:flower_types(display_name, unit_type)')
+        .select('*, garland_details, flower_type:flower_types(display_name, unit_type)')
         .eq('procurement_order_id', id).order('created_at'),
       supabase.from('item_unavailability')
         .select('id, procurement_order_item_id, reason, status')
@@ -59,7 +59,8 @@ export default function VendorProcurementOrderDetail() {
       setItems(itemsRes.data);
       const initialTotals: Record<string, string> = {};
       itemsRes.data.forEach((item: any) => {
-        initialTotals[item.id] = item.total_price != null ? String(item.total_price) : '';
+        const display = item.entered_price != null ? item.entered_price : item.total_price;
+        initialTotals[item.id] = display != null ? String(display) : '';
       });
       setTotals(initialTotals);
     }
@@ -74,6 +75,16 @@ export default function VendorProcurementOrderDetail() {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Realtime: reload when item_unavailability changes so rider-side marks sync instantly
+  useEffect(() => {
+    const channel = supabase
+      .channel('vendor-procurement-item-unavailability')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'item_unavailability' }, () => { load(); })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'item_unavailability' }, () => { load(); })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [load]);
 
   const saveAll = async () => {
     setSaving(true);
@@ -99,6 +110,7 @@ export default function VendorProcurementOrderDetail() {
         .rpc('update_vendor_item_price', {
           p_item_id: item.id,
           p_price_per_unit: unitPrice,
+          p_entered_price: totalPrice,
         });
       if (error) {
         setSaveError(error.message);
@@ -289,9 +301,18 @@ export default function VendorProcurementOrderDetail() {
                     <Text style={s.itemQty}>
                       {item.quantity} {item.unit_type ?? ft?.unit_type ?? ''}
                     </Text>
+                    {item.garland_details && Array.isArray(item.garland_details) && item.garland_details.length > 0 && (
+                      <View style={s.garlandBadgeRow}>
+                        {item.garland_details.map((g: any, gi: number) => (
+                          <View key={gi} style={s.garlandBadge}>
+                            <Text style={s.garlandBadgeText}>{g.quantity} Garland{g.quantity !== 1 ? 's' : ''}{g.size ? ` – ${g.size}` : ''}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
                     {item.price_per_unit != null && (
                       <Text style={s.savedTotal}>
-                        Unit: ₹{Number(item.price_per_unit).toFixed(2)} / {item.unit_type ?? item.flower_type?.unit_type ?? 'unit'}
+                        Total: ₹{Number(item.entered_price ?? item.total_price ?? 0).toLocaleString('en-IN')} · Unit: ₹{Number(item.price_per_unit).toFixed(2)} / {item.unit_type ?? item.flower_type?.unit_type ?? 'unit'}
                       </Text>
                     )}
                     {unavail && (
@@ -563,6 +584,9 @@ const s = StyleSheet.create({
 
   unavailBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
   unavailBadgeText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.error },
+  garlandBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
+  garlandBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.primarySurface, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
+  garlandBadgeText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.primary },
   unavailTag: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 12, backgroundColor: Colors.errorSurface, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.error + '30' },
   unavailTagText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.error },
   markUnavailBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 6, paddingHorizontal: 10, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.error + '40', backgroundColor: Colors.errorSurface, marginTop: 4 },

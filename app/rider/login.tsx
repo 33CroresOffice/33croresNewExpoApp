@@ -20,6 +20,7 @@ import Input from '@/components/ui/Input';
 
 const { width } = Dimensions.get('window');
 const ACCENT = '#3AAFE4';
+const DEMO_RIDER_MOBILE = '9999999999';
 
 type RiderMobileInputProps = {
   mobile: string;
@@ -68,6 +69,12 @@ export default function RiderLoginScreen() {
     setError('');
 
     try {
+      if (mobile.trim() === DEMO_RIDER_MOBILE) {
+        router.push({ pathname: '/rider/otp-verify', params: { mobile: DEMO_RIDER_MOBILE, channel: 'demo' } });
+        setLoading(false);
+        return;
+      }
+
       const { data: rider } = await supabase
         .from('riders')
         .select('approval_status')

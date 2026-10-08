@@ -70,7 +70,7 @@ function DeliveryTomorrowContent() {
             plan:subscription_plans(name),
             orders(id, scheduled_date, status)
           `)
-          .eq('status', 'active')
+          .in('status', ['active', 'pending'])
           .lte('start_date', tomorrowStr)
           .or(`new_end_date.gte.${tomorrowStr},and(new_end_date.is.null,or(end_date.is.null,end_date.gte.${tomorrowStr}))`)
           .or(`pause_until.is.null,pause_until.lt.${tomorrowStr}`)

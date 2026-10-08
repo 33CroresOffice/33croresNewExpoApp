@@ -1,12 +1,12 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Platform, ActivityIndicator, RefreshControl,
+  Platform, ActivityIndicator, RefreshControl, Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Clock, Play, ChevronDown, ChevronRight, CheckCircle2,
-  XCircle, AlertCircle, Timer, Calendar, RotateCw, Zap, RefreshCw,
+  XCircle, AlertCircle, Timer, RotateCw, Zap, RefreshCw,
 } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
@@ -20,8 +20,9 @@ interface JobDef {
   schedule: string;
   job_type: JobType;
   automation_name: string | null;
-  is_active: boolean;
   sort_order: number;
+  active: boolean;
+  run_count: number;
 }
 
 interface JobStatus {
@@ -34,14 +35,16 @@ interface JobStatus {
   last_run_duration_ms: number | null;
   last_run_return: string | null;
   last_error: string | null;
+  run_count: number;
 }
 
 interface RunHistoryEntry {
-  runid: number;
+  runid: string;
   job_name: string;
   start_time: string | null;
   end_time: string | null;
   status: string;
+  source: 'scheduled' | 'manual';
   duration_ms: number | null;
   return_message: string | null;
 }
@@ -86,32 +89,28 @@ function CronMonitorContent() {
   const [error, setError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<{ job: string; success: boolean; message: string } | null>(null);
+  const [pendingRunJob, setPendingRunJob] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
     setStatusError(null);
 
-    const defsRes = await supabase.from('cron_job_definitions').select('*').order('sort_order');
-
-    if (defsRes.error) {
-      setError('Could not load cron job definitions.');
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
-
-    setDefinitions((defsRes.data ?? []) as JobDef[]);
-
     try {
       const statusRes = await supabase.rpc('get_cron_job_status');
       if (statusRes.error) throw statusRes.error;
+      if (!Array.isArray(statusRes.data)) throw new Error('Invalid cron status response');
+
+      const liveJobs = statusRes.data as JobDef[];
       const statusMap: Record<string, JobStatus> = {};
-      for (const s of (statusRes.data as any[]) ?? []) {
-        statusMap[s.job_name] = s;
+      for (const job of liveJobs) {
+        statusMap[job.job_name] = job as unknown as JobStatus;
       }
+      setDefinitions(liveJobs);
       setStatuses(statusMap);
     } catch {
-      setStatusError('Live status unavailable — showing job definitions only.');
+      setDefinitions([]);
+      setStatuses({});
+      setStatusError('Live scheduler data is unavailable. Refresh to try again.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -128,7 +127,8 @@ function CronMonitorContent() {
         p_limit: 50,
       });
       if (rpcError) throw rpcError;
-      setHistory((data as RunHistoryEntry[]) ?? []);
+      if (!Array.isArray(data)) throw new Error('Invalid execution history response');
+      setHistory(data as RunHistoryEntry[]);
     } catch {
       setHistory([]);
     } finally {
@@ -146,6 +146,15 @@ function CronMonitorContent() {
     }
   };
 
+  const requestRun = (jobName: string) => setPendingRunJob(jobName);
+
+  const confirmRun = () => {
+    if (!pendingRunJob) return;
+    const jobName = pendingRunJob;
+    setPendingRunJob(null);
+    runJob(jobName);
+  };
+
   const runJob = async (jobName: string) => {
     setRunningJob(jobName);
     setRunResult(null);
@@ -154,12 +163,13 @@ function CronMonitorContent() {
       if (rpcError) throw rpcError;
       const result = data as any;
       if (result?.success) {
-        setRunResult({ job: jobName, success: true, message: 'Job triggered successfully.' });
+        setRunResult({ job: jobName, success: true, message: 'Completed successfully and added to execution history.' });
       } else {
-        setRunResult({ job: jobName, success: false, message: result?.error || 'Job execution failed.' });
+        setRunResult({ job: jobName, success: false, message: result?.error || 'Job execution failed. See the new history entry for details.' });
       }
       await load();
-      if (expandedJob === jobName) await loadHistory(jobName);
+      setExpandedJob(jobName);
+      await loadHistory(jobName);
     } catch {
       setRunResult({ job: jobName, success: false, message: 'Could not trigger job. Please try again.' });
     } finally {
@@ -183,13 +193,21 @@ function CronMonitorContent() {
     }
   };
 
-  const getNextRun = (schedule: string, active: boolean) => {
-    if (!active) return 'Inactive';
-    return `Scheduled: ${schedule}`;
+  const formatSchedule = (schedule: string) => {
+    const parts = schedule.trim().split(/\s+/);
+    if (parts.length !== 5) return `Cron: ${schedule}`;
+    const [minute, hour, day, month, weekday] = parts;
+    if (minute === '*' && hour === '*' && day === '*' && month === '*' && weekday === '*') return 'Every minute';
+    if (minute === '0' && hour === '*' && day === '*' && month === '*' && weekday === '*') return 'Every hour';
+    if (/^\d+$/.test(minute) && /^\d+$/.test(hour) && day === '*' && month === '*' && weekday === '*') {
+      const formattedHour = Number(hour) % 12 || 12;
+      const period = Number(hour) >= 12 ? 'PM' : 'AM';
+      return `Daily at ${formattedHour}:${minute.padStart(2, '0')} ${period}`;
+    }
+    return `Cron: ${schedule}`;
   };
 
   const totalJobs = definitions.length;
-  const activeJobs = definitions.filter(d => statuses[d.job_name]?.active ?? d.is_active).length;
   const failedJobs = definitions.filter(d => {
     const st = statuses[d.job_name];
     return st?.last_run_status === 1;
@@ -198,6 +216,7 @@ function CronMonitorContent() {
     const st = statuses[d.job_name];
     return st?.last_run_status === 2;
   }).length;
+  const totalRuns = definitions.reduce((sum, job) => sum + (job.run_count ?? 0), 0);
 
   if (loading) {
     return (
@@ -224,7 +243,7 @@ function CronMonitorContent() {
           <View>
             <Text style={s.headerEyebrow}>SYSTEM</Text>
             <Text style={s.headerTitle}>Cron Job Monitor</Text>
-            <Text style={s.headerSub}>Monitor and manage all scheduled automation jobs</Text>
+            <Text style={s.headerSub}>Live scheduled jobs, execution history, and manual controls</Text>
           </View>
         </View>
 
@@ -233,6 +252,7 @@ function CronMonitorContent() {
           <SummaryCard icon={<Zap size={16} color={Colors.primary} strokeWidth={2} />} label="Total Jobs" value={totalJobs} color={Colors.primary} bg={Colors.primarySurface} />
           <SummaryCard icon={<CheckCircle2 size={16} color={Colors.success} strokeWidth={2} />} label="Succeeded" value={succeededJobs} color={Colors.success} bg="#E8F5E9" />
           <SummaryCard icon={<XCircle size={16} color={Colors.error} strokeWidth={2} />} label="Failed" value={failedJobs} color={Colors.error} bg="#FFEBEE" />
+          <SummaryCard icon={<RotateCw size={16} color={Colors.warning} strokeWidth={2} />} label="Total Runs" value={totalRuns} color={Colors.warning} bg="#FFF3E0" />
         </View>
 
         {statusError && (
@@ -266,10 +286,11 @@ function CronMonitorContent() {
           <View style={s.tableHead}>
             <Text style={[s.th, { flex: 2.5 }]}>Job Name</Text>
             <Text style={[s.th, { flex: 2 }]}>Purpose</Text>
-            <Text style={[s.th, { flex: 1.2 }]}>Schedule</Text>
+            <Text style={[s.th, { flex: 1.4 }]}>Schedule</Text>
             <Text style={[s.th, { flex: 1 }]}>Type</Text>
             <Text style={[s.th, { flex: 1.3 }]}>Last Run</Text>
-            <Text style={[s.th, { flex: 0.8 }]}>Status</Text>
+            <Text style={[s.th, { flex: 1.1 }]}>Status</Text>
+            <Text style={[s.th, { flex: 0.7 }]}>Runs</Text>
             <Text style={[s.th, { flex: 0.8 }]}>Duration</Text>
             <Text style={[s.th, { flex: 1 }]}>Actions</Text>
           </View>
@@ -280,7 +301,7 @@ function CronMonitorContent() {
             const isRunning = runningJob === def.job_name;
             const statusInfo = status?.last_run_status != null
               ? STATUS_LABELS[status.last_run_status] ?? { label: 'Unknown', color: Colors.neutral[400] }
-              : { label: 'Never', color: Colors.neutral[400] };
+              : { label: 'Never run', color: Colors.neutral[400] };
 
             return (
               <View key={def.job_name}>
@@ -301,8 +322,9 @@ function CronMonitorContent() {
                   <View style={[s.td, { flex: 2 }]}>
                     <Text style={s.purposeText} numberOfLines={2}>{def.purpose}</Text>
                   </View>
-                  <View style={[s.td, { flex: 1.2 }]}>
-                    <Text style={s.scheduleText} numberOfLines={1}>{def.schedule}</Text>
+                  <View style={[s.td, { flex: 1.4 }]}> 
+                    <Text style={s.scheduleText} numberOfLines={1}>{formatSchedule(def.schedule)}</Text>
+                    <Text style={s.scheduleRaw} numberOfLines={1}>{def.schedule}</Text>
                   </View>
                   <View style={[s.td, { flex: 1 }]}>
                     <View style={[s.typeBadge, { backgroundColor: TYPE_COLORS[def.job_type] + '18' }]}>
@@ -312,19 +334,23 @@ function CronMonitorContent() {
                   <View style={[s.td, { flex: 1.3 }]}>
                     <Text style={s.timeText}>{formatTime(status?.last_run_start ?? null)}</Text>
                   </View>
-                  <View style={[s.td, { flex: 0.8 }]}>
-                    <View style={[s.statusBadge, { backgroundColor: statusInfo.color + '18' }]}>
-                      <Text style={[s.statusText, { color: statusInfo.color }]}>{statusInfo.label}</Text>
+                  <View style={[s.td, { flex: 1.1, gap: 3 }]}> 
+                    <View style={[s.statusBadge, { backgroundColor: def.active ? Colors.success + '18' : Colors.neutral[200] }]}> 
+                      <Text style={[s.statusText, { color: def.active ? Colors.success : Colors.textTertiary }]}>{def.active ? 'Active' : 'Paused'}</Text>
                     </View>
+                    <Text style={[s.statusText, { color: statusInfo.color }]}>{statusInfo.label}</Text>
                   </View>
-                  <View style={[s.td, { flex: 0.8 }]}>
+                  <View style={[s.td, { flex: 0.7 }]}> 
+                    <Text style={s.durationText}>{status?.run_count ?? def.run_count ?? 0}</Text>
+                  </View>
+                  <View style={[s.td, { flex: 0.8 }]}> 
                     <Text style={s.durationText}>{formatDuration(status?.last_run_duration_ms ?? null)}</Text>
                   </View>
                   <View style={[s.td, { flex: 1, flexDirection: 'row', gap: Spacing[1] }]}>
                     <TouchableOpacity
                       style={[s.runBtn, isRunning && s.runBtnDisabled]}
-                      onPress={(e) => { e.stopPropagation?.(); runJob(def.job_name); }}
-                      disabled={!!isRunning}
+                      onPress={(e) => { e.stopPropagation?.(); requestRun(def.job_name); }}
+                      disabled={!!isRunning || !def.active}
                       activeOpacity={0.7}
                     >
                       {isRunning ? (
@@ -332,13 +358,13 @@ function CronMonitorContent() {
                       ) : (
                         <Play size={11} color={Colors.primary} strokeWidth={2.4} fill={Colors.primary} />
                       )}
-                      <Text style={s.runBtnText}>{isRunning ? '...' : 'Run'}</Text>
+                      <Text style={s.runBtnText}>{isRunning ? '...' : def.active ? 'Run' : 'Paused'}</Text>
                     </TouchableOpacity>
                     {status?.last_run_status === 1 && (
                       <TouchableOpacity
                         style={[s.retryBtn, isRunning && s.runBtnDisabled]}
-                        onPress={(e) => { e.stopPropagation?.(); runJob(def.job_name); }}
-                        disabled={!!isRunning}
+                        onPress={(e) => { e.stopPropagation?.(); requestRun(def.job_name); }}
+                        disabled={!!isRunning || !def.active}
                         activeOpacity={0.7}
                       >
                         <RefreshCw size={11} color={Colors.error} strokeWidth={2.4} />
@@ -356,7 +382,7 @@ function CronMonitorContent() {
                         <RotateCw size={13} color={Colors.textSecondary} strokeWidth={2} />
                         <Text style={s.historyTitle}>Execution History — {def.job_name}</Text>
                       </View>
-                      <Text style={s.historyCount}>{history.length} runs</Text>
+                      <Text style={s.historyCount}>{status?.run_count ?? def.run_count ?? history.length} total runs</Text>
                     </View>
 
                     {historyLoading ? (
@@ -368,8 +394,9 @@ function CronMonitorContent() {
                         <View style={s.historyHead}>
                           <Text style={[s.historyTh, { flex: 1.8 }]}>Date / Time</Text>
                           <Text style={[s.historyTh, { flex: 1 }]}>Result</Text>
+                          <Text style={[s.historyTh, { flex: 0.9 }]}>Source</Text>
                           <Text style={[s.historyTh, { flex: 0.8 }]}>Duration</Text>
-                          <Text style={[s.historyTh, { flex: 2 }]}>Details</Text>
+                          <Text style={[s.historyTh, { flex: 1.6 }]}>Details</Text>
                         </View>
                         {history.map((entry, hIdx) => {
                           const hColor = entry.status === 'succeeded' ? Colors.success : entry.status === 'failed' ? Colors.error : Colors.warning;
@@ -380,8 +407,9 @@ function CronMonitorContent() {
                                 {entry.status === 'succeeded' ? <CheckCircle2 size={11} color={hColor} strokeWidth={2} /> : entry.status === 'failed' ? <XCircle size={11} color={hColor} strokeWidth={2} /> : <Timer size={11} color={hColor} strokeWidth={2} />}
                                 <Text style={[s.historyStatus, { color: hColor }]}>{entry.status}</Text>
                               </View>
+                              <Text style={[s.historyTd, { flex: 0.9 }]}>{entry.source === 'manual' ? 'Manual' : 'Scheduled'}</Text>
                               <Text style={[s.historyTd, { flex: 0.8 }]}>{formatDuration(entry.duration_ms)}</Text>
-                              <Text style={[s.historyTd, { flex: 2 }]} numberOfLines={2}>{entry.return_message || '—'}</Text>
+                              <Text style={[s.historyTd, { flex: 1.6 }]} numberOfLines={2}>{entry.return_message || '—'}</Text>
                             </View>
                           );
                         })}
@@ -396,6 +424,31 @@ function CronMonitorContent() {
 
         <View style={{ height: Spacing[8] }} />
       </ScrollView>
+
+      <Modal
+        visible={!!pendingRunJob}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPendingRunJob(null)}
+      >
+        <View style={s.confirmBackdrop}>
+          <View style={s.confirmCard}>
+            <Text style={s.confirmTitle}>Run this job now?</Text>
+            <Text style={s.confirmMessage}>
+              This will trigger <Text style={s.confirmJobName}>{pendingRunJob}</Text> immediately, outside its normal schedule.
+            </Text>
+            <View style={s.confirmActions}>
+              <TouchableOpacity style={s.confirmCancelBtn} onPress={() => setPendingRunJob(null)}>
+                <Text style={s.confirmCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.confirmRunBtn} onPress={confirmRun}>
+                <Play size={13} color={Colors.white} strokeWidth={2.4} fill={Colors.white} />
+                <Text style={s.confirmRunText}>Run now</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -450,7 +503,8 @@ const s = StyleSheet.create({
   jobNameText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
   errorInline: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 10, color: Colors.error, marginTop: 2 },
   purposeText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textSecondary, lineHeight: 16 },
-  scheduleText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  scheduleText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.textSecondary },
+  scheduleRaw: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 9, color: Colors.textTertiary, marginTop: 2 },
   timeText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textSecondary },
   typeBadge: { paddingHorizontal: Spacing[2], paddingVertical: 2, borderRadius: Radius.full },
   typeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10 },
@@ -478,4 +532,14 @@ const s = StyleSheet.create({
   historyRowAlt: { backgroundColor: Colors.neutral[50] },
   historyTd: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textSecondary },
   historyStatus: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10 },
+  confirmBackdrop: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.45)', alignItems: 'center', justifyContent: 'center', padding: Spacing[5] },
+  confirmCard: { width: '100%', maxWidth: 440, backgroundColor: Colors.white, borderRadius: Radius.lg, padding: Spacing[5], ...Shadow.lg },
+  confirmTitle: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.lg, color: Colors.textPrimary },
+  confirmMessage: { marginTop: Spacing[2], fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, lineHeight: 21, color: Colors.textSecondary },
+  confirmJobName: { fontFamily: Typography.fontFamily.sansSemiBold, color: Colors.textPrimary },
+  confirmActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing[2], marginTop: Spacing[5] },
+  confirmCancelBtn: { paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border },
+  confirmCancelText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textSecondary },
+  confirmRunBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing[1], paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderRadius: Radius.md, backgroundColor: Colors.primary },
+  confirmRunText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white },
 });

@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Package, Store, Calendar, FileText, IndianRupee, CreditCard as Edit3, Check, X, Clock, Truck, CircleCheck as CheckCircle, Circle as XCircle, ChevronDown, CircleDollarSign, QrCode } from 'lucide-react-native';
+import { ArrowLeft, Package, Store, Calendar, FileText, IndianRupee, CreditCard as Edit3, Check, X, Clock, Truck, CircleCheck as CheckCircle, Circle as XCircle, ChevronDown, CircleDollarSign, QrCode, AlertTriangle } from 'lucide-react-native';
 import { format, parseISO } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
@@ -49,13 +49,7 @@ function ProcurementOrderDetailScreenContent() {
   const [updatingStatus, setUpdatingStatus] = useState(false);
 
   const [payments, setPayments] = useState<any[]>([]);
-  const [showPayModal, setShowPayModal] = useState(false);
-  const [payAmount, setPayAmount] = useState('');
-  const [payMethod, setPayMethod] = useState('cash');
-  const [payNotes, setPayNotes] = useState('');
-  const [receiptImagePath, setReceiptImagePath] = useState<string | null>(null);
-  const [recordingPayment, setRecordingPayment] = useState(false);
-  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [unavailMap, setUnavailMap] = useState<Record<string, any>>({});
 
   const load = useCallback(async () => {
     if (!id) {
@@ -84,6 +78,18 @@ function ProcurementOrderDetailScreenContent() {
         .eq('procurement_order_id', id!)
         .order('created_at', { ascending: false });
       if (payData) setPayments(payData);
+
+      const { data: unavailData } = await supabase
+        .from('item_unavailability')
+        .select('id, procurement_order_item_id, reporter_role, reason, status, created_at')
+        .eq('procurement_order_id', id!);
+      if (unavailData) {
+        const map: Record<string, any> = {};
+        for (const u of unavailData) {
+          if (u.procurement_order_item_id) map[u.procurement_order_item_id] = u;
+        }
+        setUnavailMap(map);
+      }
     } catch (e) {
       console.error('load error', e);
     } finally {
@@ -95,7 +101,8 @@ function ProcurementOrderDetailScreenContent() {
 
   const startEditPrice = (item: ProcurementOrderItem) => {
     setEditingItemId(item.id);
-    setEditPrice(item.total_price != null ? String(item.total_price) : '');
+    const display = (item as any).entered_price != null ? (item as any).entered_price : item.total_price;
+    setEditPrice(display != null ? String(display) : '');
   };
 
   const cancelEdit = () => {
@@ -110,7 +117,7 @@ function ProcurementOrderDetailScreenContent() {
     setSaving(true);
     await supabase
       .from('procurement_order_items')
-      .update({ price_per_unit: unitPrice })
+      .update({ price_per_unit: unitPrice, entered_price: totalPrice })
       .eq('id', item.id);
 
     const { data: freshItems } = await supabase
@@ -140,35 +147,6 @@ function ProcurementOrderDetailScreenContent() {
   const totalPaid = payments.filter(p => p.status === 'completed').reduce((s, p) => s + Number(p.amount), 0);
   const amountDue = Number(order?.total_amount ?? 0) - totalPaid;
   const fullyPaid = amountDue <= 0 && totalPaid > 0;
-
-  const recordPayment = async () => {
-    const amt = parseFloat(payAmount);
-    if (isNaN(amt) || amt <= 0) { setPaymentError('Enter a valid amount'); return; }
-    setRecordingPayment(true);
-    setPaymentError(null);
-    const { data: { session } } = await supabase.auth.getSession();
-    const { error } = await supabase.from('vendor_payments').insert({
-      procurement_order_id: id!,
-      vendor_id: (order as any)?.vendor_id ?? (order as any)?.vendor?.id,
-      amount: amt,
-      payment_method: payMethod,
-      notes: payNotes,
-      receipt_image_path: receiptImagePath,
-      status: 'completed',
-      recorded_by: session?.user?.id ?? null,
-    });
-    if (error) { setPaymentError('Could not record the payment. Please try again.'); setRecordingPayment(false); return; }
-    setPayAmount(''); setPayNotes(''); setReceiptImagePath(null); setShowPayModal(false);
-
-    const newTotalPaid = totalPaid + amt;
-    const orderTotal = Number(order?.total_amount ?? 0);
-    if (newTotalPaid >= orderTotal && orderTotal > 0 && order?.status !== 'paid' && order?.status !== 'cancelled') {
-      await supabase.from('procurement_orders').update({ status: 'paid' }).eq('id', id!);
-    }
-
-    await load();
-    setRecordingPayment(false);
-  };
 
   if (loading) {
     return (
@@ -295,6 +273,15 @@ function ProcurementOrderDetailScreenContent() {
                     <Text style={s.itemQty}>
                       {item.quantity} {item.unit_type ?? ft?.unit_type ?? ''}
                     </Text>
+                    {unavailMap[item.id] && (
+                      <View style={s.unavailBadge}>
+                        <AlertTriangle size={10} color={Colors.error} strokeWidth={2} />
+                        <Text style={s.unavailBadgeText}>
+                          Unavailable — marked by {unavailMap[item.id].reporter_role === 'vendor' ? 'Vendor' : 'Rider'}
+                          {unavailMap[item.id].reason ? ` · ${unavailMap[item.id].reason}` : ''}
+                        </Text>
+                      </View>
+                    )}
                   </View>
 
                   <View style={s.itemPriceCol}>
@@ -345,7 +332,7 @@ function ProcurementOrderDetailScreenContent() {
                         <View style={s.priceTextCol}>
                           {item.price_per_unit != null ? (
                             <>
-                              <Text style={s.priceTotal}>₹{Number(item.total_price ?? 0).toLocaleString('en-IN')}</Text>
+                              <Text style={s.priceTotal}>₹{Number((item as any).entered_price ?? item.total_price ?? 0).toLocaleString('en-IN')}</Text>
                               <Text style={s.pricePerUnit}>
                                 ₹{Number(item.price_per_unit).toFixed(2)} / {item.unit_type ?? (item.flower_type as any)?.unit_type ?? 'unit'}
                               </Text>
@@ -432,7 +419,7 @@ function ProcurementOrderDetailScreenContent() {
             )}
 
             {!fullyPaid && (
-              <TouchableOpacity style={s.recordPayBtn} onPress={() => setShowPayModal(true)} activeOpacity={0.8}>
+              <TouchableOpacity style={s.recordPayBtn} onPress={() => router.push({ pathname: '/(admin)/record-vendor-payment' as any, params: { id: id! } })} activeOpacity={0.8}>
                 <CircleDollarSign size={15} color={Colors.white} strokeWidth={1.8} />
                 <Text style={s.recordPayBtnText}>Record Payment</Text>
               </TouchableOpacity>
@@ -441,107 +428,7 @@ function ProcurementOrderDetailScreenContent() {
         )}
       </ScrollView>
 
-      <Modal visible={showPayModal} transparent animationType="fade" onRequestClose={() => setShowPayModal(false)}>
-        <View style={s.modalOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setShowPayModal(false)} />
-          <View style={[s.statusModal, isWeb && s.statusModalWeb]}>
-            <View style={s.statusModalHeader}>
-              <Text style={s.statusModalTitle}>Record Vendor Payment</Text>
-              <TouchableOpacity onPress={() => setShowPayModal(false)} style={s.closeBtn}>
-                <X size={15} color={Colors.textSecondary} strokeWidth={2} />
-              </TouchableOpacity>
-            </View>
-            <View style={s.payModalBody}>
-              <View style={s.payModalSummary}>
-                <Text style={s.payModalSummaryLabel}>Amount Due</Text>
-                <Text style={s.payModalSummaryValue}>₹{amountDue.toLocaleString('en-IN')}</Text>
-              </View>
-              <Text style={s.payFieldLabel}>Payment Amount *</Text>
-              <View style={s.priceInputWrap}>
-                <Text style={s.rupeeSymbol}>₹</Text>
-                <TextInput
-                  style={s.priceInput}
-                  value={payAmount}
-                  onChangeText={setPayAmount}
-                  keyboardType="decimal-pad"
-                  placeholder="Enter amount"
-                  placeholderTextColor={Colors.textDisabled}
-                />
-              </View>
-              <Text style={s.payFieldLabel}>Payment Method</Text>
-              <View style={s.payMethodRow}>
-                {['cash', 'bank_transfer', 'cheque', 'upi'].map(m => (
-                  <TouchableOpacity
-                    key={m}
-                    style={[s.payMethodChip, payMethod === m && s.payMethodChipActive]}
-                    onPress={() => setPayMethod(m)}
-                  >
-                    <Text style={[s.payMethodText, payMethod === m && s.payMethodTextActive]}>
-                      {m.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              {payMethod === 'upi' && vendor?.qr_code_image_path ? (
-                <View style={s.qrCodeBox}>
-                  <Text style={s.payFieldLabel}>Vendor QR Code</Text>
-                  <View style={s.qrCodePreviewWrap}>
-                    <Image
-                      source={{
-                        uri: vendor.qr_code_image_path.startsWith('http')
-                          ? vendor.qr_code_image_path
-                          : supabase.storage.from('vendor-qr-codes').getPublicUrl(vendor.qr_code_image_path).data.publicUrl,
-                      }}
-                      style={s.qrCodeImage}
-                      resizeMode="contain"
-                    />
-                    <Text style={s.qrCodeHint}>Scan this QR code to pay this vendor via UPI</Text>
-                  </View>
-                </View>
-              ) : null}
-              <Text style={s.payFieldLabel}>Notes</Text>
-              <TextInput
-                style={[s.priceInput, s.payNotesInput]}
-                value={payNotes}
-                onChangeText={setPayNotes}
-                placeholder="Optional notes..."
-                placeholderTextColor={Colors.textDisabled}
-                multiline
-              />
-              <Text style={s.payFieldLabel}>Payment Receipt</Text>
-              <PhotoUploadField
-                label="Upload Receipt"
-                value={receiptImagePath}
-                onChange={setReceiptImagePath}
-                storagePath={`vendor-receipts/${id ?? 'new'}`}
-                bucket="vendor-receipts"
-                aspectRatio={[4, 3]}
-                hint="Upload a screenshot or photo of the payment receipt for your records."
-              />
-              {paymentError && <Text style={s.errorText}>{paymentError}</Text>}
-            </View>
-            <View style={s.payModalFooter}>
-              <TouchableOpacity style={s.cancelBtn} onPress={() => setShowPayModal(false)}>
-                <Text style={s.cancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[s.recordPayBtn, fullyPaid && s.recordPayBtnDisabled]} onPress={recordPayment} disabled={recordingPayment || fullyPaid} activeOpacity={0.85}>
-                {fullyPaid ? (
-                  <Text style={s.recordPayBtnText}>Fully Paid</Text>
-                ) : recordingPayment ? (
-                  <ActivityIndicator size="small" color={Colors.white} />
-                ) : (
-                  <>
-                    <Check size={14} color={Colors.white} strokeWidth={2.5} />
-                    <Text style={s.recordPayBtnText}>Record Payment</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={showStatusModal} transparent animationType="fade" onRequestClose={() => setShowStatusModal(false)}>
+<Modal visible={showStatusModal} transparent animationType="fade" onRequestClose={() => setShowStatusModal(false)}>
         <View style={s.modalOverlay}>
           <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setShowStatusModal(false)} />
           <View style={[s.statusModal, isWeb && s.statusModalWeb]}>
@@ -654,6 +541,8 @@ const s = StyleSheet.create({
   itemInfo: { flex: 1 },
   itemName: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
   itemQty: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 12, color: Colors.textTertiary, marginTop: 2, textTransform: 'capitalize' },
+  unavailBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, backgroundColor: Colors.errorSurface, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 3, alignSelf: 'flex-start' },
+  unavailBadgeText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.error },
 
   itemPriceCol: { alignItems: 'flex-end' },
   priceDisplayRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },

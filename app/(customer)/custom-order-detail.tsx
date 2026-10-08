@@ -20,6 +20,9 @@ import { format } from 'date-fns';
 import StatusChip from '@/components/ui/StatusChip';
 import Button from '@/components/ui/Button';
 import RazorpayWebView from '@/components/ui/RazorpayWebView';
+import PaymentProcessingOverlay from '@/components/ui/PaymentProcessingOverlay';
+import { paymentState } from '@/utils/paymentState';
+import { BackHandler } from 'react-native';
 
 function CustItemTypeBadge({ isGarland }: { isGarland: boolean }) {
   return (
@@ -132,6 +135,8 @@ export default function CustomOrderDetailScreen() {
   const [address, setAddress] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [processingFailed, setProcessingFailed] = useState<string | null>(null);
   const [payError, setPayError] = useState('');
   const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -165,6 +170,15 @@ export default function CustomOrderDetailScreen() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (paying || processing || processingFailed) return true;
+      return false;
+    });
+    return () => sub.remove();
+  }, [paying, processing, processingFailed]);
+
   const invokeFn = async (fnName: string, body: object) => {
     const { data, error } = await supabase.functions.invoke(fnName, { body });
     if (error) {
@@ -186,19 +200,23 @@ export default function CustomOrderDetailScreen() {
   };
 
   const verifyPayment = async (rzpOrderId: string, rzpPaymentId: string, rzpSignature: string) => {
+    setProcessing(true);
+    paymentState.start();
     const { data, error } = await invokeFn('verify-custom-order-payment', {
       custom_order_id: id,
       razorpay_order_id: rzpOrderId,
       razorpay_payment_id: rzpPaymentId,
       razorpay_signature: rzpSignature,
     });
+    paymentState.end();
     if (error || !data?.success) {
-      setPayError(data?.error || error?.message || 'Payment verification failed');
+      setProcessingFailed(data?.error || error?.message || 'Payment verification failed');
       setPaying(false);
       return;
     }
     // Refresh order to show paid status
     await load();
+    setProcessing(false);
     setPaying(false);
   };
 
@@ -241,6 +259,10 @@ export default function CustomOrderDetailScreen() {
   };
 
   const handlePay = async () => {
+    if (paymentState.isActive()) {
+      setPayError('A payment is already being processed. Please wait.');
+      return;
+    }
     setPayError('');
     setPaying(true);
 
@@ -625,6 +647,13 @@ export default function CustomOrderDetailScreen() {
           onCancel={() => { setWebViewUrl(null); setPaying(false); }}
         />
       )}
+
+      <PaymentProcessingOverlay
+        visible={processing || !!processingFailed}
+        status={processingFailed ? 'failed' : 'processing'}
+        message={processingFailed ?? undefined}
+        onDismiss={() => { setProcessingFailed(null); setPaying(false); }}
+      />
     </View>
   );
 }

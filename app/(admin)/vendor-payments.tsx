@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { usePageVisibility } from '@/hooks/usePageVisibility';
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import {
@@ -8,12 +8,13 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   CircleDollarSign, Search, ArrowLeft, Store,
-  CircleCheck as CheckCircle, Clock, ChevronRight,
+  CircleCheck as CheckCircle, Clock, ChevronRight, X,
 } from 'lucide-react-native';
 import { router } from 'expo-router';
-import { format, parseISO, startOfMonth, endOfMonth, subMonths } from 'date-fns';
+import { format, parseISO, startOfMonth, endOfMonth, subMonths, startOfDay, endOfDay } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
+import DatePickerField from '@/components/ui/DatePickerField';
 
 interface VendorPaymentRow {
   id: string;
@@ -58,7 +59,10 @@ function VendorPaymentsScreenContent() {
   const [refreshing, setRefreshing] = useState(false);
   const [tab, setTab] = useState('all');
   const [dateFilter, setDateFilter] = useState(0);
-  const pendingExtraRef = useRef(0);
+  const [rangeFrom, setRangeFrom] = useState<Date | null>(null);
+  const [rangeTo, setRangeTo] = useState<Date | null>(null);
+  const [openPicker, setOpenPicker] = useState<'from' | 'to' | null>(null);
+  const [pendingExtra, setPendingExtra] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -69,22 +73,36 @@ function VendorPaymentsScreenContent() {
         )
         .order('created_at', { ascending: false })
         .limit(300);
-      if (dateFilter !== -1) {
+      const range = (() => {
+        if (dateFilter === -2) {
+          if (!rangeFrom || !rangeTo) return null;
+          return { from: startOfDay(rangeFrom), to: endOfDay(rangeTo) };
+        }
+        if (dateFilter === -1) return null;
         const now = new Date();
         const from = dateFilter === 0
           ? startOfMonth(now)
           : startOfMonth(subMonths(now, dateFilter === 1 ? 1 : dateFilter - 1));
         const to = dateFilter === 1 ? endOfMonth(subMonths(now, 1)) : now;
+        return { from, to };
+      })();
+      if (range) {
         query = query
-          .gte('payment_date', format(from, 'yyyy-MM-dd'))
-          .lte('payment_date', format(to, 'yyyy-MM-dd'));
+          .gte('payment_date', format(range.from, 'yyyy-MM-dd'))
+          .lte('payment_date', format(range.to, 'yyyy-MM-dd'));
       }
       const { data } = await query;
       if (data) setPayments(data as any);
 
-      const { data: allOrders } = await supabase
+      let orderQuery = supabase
         .from('procurement_orders')
-        .select('id, status, total_amount');
+        .select('id, status, total_amount, created_at');
+      if (range) {
+        orderQuery = orderQuery
+          .gte('created_at', range.from.toISOString())
+          .lte('created_at', range.to.toISOString());
+      }
+      const { data: allOrders } = await orderQuery;
 
       const paidByOrder = new Map<string, number>();
       (data ?? []).filter((p: any) => p.status === 'completed').forEach((p: any) => {
@@ -92,29 +110,36 @@ function VendorPaymentsScreenContent() {
         paidByOrder.set(oid, (paidByOrder.get(oid) ?? 0) + Number(p.amount));
       });
 
-      let pendingExtra = 0;
+      let pendingExtraVal = 0;
       (allOrders ?? []).forEach((o: any) => {
         if (o.status === 'cancelled') return;
         const orderTotal = Number(o.total_amount) || 0;
         const paidForOrder = paidByOrder.get(o.id as string) ?? 0;
         const unpaid = orderTotal - paidForOrder;
-        if (unpaid > 0) pendingExtra += unpaid;
+        if (unpaid > 0) pendingExtraVal += unpaid;
       });
-      pendingExtraRef.current = pendingExtra;
+      setPendingExtra(pendingExtraVal);
     } catch (e) {
       console.error('load error', e);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [dateFilter]);
+  }, [dateFilter, rangeFrom, rangeTo]);
+
+  const clearRange = useCallback(() => {
+    setRangeFrom(null);
+    setRangeTo(null);
+    setOpenPicker(null);
+    setDateFilter(0);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
   usePageVisibility(load);
 
   const filtered = payments.filter(p => tab === 'all' || p.status === tab);
   const totalPaid = payments.filter(p => p.status === 'completed').reduce((s, p) => s + Number(p.amount), 0);
-  const totalPending = payments.filter(p => p.status === 'pending').reduce((s, p) => s + Number(p.amount), 0) + pendingExtraRef.current;
+  const totalPending = payments.filter(p => p.status === 'pending').reduce((s, p) => s + Number(p.amount), 0) + pendingExtra;
   const fmt = (n: number) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
   return (
@@ -152,13 +177,52 @@ function VendorPaymentsScreenContent() {
       </View>
 
       <View style={[s.filterRow, isWeb && s.filterRowWeb]}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.periodPills}>
-          {PERIOD_OPTIONS.map(p => (
-            <TouchableOpacity key={p.value} style={[s.periodPill, dateFilter === p.value && s.periodPillActive]} onPress={() => setDateFilter(p.value)}>
-              <Text style={[s.periodPillText, dateFilter === p.value && s.periodPillTextActive]}>{p.label}</Text>
+        <View style={s.filterInner}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.periodPills}>
+            {PERIOD_OPTIONS.map(p => (
+              <TouchableOpacity key={p.value} style={[s.periodPill, dateFilter === p.value && s.periodPillActive]} onPress={() => { setDateFilter(p.value); setRangeFrom(null); setRangeTo(null); }}>
+                <Text style={[s.periodPillText, dateFilter === p.value && s.periodPillTextActive]}>{p.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <View style={s.periodDivider} />
+          <View style={s.rangeField}>
+            <DatePickerField
+              label="From"
+              compact
+              value={rangeFrom}
+              open={openPicker === 'from'}
+              onOpenChange={(o) => setOpenPicker(o ? 'from' : null)}
+              maxDate={rangeTo ?? new Date()}
+              onChange={(d) => {
+                setRangeFrom(d);
+                if (rangeTo && d > rangeTo) setRangeTo(null);
+                setDateFilter(-2);
+              }}
+            />
+          </View>
+          <View style={s.rangeField}>
+            <DatePickerField
+              label="To"
+              compact
+              align="right"
+              value={rangeTo}
+              open={openPicker === 'to'}
+              onOpenChange={(o) => setOpenPicker(o ? 'to' : null)}
+              minDate={rangeFrom ?? undefined}
+              maxDate={new Date()}
+              onChange={(d) => {
+                setRangeTo(d);
+                setDateFilter(-2);
+              }}
+            />
+          </View>
+          {dateFilter === -2 && rangeFrom && rangeTo && (
+            <TouchableOpacity style={s.rangeClear} onPress={clearRange}>
+              <X size={14} color={Colors.textTertiary} strokeWidth={2} />
             </TouchableOpacity>
-          ))}
-        </ScrollView>
+          )}
+        </View>
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabScroll} contentContainerStyle={s.tabs}>
@@ -290,7 +354,11 @@ const s = StyleSheet.create({
   summaryPillValue: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, marginTop: 2 },
   filterRow: { paddingHorizontal: Spacing[5], paddingVertical: Spacing[2], backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border },
   filterRowWeb: { paddingHorizontal: Spacing[8] },
-  periodPills: { flexDirection: 'row', gap: Spacing[2] },
+  periodPills: { flexDirection: 'row', gap: Spacing[2], alignItems: 'center' },
+  filterInner: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
+  periodDivider: { width: 1, height: 24, backgroundColor: Colors.border },
+  rangeField: { width: 152 },
+  rangeClear: { padding: Spacing[2] },
   periodPill: { paddingVertical: Spacing[1], paddingHorizontal: Spacing[3], borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.neutral[50] },
   periodPillActive: { backgroundColor: Colors.primarySurface, borderColor: Colors.primary },
   periodPillText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },

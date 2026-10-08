@@ -1,8 +1,8 @@
 import React, { useCallback, useState } from 'react';
 import ModuleGuard from '@/components/admin/ModuleGuard';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Clock, Save, Check, AlertCircle, Package } from 'lucide-react-native';
+import { Clock, Save, Check, AlertCircle, Package, Flower2 } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { usePageVisibility } from '@/hooks/usePageVisibility';
@@ -23,23 +23,29 @@ function RiderDeliveryTimeContent() {
   const insets = useSafeAreaInsets();
   const [deliveryValue, setDeliveryValue] = useState('');
   const [pickupValue, setPickupValue] = useState('');
+  const [flowerPickupValue, setFlowerPickupValue] = useState('');
   const [loading, setLoading] = useState(true);
   const [savingDelivery, setSavingDelivery] = useState(false);
   const [savingPickup, setSavingPickup] = useState(false);
+  const [savingFlowerPickup, setSavingFlowerPickup] = useState(false);
   const [deliverySaved, setDeliverySaved] = useState(false);
   const [pickupSaved, setPickupSaved] = useState(false);
+  const [flowerPickupSaved, setFlowerPickupSaved] = useState(false);
   const [deliveryError, setDeliveryError] = useState('');
   const [pickupError, setPickupError] = useState('');
+  const [flowerPickupError, setFlowerPickupError] = useState('');
 
   const load = useCallback(async () => {
     const { data, error: loadError } = await supabase.from('auto_assignment_settings')
-      .select('delivery_deadline_time, pickup_cutoff_time').eq('id', 1).maybeSingle();
+      .select('delivery_deadline_time, pickup_cutoff_time, flower_pickup_cutoff_time').eq('id', 1).maybeSingle();
     if (loadError) {
       setDeliveryError('Unable to load the delivery time limit.');
-      setPickupError('Unable to load the pickup time limit.');
+      setPickupError('Unable to load the order pickup time limit.');
+      setFlowerPickupError('Unable to load the flower pickup time limit.');
     }
     setDeliveryValue(data?.delivery_deadline_time?.slice(0, 5) ?? '');
     setPickupValue(data?.pickup_cutoff_time?.slice(0, 5) ?? '');
+    setFlowerPickupValue(data?.flower_pickup_cutoff_time?.slice(0, 5) ?? '');
     setLoading(false);
   }, []);
 
@@ -69,8 +75,22 @@ function RiderDeliveryTimeContent() {
     const { error: saveError } = await supabase.from('auto_assignment_settings')
       .update({ pickup_cutoff_time: nextValue || null, updated_at: new Date().toISOString() }).eq('id', 1);
     setSavingPickup(false);
-    if (saveError) { setPickupError('Unable to save the pickup time limit.'); return; }
+    if (saveError) { setPickupError('Unable to save the order pickup time limit.'); return; }
     setPickupValue(nextValue); setPickupSaved(true);
+  };
+
+  const saveFlowerPickup = async () => {
+    const nextValue = flowerPickupValue.trim();
+    if (nextValue && !/^([01]\d|2[0-3]):[0-5]\d$/.test(nextValue)) {
+      setFlowerPickupError('Enter time in 24-hour format, for example 08:00.');
+      return;
+    }
+    setSavingFlowerPickup(true); setFlowerPickupSaved(false); setFlowerPickupError('');
+    const { error: saveError } = await supabase.from('auto_assignment_settings')
+      .update({ flower_pickup_cutoff_time: nextValue || null, updated_at: new Date().toISOString() }).eq('id', 1);
+    setSavingFlowerPickup(false);
+    if (saveError) { setFlowerPickupError('Unable to save the flower pickup time limit.'); return; }
+    setFlowerPickupValue(nextValue); setFlowerPickupSaved(true);
   };
 
   if (loading) {
@@ -82,10 +102,11 @@ function RiderDeliveryTimeContent() {
   }
 
   return (
-    <View style={[styles.root, { paddingTop: Platform.OS === 'web' ? 0 : insets.top }]}>
+    <View style={[styles.root, { paddingTop: Platform.OS === 'web' ? 0 : insets.top }]}> 
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       <View style={styles.header}>
         <View style={styles.icon}><Clock size={22} color={Colors.primary} /></View>
-        <View style={{ flex: 1 }}><Text style={styles.title}>Delivery & Pickup Time</Text><Text style={styles.subtitle}>Shared time limits for all riders</Text></View>
+        <View style={{ flex: 1 }}><Text style={styles.title}>Delivery & Pickup Times</Text><Text style={styles.subtitle}>Separate time limits for each pickup type</Text></View>
       </View>
       <View style={styles.card}>
         <View style={styles.cardHeader}>
@@ -120,13 +141,13 @@ function RiderDeliveryTimeContent() {
               <Package size={18} color={Colors.accent} strokeWidth={1.8} />
             </View>
             <View>
-              <Text style={styles.cardTitle}>Latest Pickup Time</Text>
-              <Text style={styles.cardText}>Riders must pick up vendor orders before this time every day.</Text>
+              <Text style={styles.cardTitle}>Latest Order Pickup Time</Text>
+              <Text style={styles.cardText}>Riders must pick up customer orders from the warehouse before this time.</Text>
             </View>
           </View>
           <View style={styles.badge}><Text style={styles.badgeText}>IST</Text></View>
         </View>
-        <Text style={styles.label}>Latest pickup time</Text>
+        <Text style={styles.label}>Latest order pickup time</Text>
         <View style={styles.formRow}>
           <TextInput value={pickupValue} onChangeText={next => { setPickupValue(next); setPickupSaved(false); setPickupError(''); }} placeholder="HH:MM" placeholderTextColor={Colors.textDisabled} maxLength={5} style={styles.timeInput} keyboardType="numeric" />
           <TouchableOpacity style={styles.save} onPress={savePickup} disabled={savingPickup}>
@@ -135,15 +156,44 @@ function RiderDeliveryTimeContent() {
           </TouchableOpacity>
         </View>
         <Text style={styles.current}>Current limit: {formatTime(pickupValue || null)}</Text>
-        <Text style={styles.help}>Leave the field blank to allow pickups at any time.</Text>
+        <Text style={styles.help}>Leave blank to allow order pickups at any time.</Text>
         {pickupError ? <View style={styles.error}><AlertCircle size={16} color={Colors.error} /><Text style={styles.errorText}>{pickupError}</Text></View> : null}
       </View>
+
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardHeaderLeft}>
+            <View style={[styles.cardHeaderIcon, { backgroundColor: '#FFF3E0' }]}>
+              <Flower2 size={18} color={Colors.warning} strokeWidth={1.8} />
+            </View>
+            <View>
+              <Text style={styles.cardTitle}>Latest Flower Pickup Time</Text>
+              <Text style={styles.cardText}>Riders must pick up flowers from vendors before this time.</Text>
+            </View>
+          </View>
+          <View style={styles.badge}><Text style={styles.badgeText}>IST</Text></View>
+        </View>
+        <Text style={styles.label}>Latest flower pickup time</Text>
+        <View style={styles.formRow}>
+          <TextInput value={flowerPickupValue} onChangeText={next => { setFlowerPickupValue(next); setFlowerPickupSaved(false); setFlowerPickupError(''); }} placeholder="HH:MM" placeholderTextColor={Colors.textDisabled} maxLength={5} style={styles.timeInput} keyboardType="numeric" />
+          <TouchableOpacity style={styles.save} onPress={saveFlowerPickup} disabled={savingFlowerPickup}>
+            {savingFlowerPickup ? <ActivityIndicator size="small" color={Colors.white} /> : flowerPickupSaved ? <Check size={15} color={Colors.white} /> : <Save size={15} color={Colors.white} />}
+            <Text style={styles.saveText}>{flowerPickupSaved ? 'Saved' : 'Save'}</Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.current}>Current limit: {formatTime(flowerPickupValue || null)}</Text>
+        <Text style={styles.help}>Leave blank to allow flower pickups at any time.</Text>
+        {flowerPickupError ? <View style={styles.error}><AlertCircle size={16} color={Colors.error} /><Text style={styles.errorText}>{flowerPickupError}</Text></View> : null}
+      </View>
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#F2F3EE' },
+  scroll: { flex: 1 },
+  content: { paddingBottom: Spacing[8] },
   header: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3], padding: Spacing[6] },
   icon: { width: 44, height: 44, borderRadius: Radius.md, backgroundColor: Colors.primarySurface, alignItems: 'center', justifyContent: 'center' },
   title: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.xl, color: Colors.textPrimary },

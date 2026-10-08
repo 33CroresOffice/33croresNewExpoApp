@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { User, Bell, MapPin, Circle as CircleHelp, Info, FileText, Shield, ChevronRight, Phone, LogOut, Truck } from 'lucide-react-native';
+import { User, Bell, MapPin, Circle as CircleHelp, Info, FileText, Shield, ChevronRight, Phone, LogOut, Truck, IndianRupee } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { useAuthStore } from '@/store/authStore';
 
@@ -53,6 +53,11 @@ export default function ProfileScreen() {
       icon: <Truck size={20} color={Colors.textSecondary} />,
       label: 'Delivery History',
       onPress: () => router.push('/(customer)/delivery-history'),
+    },
+    {
+      icon: <IndianRupee size={20} color={Colors.textSecondary} />,
+      label: 'Payment History',
+      onPress: () => router.push('/(customer)/payment-history'),
     },
     {
       icon: <MapPin size={20} color={Colors.textSecondary} />,

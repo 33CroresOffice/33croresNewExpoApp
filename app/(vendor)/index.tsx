@@ -31,6 +31,7 @@ interface TodayOrderItem {
   name: string;
   quantity: number;
   unitType: string;
+  garlandDetails: { quantity: number; size: string }[];
 }
 
 const ACCENT_GOLD = '#C8962A';
@@ -117,18 +118,20 @@ export default function VendorDashboard() {
     if (todayOrderIds.length > 0) {
       const { data: itemRows } = await supabase
         .from('procurement_order_items')
-        .select('quantity, unit_type, flower_type:flower_types(display_name)')
+        .select('quantity, unit_type, garland_details, flower_type:flower_types(display_name)')
         .in('procurement_order_id', todayOrderIds);
       const itemTotals = new Map<string, TodayOrderItem>();
       (itemRows ?? []).forEach((item: any) => {
         const name = item.flower_type?.display_name ?? 'Unknown item';
         const unitType = item.unit_type ?? '';
+        const garlandDetails = Array.isArray(item.garland_details) ? item.garland_details : [];
         const key = `${name}-${unitType}`;
         const existing = itemTotals.get(key);
         if (existing) {
           existing.quantity += Number(item.quantity) || 0;
+          for (const g of garlandDetails) existing.garlandDetails.push(g);
         } else {
-          itemTotals.set(key, { name, quantity: Number(item.quantity) || 0, unitType });
+          itemTotals.set(key, { name, quantity: Number(item.quantity) || 0, unitType, garlandDetails: [...garlandDetails] });
         }
       });
       setTodayOrderItems(Array.from(itemTotals.values()));
@@ -220,7 +223,18 @@ export default function VendorDashboard() {
                   <Text style={wStyles.todayEmpty}>No item quantities recorded for today</Text>
                 ) : todayOrderItems.map((item) => (
                   <View key={`${item.name}-${item.unitType}`} style={wStyles.todayItemRow}>
-                    <Text style={wStyles.todayItemName}>{item.name}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={wStyles.todayItemName}>{item.name}</Text>
+                      {item.garlandDetails.length > 0 && (
+                        <View style={wStyles.garlandBadgeRow}>
+                          {item.garlandDetails.map((g, gi) => (
+                            <View key={gi} style={wStyles.garlandBadge}>
+                              <Text style={wStyles.garlandBadgeText}>{g.quantity} Garland{g.quantity !== 1 ? 's' : ''}{g.size ? ` – ${g.size}` : ''}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                    </View>
                     <Text style={wStyles.todayItemQuantity}>{item.quantity} {item.unitType}</Text>
                   </View>
                 ))}
@@ -396,7 +410,18 @@ export default function VendorDashboard() {
                   <Text style={mStyles.todayEmpty}>No item quantities recorded for today</Text>
                 ) : todayOrderItems.map((item) => (
                   <View key={`${item.name}-${item.unitType}`} style={mStyles.todayItemRow}>
-                    <Text style={mStyles.todayItemName} numberOfLines={1}>{item.name}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={mStyles.todayItemName} numberOfLines={1}>{item.name}</Text>
+                      {item.garlandDetails.length > 0 && (
+                        <View style={mStyles.garlandBadgeRow}>
+                          {item.garlandDetails.map((g, gi) => (
+                            <View key={gi} style={mStyles.garlandBadge}>
+                              <Text style={mStyles.garlandBadgeText}>{g.quantity} Garland{g.quantity !== 1 ? 's' : ''}{g.size ? ` – ${g.size}` : ''}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                    </View>
                     <Text style={mStyles.todayItemQuantity}>{item.quantity} {item.unitType}</Text>
                   </View>
                 ))}
@@ -666,6 +691,9 @@ const mStyles = StyleSheet.create({
   },
   emptyList: { minHeight: 56, paddingVertical: Spacing[4], alignItems: 'center', justifyContent: 'center' },
   emptyListText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary },
+  garlandBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 3 },
+  garlandBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(200,150,42,0.18)', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
+  garlandBadgeText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 9, color: ACCENT_GOLD },
 });
 
 const wStyles = StyleSheet.create({
@@ -814,4 +842,7 @@ const wStyles = StyleSheet.create({
   tdCell: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary },
   emptyState: { paddingVertical: 32, alignItems: 'center' },
   emptyText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary },
+  garlandBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 3 },
+  garlandBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(200,150,42,0.18)', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
+  garlandBadgeText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: ACCENT_GOLD },
 });

@@ -176,7 +176,7 @@ function RiderIncentivesScreenContent() {
       const [refRes, incRes, ridersRes, allReferralsRes] = await Promise.all([
         supabase.from('referral_config').select('*').order('created_at').limit(1).maybeSingle() as any,
         supabase.from('rider_incentives').select('*').order('created_at', { ascending: false }),
-        supabase.from('riders').select('id, full_name, mobile, zone, is_active, profile_photo_url').order('full_name'),
+        supabase.from('riders').select('id, full_name, mobile, zone, is_active, profile_photo_url').eq('is_active', true).order('full_name'),
         supabase.from('rider_referrals').select('id, referrer_rider_id, referred_mobile, referred_name, status, approval_status, completed_delivery_days, required_delivery_days, reward_amount, approved_at, created_at').order('created_at', { ascending: false }),
       ]);
 

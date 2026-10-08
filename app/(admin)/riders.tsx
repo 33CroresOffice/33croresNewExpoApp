@@ -64,6 +64,8 @@ function RidersScreenContent() {
   const [onLeaveToday, setOnLeaveToday] = useState<Set<string>>(new Set());
   const [busyRiderIds, setBusyRiderIds] = useState<Set<string>>(new Set());
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -127,7 +129,14 @@ function RidersScreenContent() {
 
   const confirmDeleteRider = async (id: string) => {
     setDeleteTarget(null);
-    await supabase.from('riders').delete().eq('id', id);
+    setDeleteError(null);
+    setDeleting(true);
+    const { error } = await supabase.from('riders').delete().eq('id', id);
+    setDeleting(false);
+    if (error) {
+      setDeleteError(error.message || 'Unable to delete rider. They may have existing records.');
+      return;
+    }
     load();
   };
 
@@ -371,17 +380,23 @@ function RidersScreenContent() {
         </ScrollView>
       )}
 
-      <AppModal visible={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} title="Delete Rider">
+      <AppModal visible={Boolean(deleteTarget) || Boolean(deleteError)} onClose={() => { setDeleteTarget(null); setDeleteError(null); }} title="Delete Rider">
         <Text style={s.deleteMessage}>
           Delete {deleteTarget?.full_name}? This will remove the rider and all their assignments.
         </Text>
+        {deleteError ? (
+          <View style={s.deleteErrorBox}>
+            <AlertCircle size={16} color={Colors.error} strokeWidth={1.8} />
+            <Text style={s.deleteErrorText}>{deleteError}</Text>
+          </View>
+        ) : null}
         <View style={s.deleteActions}>
-          <TouchableOpacity style={s.cancelDeleteBtn} onPress={() => setDeleteTarget(null)} activeOpacity={0.8}>
+          <TouchableOpacity style={s.cancelDeleteBtn} onPress={() => { setDeleteTarget(null); setDeleteError(null); }} activeOpacity={0.8} disabled={deleting}>
             <Text style={s.cancelDeleteText}>Cancel</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={s.confirmDeleteBtn} onPress={() => deleteTarget && confirmDeleteRider(deleteTarget.id)} activeOpacity={0.8}>
-            <Trash2 size={15} color={Colors.white} strokeWidth={2} />
-            <Text style={s.confirmDeleteText}>Delete Rider</Text>
+          <TouchableOpacity style={s.confirmDeleteBtn} onPress={() => deleteTarget && confirmDeleteRider(deleteTarget.id)} activeOpacity={0.8} disabled={deleting}>
+            {deleting ? <ActivityIndicator size="small" color={Colors.white} /> : <Trash2 size={15} color={Colors.white} strokeWidth={2} />}
+            <Text style={s.confirmDeleteText}>{deleting ? 'Deleting…' : 'Delete Rider'}</Text>
           </TouchableOpacity>
         </View>
       </AppModal>
@@ -510,5 +525,7 @@ const s = StyleSheet.create({
   cancelDeleteText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textSecondary },
   confirmDeleteBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], paddingVertical: Spacing[3], paddingHorizontal: Spacing[5], borderRadius: Radius.md, backgroundColor: Colors.error },
   confirmDeleteText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white },
+  deleteErrorBox: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing[2], backgroundColor: Colors.errorSurface, borderRadius: Radius.md, padding: Spacing[3], marginBottom: Spacing[4] },
+  deleteErrorText: { flex: 1, fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.error, lineHeight: 20 },
 
 });

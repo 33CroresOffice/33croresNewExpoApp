@@ -78,6 +78,7 @@ function DailyRequirementsScreenContent() {
   const [reassigning, setReassigning] = useState(false);
   const [reassignError, setReassignError] = useState('');
   const [flowerTypes, setFlowerTypes] = useState<any[]>([]);
+  const [garlandDetails, setGarlandDetails] = useState<Record<string, { quantity: number; size: string }[]>>({});
 
   const dateStr = format(date, 'yyyy-MM-dd');
 
@@ -112,6 +113,31 @@ function DailyRequirementsScreenContent() {
       setRequirements(rows as DailyRequirement[]);
       setVendors((venRes.data ?? []) as Vendor[]);
       setFlowerTypes((flowerRes.data ?? []) as any[]);
+
+      // Fetch garland details from custom orders for this date
+      const { data: customOrdersData } = await supabase
+        .from('custom_orders')
+        .select('items')
+        .eq('delivery_date', dateStr)
+        .not('status', 'in', '("cancelled","rejected")');
+      const flowerNameToId: Record<string, string> = {};
+      for (const ft of (flowerRes.data ?? [])) {
+        flowerNameToId[(ft.display_name as string).toLowerCase().trim()] = ft.id;
+      }
+      const garlandMap: Record<string, { quantity: number; size: string }[]> = {};
+      for (const order of (customOrdersData ?? [])) {
+        const items = Array.isArray(order.items) ? order.items : [];
+        for (const item of items) {
+          if ((item.unit ?? '').toLowerCase().trim() !== 'garland') continue;
+          const ftId = flowerNameToId[(item.flower_name ?? '').toLowerCase().trim()];
+          if (!ftId) continue;
+          const qty = Number(item.quantity ?? 0);
+          const size = item.measure_type === 'garland_size' ? (item.garland_size ?? '') : (item.flower_count ? `${item.flower_count} flowers` : '');
+          if (!garlandMap[ftId]) garlandMap[ftId] = [];
+          garlandMap[ftId].push({ quantity: qty, size });
+        }
+      }
+      setGarlandDetails(garlandMap);
 
       // Get eligible active subscription count for this date (matches Orders page logic)
       const { count: subCount } = await supabase
@@ -287,6 +313,30 @@ function DailyRequirementsScreenContent() {
       // 4. Link requirements to batch
       await supabase.from('daily_requirements').update({ batch_id: batchId, status: 'ordered' }).in('id', requirements.map(r => r.id));
 
+      // 4b. Fetch garland details from custom orders for this date
+      const { data: customOrdersData } = await supabase
+        .from('custom_orders')
+        .select('items')
+        .eq('delivery_date', dateStr)
+        .not('status', 'in', '("cancelled","rejected")');
+      const flowerNameToId: Record<string, string> = {};
+      for (const ft of flowerTypes) {
+        flowerNameToId[(ft.display_name as string).toLowerCase().trim()] = ft.id;
+      }
+      const garlandByFlowerType: Record<string, { quantity: number; size: string }[]> = {};
+      for (const order of (customOrdersData ?? [])) {
+        const orderItems = Array.isArray(order.items) ? order.items : [];
+        for (const item of orderItems) {
+          if ((item.unit ?? '').toLowerCase().trim() !== 'garland') continue;
+          const ftId = flowerNameToId[(item.flower_name ?? '').toLowerCase().trim()];
+          if (!ftId) continue;
+          const qty = Number(item.quantity ?? 0);
+          const size = item.measure_type === 'garland_size' ? (item.garland_size ?? '') : (item.flower_count ? `${item.flower_count} flowers` : '');
+          if (!garlandByFlowerType[ftId]) garlandByFlowerType[ftId] = [];
+          garlandByFlowerType[ftId].push({ quantity: qty, size });
+        }
+      }
+
       // 5. Create procurement orders per vendor
       const vendorGroups: Record<string, typeof batchItems> = {};
       for (const item of batchItems) {
@@ -315,6 +365,7 @@ function DailyRequirementsScreenContent() {
           quantity: item.quantity,
           unit_type: item.unit_type || 'pieces',
           price_per_unit: null,
+          garland_details: garlandByFlowerType[item.flower_type_id] ?? null,
         }));
         await supabase.from('procurement_order_items').insert(poItems);
 
@@ -745,6 +796,11 @@ function DailyRequirementsScreenContent() {
                               <Text style={s.subBadgeText}>Replaces {origName}</Text>
                             </View>
                           )}
+                          {garlandDetails[r.flower_type_id]?.map((g, idx) => (
+                            <View key={idx} style={s.garlandBadge}>
+                              <Text style={s.garlandBadgeText}>{g.quantity} garland{g.quantity !== 1 ? 's' : ''}{g.size ? ` · ${g.size}` : ''}</Text>
+                            </View>
+                          ))}
                         </View>
                       </View>
                       <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end' }}>
@@ -858,6 +914,11 @@ function DailyRequirementsScreenContent() {
                             <Text style={s.subBadgeText}>Replaces {origName}</Text>
                           </View>
                         )}
+                        {garlandDetails[r.flower_type_id]?.map((g, idx) => (
+                          <View key={idx} style={s.garlandBadge}>
+                            <Text style={s.garlandBadgeText}>{g.quantity} garland{g.quantity !== 1 ? 's' : ''}{g.size ? ` · ${g.size}` : ''}</Text>
+                          </View>
+                        ))}
                         <Text style={s.reqSubs}>
                           {r.active_subscriptions_count} subscription{r.active_subscriptions_count !== 1 ? 's' : ''}
                           {((r as any).custom_orders_count ?? 0) > 0 ? ` · ${(r as any).custom_orders_count} custom` : ''}
@@ -1416,4 +1477,6 @@ const s = StyleSheet.create({
   reassignItemQty: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textSecondary },
   reassignedByAdminBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: Colors.successSurface, borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1, alignSelf: 'flex-start' },
   reassignedByAdminText: { fontSize: 9, fontFamily: Typography.fontFamily.sansMedium, color: Colors.success },
+  garlandBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.primarySurface, borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1, marginTop: 2, alignSelf: 'flex-start' },
+  garlandBadgeText: { fontSize: 9, fontFamily: Typography.fontFamily.sansMedium, color: Colors.primary },
 });
