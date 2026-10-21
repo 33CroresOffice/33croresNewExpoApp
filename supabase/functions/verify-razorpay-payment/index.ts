@@ -277,46 +277,82 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Fire payment_received notifications
+    // Notify the customer using the verified payment record, not the plan price.
     try {
-      const { data: plan } = await serviceSupabase
-        .from("subscription_plans")
-        .select("name, price")
-        .eq("id", plan_id)
+      const { data: paymentRecord, error: paymentRecordError } = await serviceSupabase
+        .from("payments")
+        .select("amount, status")
+        .eq("razorpay_order_id", orderId)
+        .eq("status", "success")
         .maybeSingle();
 
-      const { data: templates } = await serviceSupabase
-        .from("notification_templates")
-        .select("id, channel")
-        .eq("event_type", "payment_received")
-        .eq("is_active", true);
+      if (paymentRecordError || !paymentRecord) {
+        console.error("Successful payment record unavailable for notification:", paymentRecordError?.message);
+      } else {
+        const amount = (Number(paymentRecord.amount) / 100).toLocaleString("en-IN", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+        const body = `🌸 Your subscription order of ₹${amount} has been placed and paid successfully! Thank you for choosing 33 Crores.`;
+        const title = "Subscription payment successful";
 
-      if (templates && templates.length > 0) {
-        const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-        const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-        await Promise.allSettled(
-          templates.map((t) =>
-            fetch(`${supabaseUrl}/functions/v1/send-notification`, {
-              method: "POST",
-              headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
-              body: JSON.stringify({
-                user_id: user.id,
-                event_type: "payment_received",
-                channel: t.channel,
-                template_id: t.id,
-                variables: {
-                  plan_name: plan?.name ?? "",
-                  amount: plan?.price ? String(plan.price / 100) : "",
-                  payment_id: razorpay_payment_id,
-                },
-                subscription_id: subscription.id,
-              }),
-            })
-          ),
-        );
+        const { error: inAppError } = await serviceSupabase
+          .from("in_app_notifications")
+          .insert({
+            user_id: user.id,
+            title,
+            body,
+            event_type: "payment_received",
+            is_read: false,
+            related_subscription_id: subscription.id,
+          });
+        if (inAppError) console.error("In-app payment notification error:", inAppError.message);
+
+        const { data: pushToken } = await serviceSupabase
+          .from("expo_push_tokens")
+          .select("token")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        let pushStatus = "failed";
+        let pushError: string | null = "No push token registered for user";
+        let pushResponse: unknown = null;
+        if (pushToken?.token) {
+          const pushResponseRaw = await fetch("https://exp.host/--/api/v2/push/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ to: pushToken.token, sound: "default", title, body }),
+          });
+          pushResponse = await pushResponseRaw.json();
+          pushStatus = pushResponseRaw.ok ? "sent" : "failed";
+          pushError = pushResponseRaw.ok ? null : "Push provider rejected the notification";
+        }
+
+        await serviceSupabase.from("notification_logs").insert({
+          user_id: user.id,
+          event_type: "payment_received",
+          channel: "in_app",
+          rendered_subject: title,
+          rendered_body: body,
+          status: inAppError ? "failed" : "sent",
+          error_message: inAppError?.message ?? null,
+          subscription_id: subscription.id,
+        });
+        await serviceSupabase.from("notification_logs").insert({
+          user_id: user.id,
+          event_type: "payment_received",
+          channel: "push",
+          recipient_push_token: pushToken?.token ?? null,
+          rendered_subject: title,
+          rendered_body: body,
+          status: pushStatus,
+          error_message: pushError,
+          provider_response: pushResponse,
+          subscription_id: subscription.id,
+        });
       }
     } catch (notifErr) {
-      console.error("Notification error (non-fatal):", notifErr);
+      console.error("Payment notification error (non-fatal):", notifErr);
     }
 
     return respond({ success: true, subscription_id: subscription.id });

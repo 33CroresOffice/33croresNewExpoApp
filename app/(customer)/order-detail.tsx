@@ -8,7 +8,7 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, MapPin, Calendar, FileText, Leaf, User, Phone, Bike, CircleCheck as CheckCircle } from 'lucide-react-native';
+import { ArrowLeft, MapPin, Calendar, FileText, Leaf, User, Phone, Bike, Clock, CircleCheck as CheckCircle } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { Order } from '@/types/database';
@@ -16,6 +16,26 @@ import StepTracker from '@/components/ui/StepTracker';
 import StatusChip from '@/components/ui/StatusChip';
 import TodaysFlowerPack from '@/components/ui/TodaysFlowerPack';
 import { format } from 'date-fns';
+
+type TrailEntry = {
+  id: string;
+  status: string;
+  assigned_at: string;
+  delivered_at: string | null;
+  failed_at: string | null;
+  swap_reason: string | null;
+  failure_reason: string | null;
+  rider: { full_name: string; mobile: string } | null;
+};
+
+const TRAIL_STATUS: Record<string, { label: string; color: string }> = {
+  assigned: { label: 'Assigned', color: Colors.primary },
+  accepted: { label: 'Accepted', color: Colors.accentDark },
+  picked_up: { label: 'Picked Up', color: Colors.warning },
+  delivered: { label: 'Delivered', color: Colors.success },
+  failed: { label: 'Failed', color: Colors.error },
+  reassigned: { label: 'Reassigned', color: Colors.textTertiary },
+};
 
 export default function OrderDetailScreen() {
   const insets = useSafeAreaInsets();
@@ -54,6 +74,29 @@ export default function OrderDetailScreen() {
         if (data && data.length > 0) setAssignment(data[0] as any);
       });
   }, [id]);
+
+  const [trail, setTrail] = useState<TrailEntry[]>([]);
+
+  useEffect(() => {
+    if (!id) return;
+    supabase
+      .from('rider_order_assignments')
+      .select('id, status, assigned_at, delivered_at, failed_at, swap_reason, failure_reason, rider:riders!rider_order_assignments_rider_id_fkey(full_name, mobile)')
+      .eq('order_id', id)
+      .order('assigned_at', { ascending: true })
+      .then(({ data }) => setTrail((data ?? []) as unknown as TrailEntry[]));
+  }, [id]);
+
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const trailGroups = (() => {
+    const map = new Map<string, TrailEntry[]>();
+    trail.forEach(e => {
+      const d = new Date(new Date(e.assigned_at).getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+      if (!map.has(d)) map.set(d, []);
+      map.get(d)!.push(e);
+    });
+    return Array.from(map.entries());
+  })();
 
   if (loading || !order) {
     return (
@@ -159,6 +202,40 @@ export default function OrderDetailScreen() {
             </>
           )}
         </View>
+
+        {trailGroups.length > 0 && (
+          <View style={styles.infoCard}>
+            <View style={styles.riderCardHeader}>
+              <View style={styles.riderIconWrap}>
+                <Clock size={18} color={Colors.primary} />
+              </View>
+              <Text style={styles.riderCardTitle}>Delivery Timeline</Text>
+            </View>
+            {trailGroups.map(([date, entries]) => (
+              <View key={date} style={{ marginBottom: Spacing[3] }}>
+                <Text style={styles.trailDate}>{format(new Date(date + 'T00:00:00'), 'EEEE, dd MMM yyyy')}</Text>
+                {entries.map(e => {
+                  const cfg = TRAIL_STATUS[e.status] ?? { label: e.status, color: Colors.textTertiary };
+                  return (
+                    <View key={e.id} style={styles.trailRow}>
+                      <View style={[styles.trailDot, { backgroundColor: cfg.color }]} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.trailLabel}>{cfg.label}{e.rider ? ` — ${e.rider.full_name}` : ''}</Text>
+                        {(e.delivered_at || e.failed_at) && (
+                          <Text style={styles.trailTime}>
+                            {format(new Date(e.delivered_at ?? e.failed_at!), 'dd MMM, hh:mm a')}
+                          </Text>
+                        )}
+                        {e.swap_reason && <Text style={styles.trailTime}>Reason: {e.swap_reason}</Text>}
+                        {e.failure_reason && <Text style={styles.trailTime}>Reason: {e.failure_reason}</Text>}
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            ))}
+          </View>
+        )}
 
         {sub?.plan?.id && (
           <TodaysFlowerPack planId={sub.plan.id} deliveryDate={selectedDate ?? order.scheduled_date} />
@@ -361,5 +438,33 @@ const styles = StyleSheet.create({
     fontFamily: Typography.fontFamily.sansMedium,
     fontSize: Typography.size.sm,
     color: Colors.textPrimary,
+  },
+  trailDate: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+    marginBottom: Spacing[2],
+  },
+  trailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing[2],
+    marginBottom: Spacing[2],
+  },
+  trailDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginTop: 5,
+  },
+  trailLabel: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+  },
+  trailTime: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
   },
 });

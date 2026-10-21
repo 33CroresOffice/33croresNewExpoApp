@@ -19,7 +19,7 @@ type TimeMenu = 'hour' | 'minute' | 'period' | null;
 const HOURS = Array.from({ length: 12 }, (_, index) => index + 1);
 const MINUTES = Array.from({ length: 60 }, (_, index) => index);
 
-function parseScheduleTime(schedule: string): { hour: number; minute: number; period: TimePeriod } {
+function parseScheduleTime(schedule: string): { hour: number; hour24: number; minute: number; period: TimePeriod } {
   const [minuteValue, hourValue] = schedule.trim().split(/\s+/);
   const rawMinute = Number(minuteValue);
   const rawHour = Number(hourValue);
@@ -28,9 +28,50 @@ function parseScheduleTime(schedule: string): { hour: number; minute: number; pe
 
   return {
     hour: hour24 % 12 || 12,
+    hour24,
     minute,
     period: hour24 >= 12 ? 'PM' : 'AM',
   };
+}
+
+function utcToIst(hour24: number, minute: number): { hour: number; minute: number; period: TimePeriod } {
+  const total = (hour24 * 60 + minute + 330) % 1440;
+  const hour = Math.floor(total / 60);
+  return {
+    hour: hour % 12 || 12,
+    minute: total % 60,
+    period: hour >= 12 ? 'PM' : 'AM',
+  };
+}
+
+function istToUtc(hour: number, minute: number, period: TimePeriod): { hour24: number; minute: number } {
+  const hour24From12 = period === 'PM' ? (hour % 12) + 12 : hour % 12;
+  const total = (hour24From12 * 60 + minute - 330 + 1440) % 1440;
+  return { hour24: Math.floor(total / 60), minute: total % 60 };
+}
+
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function computeNextRunUtc(schedule: string): Date | null {
+  const parts = schedule.trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+  const [minute, hour, day, month, weekday] = parts;
+  if (!/^\d+$/.test(minute) || !/^\d+$/.test(hour) || day !== '*' || month !== '*' || weekday !== '*') return null;
+  const next = new Date();
+  next.setUTCHours(Number(hour), Number(minute), 0, 0);
+  if (next.getTime() <= Date.now()) next.setUTCDate(next.getUTCDate() + 1);
+  return next;
+}
+
+function formatNextRun(schedule: string): string {
+  const next = computeNextRunUtc(schedule);
+  if (!next) return '—';
+  const istTotal = (next.getUTCHours() * 60 + next.getUTCMinutes() + 330) % 1440;
+  const hour = Math.floor(istTotal / 60);
+  const minute = istTotal % 60;
+  const hour12 = hour % 12 || 12;
+  const period = hour >= 12 ? 'PM' : 'AM';
+  return `${next.getUTCDate()} ${MONTHS_SHORT[next.getUTCMonth()]}, ${hour12}:${String(minute).padStart(2, '0')} ${period} IST`;
 }
 
 interface JobDef {
@@ -41,6 +82,7 @@ interface JobDef {
   automation_name: string | null;
   sort_order: number;
   active: boolean;
+  is_scheduled: boolean;
   run_count: number;
 }
 
@@ -229,18 +271,19 @@ function CronMonitorContent() {
 
   const openScheduleEditor = (job: JobDef) => {
     const parsedTime = parseScheduleTime(job.schedule);
+    const istTime = utcToIst(parsedTime.hour24, parsedTime.minute);
     setEditingJob(job);
-    setScheduleHour(parsedTime.hour);
-    setScheduleMinute(parsedTime.minute);
-    setSchedulePeriod(parsedTime.period);
+    setScheduleHour(istTime.hour);
+    setScheduleMinute(istTime.minute);
+    setSchedulePeriod(istTime.period);
     setOpenTimeMenu(null);
     setRunResult(null);
   };
 
   const saveSchedule = async () => {
     if (!editingJob) return;
-    const hour24 = schedulePeriod === 'PM' ? (scheduleHour % 12) + 12 : scheduleHour % 12;
-    const schedule = `${scheduleMinute} ${hour24} * * *`;
+    const utc = istToUtc(scheduleHour, scheduleMinute, schedulePeriod);
+    const schedule = `${utc.minute} ${utc.hour24} * * *`;
     setSavingSchedule(true);
     setRunResult(null);
     try {
@@ -275,7 +318,10 @@ function CronMonitorContent() {
   const formatTime = (ts: string | null) => {
     if (!ts) return 'Never';
     try {
-      return format(new Date(ts), 'dd MMM yyyy, HH:mm:ss');
+      const d = new Date(ts);
+      const istTotal = (d.getUTCHours() * 60 + d.getUTCMinutes() + 330) % 1440;
+      const hour = Math.floor(istTotal / 60);
+      return `${d.getUTCDate()} ${MONTHS_SHORT[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${String(hour).padStart(2, '0')}:${String(istTotal % 60).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')} IST`;
     } catch {
       return ts;
     }
@@ -288,9 +334,8 @@ function CronMonitorContent() {
     if (minute === '*' && hour === '*' && day === '*' && month === '*' && weekday === '*') return 'Every minute';
     if (minute === '0' && hour === '*' && day === '*' && month === '*' && weekday === '*') return 'Every hour';
     if (/^\d+$/.test(minute) && /^\d+$/.test(hour) && day === '*' && month === '*' && weekday === '*') {
-      const formattedHour = Number(hour) % 12 || 12;
-      const period = Number(hour) >= 12 ? 'PM' : 'AM';
-      return `Daily at ${formattedHour}:${minute.padStart(2, '0')} ${period}`;
+      const ist = utcToIst(Number(hour), Number(minute));
+      return `Daily at ${ist.hour}:${String(ist.minute).padStart(2, '0')} ${ist.period} IST`;
     }
     return `Cron: ${schedule}`;
   };
@@ -377,6 +422,7 @@ function CronMonitorContent() {
             <Text style={[s.th, { flex: 1.4 }]}>Schedule</Text>
             <Text style={[s.th, { flex: 1 }]}>Type</Text>
             <Text style={[s.th, { flex: 1.3 }]}>Last Run</Text>
+            <Text style={[s.th, { flex: 1.2 }]}>Next Run</Text>
             <Text style={[s.th, { flex: 1.1 }]}>Status</Text>
             <Text style={[s.th, { flex: 0.7 }]}>Runs</Text>
             <Text style={[s.th, { flex: 0.8 }]}>Duration</Text>
@@ -422,9 +468,12 @@ function CronMonitorContent() {
                   <View style={[s.td, { flex: 1.3 }]}>
                     <Text style={s.timeText}>{formatTime(status?.last_run_start ?? null)}</Text>
                   </View>
+                  <View style={[s.td, { flex: 1.2 }]}>
+                    <Text style={s.timeText}>{def.is_scheduled ? formatNextRun(def.schedule) : 'Not scheduled'}</Text>
+                  </View>
                   <View style={[s.td, { flex: 1.1, gap: 3 }]}> 
                     <View style={[s.statusBadge, { backgroundColor: def.active ? Colors.success + '18' : Colors.neutral[200] }]}> 
-                      <Text style={[s.statusText, { color: def.active ? Colors.success : Colors.textTertiary }]}>{def.active ? 'Active' : 'Paused'}</Text>
+                      <Text style={[s.statusText, { color: def.active ? Colors.success : Colors.textTertiary }]}>{def.active ? 'Active' : def.is_scheduled ? 'Paused' : 'Not scheduled'}</Text>
                     </View>
                     <Text style={[s.statusText, { color: statusInfo.color }]}>{statusInfo.label}</Text>
                   </View>
@@ -446,7 +495,7 @@ function CronMonitorContent() {
                       ) : (
                         <Play size={11} color={Colors.primary} strokeWidth={2.4} fill={Colors.primary} />
                       )}
-                      <Text style={s.runBtnText}>{isRunning ? '...' : def.active ? 'Run' : 'Paused'}</Text>
+                      <Text style={s.runBtnText}>{isRunning ? '...' : def.active ? 'Run' : def.is_scheduled ? 'Paused' : 'Off'}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={[s.controlBtn, updatingJob === def.job_name && s.runBtnDisabled]}

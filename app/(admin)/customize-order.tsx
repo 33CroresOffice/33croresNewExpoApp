@@ -491,12 +491,14 @@ function CustomizeOrderScreenContent() {
   const createNewCustomer = async (): Promise<Profile | null> => {
     setCreatingNewUser(true);
     try {
+      const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch(`${SUPABASE_URL}/functions/v1/create-customer-user`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-          apikey: SUPABASE_ANON_KEY,
+          ...(session?.access_token
+            ? { Authorization: `Bearer ${session.access_token}`, apikey: SUPABASE_ANON_KEY }
+            : { Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY }),
         },
         body: JSON.stringify({ full_name: newFullName.trim(), mobile: newMobile.trim() }),
       });
@@ -506,7 +508,7 @@ function CustomizeOrderScreenContent() {
         return null;
       }
       const newProfile: Profile = {
-        id: json.user_id,
+        id: json.userId ?? json.user_id,
         full_name: newFullName.trim(),
         mobile: newMobile.trim(),
         role: 'customer',
@@ -1290,9 +1292,9 @@ function CustomizeOrderScreenContent() {
 
         {/* Delivery Section */}
         <SectionCard
-          icon={<Calendar size={18} color={Colors.info} strokeWidth={2} />}
+          icon={<Calendar size={18} color={Colors.accent} strokeWidth={2} />}
           title="Delivery Details"
-          accent={Colors.info}
+          accent={Colors.accent}
         >
           <View style={styles.twoCol}>
             <View style={styles.twoColItem}>

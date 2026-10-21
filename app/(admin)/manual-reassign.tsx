@@ -5,8 +5,8 @@ import {
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  ArrowLeft, ArrowRightLeft, Bike, MapPin, RefreshCw, Search, Square, CheckSquare,
-  User, AlertCircle, ChevronDown, ChevronUp, Truck,
+  ArrowLeft, ArrowRightLeft, Bike, MapPin, Phone, RefreshCw, Search, Square, CheckSquare,
+  AlertCircle, ChevronDown, ChevronUp, Truck,
 } from 'lucide-react-native';
 import { format, parseISO } from 'date-fns';
 import { Colors, Typography, Spacing, Radius } from '@/constants/theme';
@@ -14,7 +14,7 @@ import { supabase } from '@/lib/supabase';
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import DatePickerField from '@/components/ui/DatePickerField';
 
-const ACTIVE_ASSIGNMENT_STATUSES = ['assigned', 'accepted', 'picked_up', 'delivered'];
+const ACTIVE_ASSIGNMENT_STATUSES = ['assigned', 'accepted', 'picked_up'];
 
 interface FromOrder {
   assignment_id: string;
@@ -26,6 +26,7 @@ interface FromOrder {
   customer_mobile: string;
   plan_name: string;
   address: string;
+  standing_only: boolean;
 }
 
 interface Rider {
@@ -33,10 +34,6 @@ interface Rider {
   full_name: string;
   mobile: string;
   zone: string | null;
-}
-
-function formatOrderReference(orderId: string | null): string {
-  return orderId ? `#${orderId.slice(-8).toUpperCase()}` : '#Custom order';
 }
 
 export default function ManualReassignScreen() {
@@ -82,47 +79,98 @@ function ManualReassignContent() {
     setLoadingOrders(true);
     setError(null);
     try {
-      const { data, error: err } = await supabase
+      const todayStr = format(new Date(), 'yyyy-MM-dd');
+
+      // Source 1 — live assignment rows for this rider (assigned/accepted/
+      // picked_up; delivered orders are covered by the standing sub below),
+      // filtered by the order's scheduled date.
+      const { data: assignData, error: assignErr } = await supabase
         .from('rider_order_assignments')
         .select(`
           id, order_id, status,
-          order:orders(id, scheduled_date, status, subscription_id,
+          order:orders(id, scheduled_date, subscription_id,
             user:profiles(full_name, mobile),
-            subscription:subscriptions(id, status, start_date, end_date, new_end_date, pause_start_date, pause_until, plan:subscription_plans(name), delivery_address:addresses(apartment_name, street, landmark, city, state, pincode)))
+            subscription:subscriptions(id, status, plan:subscription_plans(name), delivery_address:addresses(apartment_name, street, landmark, city, state, pincode)))
         `)
         .eq('rider_id', riderId)
-        .in('status', ACTIVE_ASSIGNMENT_STATUSES)
+        .in('status', ['assigned', 'accepted', 'picked_up'])
+        .gte('order.scheduled_date', rangeStart)
+        .lte('order.scheduled_date', rangeEnd)
         .order('assigned_at', { ascending: false })
-        .limit(1000);
-      if (err) throw new Error(err.message);
+        .limit(500);
+      if (assignErr) throw new Error(assignErr.message);
 
-      // One row per customer (delivered customers keep their standing
-      // assignment, latest order only) and only active subscriptions
-      const seenSubs = new Set<string>();
+      const addressOf = (addr: any) => {
+        const a = Array.isArray(addr) ? addr[0] : addr;
+        const parts = [a?.apartment_name, a?.street, a?.landmark, a?.city, a?.state, a?.pincode].filter(Boolean);
+        return parts.length > 0 ? parts.join(', ') : 'No address';
+      };
+
       const rows: FromOrder[] = [];
-      for (const raw of (data ?? []) as any[]) {
-        const order = Array.isArray(raw.order) ? raw.order[0] : raw.order;
-        if (!order) continue;
+      const coveredSubs = new Set<string>();
+      for (const raw of (assignData ?? []) as any[]) {
+        const order = raw.order ? (Array.isArray(raw.order) ? raw.order[0] : raw.order) : null;
+        if (!order || !order.scheduled_date) continue;
         const sub = order.subscription ? (Array.isArray(order.subscription) ? order.subscription[0] : order.subscription) : null;
         if (!sub || sub.status !== 'active') continue;
-        const key = order.id;
-        if (seenSubs.has(key)) continue;
-        seenSubs.add(key);
+        if (coveredSubs.has(sub.id)) continue;
+        coveredSubs.add(sub.id);
         const user = order.user ? (Array.isArray(order.user) ? order.user[0] : order.user) : null;
-        const addr = sub.delivery_address ? (Array.isArray(sub.delivery_address) ? sub.delivery_address[0] : sub.delivery_address) : null;
-        const addressParts = [addr?.apartment_name, addr?.street, addr?.landmark, addr?.city, addr?.state, addr?.pincode].filter(Boolean);
         rows.push({
           assignment_id: raw.id,
           order_id: raw.order_id ?? null,
-          scheduled_date: order.scheduled_date ?? '',
+          scheduled_date: order.scheduled_date,
           status: raw.status,
           subscription_id: sub.id,
           customer_name: user?.full_name ?? user?.mobile ?? 'Unknown',
           customer_mobile: user?.mobile ?? '',
           plan_name: sub.plan?.name ?? '',
-          address: addressParts.length > 0 ? addressParts.join(', ') : 'No address',
+          address: addressOf(sub.delivery_address),
+          standing_only: false,
         });
       }
+
+      // Source 2 — active subscriptions whose primary rider is this rider.
+      // Same as the Assigned Orders screen: these are standing assignments.
+      // A subscription matches when its active window (start date through
+      // effective end date) overlaps the selected date range, so picking any
+      // date inside the subscription period shows the customer.
+      const { data: subData, error: subErr } = await supabase
+        .from('subscriptions')
+        .select(`
+          id, status, start_date, end_date, new_end_date, pause_until, next_delivery_date,
+          plan:subscription_plans(name),
+          user:profiles(full_name, mobile),
+          delivery_address:addresses(apartment_name, street, landmark, city, state, pincode)
+        `)
+        .eq('primary_rider_id', riderId)
+        .eq('status', 'active')
+        .or(`pause_until.is.null,pause_until.lt.${todayStr}`)
+        .or(`start_date.is.null,start_date.lte.${rangeEnd}`)
+        .or(`new_end_date.gte.${rangeStart},end_date.gte.${rangeStart},end_date.is.null`)
+        .order('next_delivery_date', { ascending: true })
+        .limit(1000);
+      if (subErr) throw new Error(subErr.message);
+
+      for (const sub of (subData ?? []) as any[]) {
+        if (coveredSubs.has(sub.id)) continue;
+        coveredSubs.add(sub.id);
+        const user = sub.user ? (Array.isArray(sub.user) ? sub.user[0] : sub.user) : null;
+        rows.push({
+          assignment_id: sub.id,
+          order_id: null,
+          scheduled_date: sub.next_delivery_date ?? sub.start_date ?? '',
+          status: 'assigned',
+          subscription_id: sub.id,
+          customer_name: user?.full_name ?? user?.mobile ?? 'Unknown',
+          customer_mobile: user?.mobile ?? '',
+          plan_name: sub.plan?.name ?? '',
+          address: addressOf(sub.delivery_address),
+          standing_only: true,
+        });
+      }
+
+      rows.sort((a, b) => (a.scheduled_date < b.scheduled_date ? 1 : -1));
       setAllOrders(rows);
     } catch (e: any) {
       setError(e.message ?? 'Failed to load orders');
@@ -131,28 +179,22 @@ function ManualReassignContent() {
       setLoadingOrders(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [rangeStart, rangeEnd]);
 
   useEffect(() => {
     if (fromRider) loadOrders(fromRider.id);
     else { setAllOrders([]); setSelected(new Set()); }
   }, [fromRider, loadOrders]);
 
-  // Orders whose delivery date falls inside the chosen range
-  const inRangeOrders = useMemo(
-    () => allOrders.filter((o) => o.scheduled_date && o.scheduled_date >= rangeStart && o.scheduled_date <= rangeEnd),
-    [allOrders, rangeStart, rangeEnd],
-  );
-
   const filteredOrders = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return inRangeOrders;
-    return inRangeOrders.filter((o) =>
+    if (!q) return allOrders;
+    return allOrders.filter((o) =>
       o.customer_name.toLowerCase().includes(q)
       || o.customer_mobile.includes(q)
       || o.plan_name.toLowerCase().includes(q)
       || o.address.toLowerCase().includes(q));
-  }, [inRangeOrders, search]);
+  }, [allOrders, search]);
 
   useEffect(() => {
     setSelected((prev) => new Set([...prev].filter((id) => filteredOrders.some((o) => o.assignment_id === id))));
@@ -187,19 +229,16 @@ function ManualReassignContent() {
     try {
       const selectedRows = allOrders.filter((o) => selected.has(o.assignment_id));
 
-      // Delivered rows are permanent history: reassign by changing the
-      // subscription's primary rider, which only affects future deliveries.
-      const deliveredSubIds = Array.from(new Set(
-        selectedRows
-          .filter((o) => o.status === 'delivered')
-          .map((o) => o.subscription_id)
-          .filter((v): v is string => Boolean(v)),
-      ));
-      const activeIds = selectedRows.filter((o) => o.status !== 'delivered').map((o) => o.assignment_id);
+      // Standing subscription rows: reassign by changing the subscription's
+      // primary rider, which only affects future deliveries.
+      const standingSubIds = selectedRows
+        .filter((o) => o.standing_only && o.subscription_id)
+        .map((o) => o.subscription_id as string);
+      const activeIds = selectedRows.filter((o) => !o.standing_only).map((o) => o.assignment_id);
 
       let success = 0;
       let failed = 0;
-      for (const subId of deliveredSubIds) {
+      for (const subId of standingSubIds) {
         const { data, error: rpcErr } = await supabase.rpc('set_subscription_primary_rider', {
           p_subscription_id: subId,
           p_rider_id: toRider.id,
@@ -225,17 +264,19 @@ function ManualReassignContent() {
 
       setResult({ success, failed });
       setSelected(new Set());
-      loadOrders(fromRider.id);
-      setTimeout(() => setResult(null), 6000);
+      if (success > 0) {
+        setTimeout(() => {
+          router.replace({ pathname: '/rider-assignment-orders', params: { tab: 'assigned' } });
+        }, 1200);
+      } else {
+        loadOrders(fromRider.id);
+        setTimeout(() => setResult(null), 6000);
+      }
     } catch (e: any) {
       setError(e.message ?? 'Reassignment failed');
     } finally {
       setWorking(false);
     }
-  };
-
-  const fmtDate = (value: string) => {
-    try { return format(parseISO(value), 'dd MMM yyyy'); } catch { return value; }
   };
 
   const renderRiderPicker = (
@@ -310,14 +351,19 @@ function ManualReassignContent() {
         {isSelected ? <CheckSquare size={20} color={Colors.primary} /> : <Square size={20} color={Colors.textDisabled} />}
         <View style={{ flex: 1, minWidth: 0 }}>
           <View style={st.rowTop}>
-            <Text style={st.orderRef}>{formatOrderReference(o.order_id)}</Text>
-            <Text style={st.orderDate}>{fmtDate(o.scheduled_date)}</Text>
-            <Text style={st.planText} numberOfLines={1}>{o.plan_name}</Text>
+            <Text style={st.customerName} numberOfLines={1}>{o.customer_name}</Text>
+            {o.plan_name ? (
+              <View style={st.planPill}>
+                <Text style={st.planPillText} numberOfLines={1}>{o.plan_name}</Text>
+              </View>
+            ) : null}
           </View>
-          <View style={st.infoRow}>
-            <User size={12} color={Colors.textTertiary} strokeWidth={1.8} />
-            <Text style={st.infoText} numberOfLines={1}>{o.customer_name}{o.customer_mobile ? ` · ${o.customer_mobile}` : ''}</Text>
-          </View>
+          {o.customer_mobile ? (
+            <View style={st.infoRow}>
+              <Phone size={12} color={Colors.textTertiary} strokeWidth={1.8} />
+              <Text style={st.infoText} numberOfLines={1}>{o.customer_mobile}</Text>
+            </View>
+          ) : null}
           <View style={st.infoRow}>
             <MapPin size={12} color={Colors.textTertiary} strokeWidth={1.8} />
             <Text style={st.infoText} numberOfLines={2}>{o.address}</Text>
@@ -557,9 +603,14 @@ const st = StyleSheet.create({
   },
   rowCardSelected: { borderColor: Colors.primary, backgroundColor: Colors.primarySurface },
   rowTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], flexWrap: 'wrap', marginBottom: Spacing[1] },
-  orderRef: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
-  orderDate: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
-  planText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textSecondary, flex: 1, textAlign: 'right' },
+  customerName: { flex: 1, fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  planPill: {
+    backgroundColor: Colors.primarySurface,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing[2] + 2,
+    paddingVertical: 3,
+  },
+  planPillText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.primary },
   infoRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], marginTop: 2 },
   infoText: { flex: 1, fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textSecondary },
   actionBar: {

@@ -111,6 +111,9 @@ export default function RiderPickups() {
   const [unavailableReason, setUnavailableReason] = useState('');
   const [markingUnavailable, setMarkingUnavailable] = useState(false);
   const [unavailableError, setUnavailableError] = useState<string | null>(null);
+  const [pickupPerDayPrice, setPickupPerDayPrice] = useState(0);
+
+  const currentMonthKey = format(new Date(), 'yyyy-MM');
 
   useEffect(() => {
     const interval = setInterval(() => setNowTick(Date.now()), 30000);
@@ -182,7 +185,17 @@ export default function RiderPickups() {
 
     setLoading(false);
     setRefreshing(false);
-  }, [profile?.id, riderId]);
+
+    if (rId) {
+      const { data: priceData } = await supabase
+        .from('rider_pickup_prices')
+        .select('per_day_price')
+        .eq('rider_id', rId)
+        .eq('month', currentMonthKey)
+        .maybeSingle();
+      setPickupPerDayPrice(Number(priceData?.per_day_price ?? 0));
+    }
+  }, [profile?.id, riderId, currentMonthKey]);
 
   useEffect(() => {
     load();
@@ -369,6 +382,19 @@ export default function RiderPickups() {
 
   const pendingCount = orders.filter((o) => o.status !== 'fulfilled').length;
   const doneCount = orders.filter((o) => o.status === 'fulfilled').length;
+
+  const currentMonthOrders = orders.filter((o) => (o.requirement_date ?? '').startsWith(currentMonthKey));
+  const byDate = new Map<string, PickupOrder[]>();
+  currentMonthOrders.forEach((o) => {
+    const d = o.requirement_date ?? 'unknown';
+    const list = byDate.get(d) ?? [];
+    list.push(o);
+    byDate.set(d, list);
+  });
+  const completedPickupDays = Array.from(byDate.values()).filter(
+    (dayOrders) => dayOrders.length > 0 && dayOrders.every((o) => o.status === 'fulfilled'),
+  ).length;
+  const monthlyPickupEarnings = completedPickupDays * pickupPerDayPrice;
 
   const isPickupActive = (status: string) => status !== 'fulfilled' && status !== 'cancelled';
 
@@ -747,6 +773,14 @@ export default function RiderPickups() {
                 <CheckCircle2 size={14} color={Colors.success} strokeWidth={1.8} />
                 <Text style={[wStyles.summaryText, { color: Colors.success }]}>{doneCount} Done</Text>
               </View>
+              {pickupPerDayPrice > 0 && (
+                <View style={[wStyles.summaryChip, { backgroundColor: Colors.primarySurface }]}>
+                  <IndianRupee size={14} color={Colors.primary} strokeWidth={1.8} />
+                  <Text style={[wStyles.summaryText, { color: Colors.primary }]}>
+                    {completedPickupDays} days · ₹{monthlyPickupEarnings.toLocaleString('en-IN')}
+                  </Text>
+                </View>
+              )}
             </View>
           )}
 
@@ -861,6 +895,18 @@ export default function RiderPickups() {
             <ShoppingBag size={36} color={Colors.textTertiary} strokeWidth={1.5} />
             <Text style={mStyles.emptyTitle}>No pickup orders</Text>
             <Text style={mStyles.emptyText}>You have no procurement pickups assigned yet.</Text>
+          </View>
+        )}
+        {!loading && orders.length > 0 && pickupPerDayPrice > 0 && (
+          <View style={mStyles.earningsCard}>
+            <View style={mStyles.earningsLeft}>
+              <IndianRupee size={16} color={Colors.primary} strokeWidth={1.8} />
+              <View>
+                <Text style={mStyles.earningsLabel}>This month's pickup earnings</Text>
+                <Text style={mStyles.earningsSub}>{completedPickupDays} completed day{completedPickupDays === 1 ? '' : 's'} × ₹{pickupPerDayPrice.toLocaleString('en-IN')}/day</Text>
+              </View>
+            </View>
+            <Text style={mStyles.earningsValue}>₹{monthlyPickupEarnings.toLocaleString('en-IN')}</Text>
           </View>
         )}
         {!loading && orders.map((o) => {
@@ -998,6 +1044,22 @@ const mStyles = StyleSheet.create({
   cardDetailText: {
     fontFamily: Typography.fontFamily.sansRegular,
     fontSize: Typography.size.sm, color: Colors.textSecondary,
+  },
+  earningsCard: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: Colors.primarySurface, borderRadius: Radius.lg,
+    paddingHorizontal: Spacing[4], paddingVertical: Spacing[3],
+    borderWidth: 1, borderColor: Colors.primary + '20',
+  },
+  earningsLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing[3], flex: 1 },
+  earningsLabel: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.primary,
+  },
+  earningsSub: {
+    fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.textTertiary, marginTop: 2,
+  },
+  earningsValue: {
+    fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.lg, color: Colors.primary,
   },
   emptyState: { paddingVertical: 60, alignItems: 'center', gap: Spacing[3] },
   emptyTitle: {

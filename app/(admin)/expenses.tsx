@@ -8,10 +8,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Receipt, Plus, X, Pencil, Trash2, ArrowLeft, Search, ChevronDown } from 'lucide-react-native';
 import { router } from 'expo-router';
-import { format } from 'date-fns';
+import { format, startOfMonth, endOfMonth, subMonths, startOfDay, endOfDay } from 'date-fns';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
+import DatePickerField from '@/components/ui/DatePickerField';
 
 type ExpenseCategory = 'delivery' | 'utilities' | 'salaries' | 'marketing' | 'packaging' | 'equipment' | 'rent' | 'miscellaneous' | 'other';
 type ExpensePaymentMethod = 'cash' | 'upi' | 'bank_transfer' | 'cheque' | 'card';
@@ -46,6 +47,12 @@ const PAYMENT_METHODS: { value: ExpensePaymentMethod; label: string }[] = [
   { value: 'bank_transfer', label: 'Bank Transfer' },
   { value: 'cheque',        label: 'Cheque' },
   { value: 'card',          label: 'Card' },
+];
+
+const PERIOD_OPTIONS = [
+  { label: 'This Month', value: 0 },
+  { label: 'Last Month', value: 1 },
+  { label: '3 Months', value: 3 },
 ];
 
 const CAT_COLORS: Record<ExpenseCategory, string> = {
@@ -92,6 +99,10 @@ function ExpensesScreenContent() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState<ExpenseCategory | 'all'>('all');
+  const [dateFilter, setDateFilter] = useState(0);
+  const [rangeFrom, setRangeFrom] = useState<Date | null>(null);
+  const [rangeTo, setRangeTo] = useState<Date | null>(null);
+  const [openPicker, setOpenPicker] = useState<'from' | 'to' | null>(null);
 
   const [showDelete, setShowDelete] = useState<Expense | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -189,7 +200,37 @@ function ExpensesScreenContent() {
     load();
   };
 
-  const filtered = expenses.filter(e => {
+  const clearRange = useCallback(() => {
+    setRangeFrom(null);
+    setRangeTo(null);
+    setOpenPicker(null);
+    setDateFilter(0);
+  }, []);
+
+  const dateRange = (() => {
+    if (dateFilter === -2) {
+      if (!rangeFrom || !rangeTo) return null;
+      return { from: startOfDay(rangeFrom), to: endOfDay(rangeTo) };
+    }
+    const now = new Date();
+    if (dateFilter === 1) {
+      const lm = subMonths(now, 1);
+      return { from: startOfMonth(lm), to: endOfMonth(lm) };
+    }
+    if (dateFilter === 3) {
+      return { from: startOfMonth(subMonths(now, 2)), to: endOfDay(now) };
+    }
+    return { from: startOfMonth(now), to: endOfDay(now) };
+  })();
+
+  const dateFiltered = dateRange
+    ? expenses.filter(e => {
+        const d = new Date(`${e.expense_date}T00:00:00`);
+        return d >= dateRange.from && d <= dateRange.to;
+      })
+    : expenses;
+
+  const filtered = dateFiltered.filter(e => {
     if (catFilter !== 'all' && e.category !== catFilter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -199,7 +240,7 @@ function ExpensesScreenContent() {
   });
 
   const totalFiltered = filtered.reduce((s, e) => s + Number(e.amount), 0);
-  const totalAll = expenses.reduce((s, e) => s + Number(e.amount), 0);
+  const totalDate = dateFiltered.reduce((s, e) => s + Number(e.amount), 0);
   const fmt = (n: number) => `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
   const catLabel = (c: ExpenseCategory) => CATEGORIES.find(x => x.value === c)?.label ?? c;
 
@@ -217,7 +258,7 @@ function ExpensesScreenContent() {
           </View>
           <View>
             <Text style={[s.title, isWeb && s.titleWeb]}>Expenses</Text>
-            <Text style={s.subtitle}>{fmt(totalAll)} total · {expenses.length} entries</Text>
+            <Text style={s.subtitle}>{fmt(totalDate)} total · {dateFiltered.length} entries</Text>
           </View>
         </View>
         <TouchableOpacity style={s.addBtn} onPress={openCreate} activeOpacity={0.8}>
@@ -238,15 +279,64 @@ function ExpensesScreenContent() {
         ) : null}
       </View>
 
+      <View style={[s.periodRow, isWeb && s.filterRowWeb]}>
+        <View style={s.filterInner}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.periodPills}>
+            {PERIOD_OPTIONS.map(p => (
+              <TouchableOpacity key={p.value} style={[s.catTab, dateFilter === p.value && s.catTabActive]} onPress={() => { setDateFilter(p.value); setRangeFrom(null); setRangeTo(null); }}>
+                <Text style={[s.catTabText, dateFilter === p.value && s.catTabTextActive]}>{p.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <View style={s.periodDivider} />
+          <View style={s.rangeField}>
+            <DatePickerField
+              label="From"
+              compact
+              value={rangeFrom}
+              open={openPicker === 'from'}
+              onOpenChange={(o) => setOpenPicker(o ? 'from' : null)}
+              maxDate={rangeTo ?? new Date()}
+              onChange={(d) => {
+                setRangeFrom(d);
+                if (rangeTo && d > rangeTo) setRangeTo(null);
+                setDateFilter(-2);
+              }}
+            />
+          </View>
+          <View style={s.rangeField}>
+            <DatePickerField
+              label="To"
+              compact
+              align="right"
+              value={rangeTo}
+              open={openPicker === 'to'}
+              onOpenChange={(o) => setOpenPicker(o ? 'to' : null)}
+              minDate={rangeFrom ?? undefined}
+              maxDate={new Date()}
+              onChange={(d) => {
+                setRangeTo(d);
+                setDateFilter(-2);
+              }}
+            />
+          </View>
+          {dateFilter === -2 && rangeFrom && rangeTo && (
+            <TouchableOpacity style={s.rangeClear} onPress={clearRange}>
+              <X size={14} color={Colors.textTertiary} strokeWidth={2} />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.catScroll} contentContainerStyle={s.catTabs}>
         <TouchableOpacity style={[s.catTab, catFilter === 'all' && s.catTabActive]} onPress={() => setCatFilter('all')}>
-          <Text style={[s.catTabText, catFilter === 'all' && s.catTabTextActive]}>All ({expenses.length})</Text>
+          <Text style={[s.catTabText, catFilter === 'all' && s.catTabTextActive]}>All ({dateFiltered.length})</Text>
         </TouchableOpacity>
-        {CATEGORIES.filter(c => expenses.some(e => e.category === c.value)).map(c => (
+        {CATEGORIES.filter(c => dateFiltered.some(e => e.category === c.value)).map(c => (
           <TouchableOpacity key={c.value} style={[s.catTab, catFilter === c.value && s.catTabActive, catFilter === c.value && { borderColor: CAT_COLORS[c.value] }]} onPress={() => setCatFilter(c.value)}>
             <View style={[s.catDot, { backgroundColor: CAT_COLORS[c.value] }]} />
             <Text style={[s.catTabText, catFilter === c.value && { color: CAT_COLORS[c.value], fontFamily: Typography.fontFamily.sansSemiBold }]}>
-              {c.label} ({expenses.filter(e => e.category === c.value).length})
+              {c.label} ({dateFiltered.filter(e => e.category === c.value).length})
             </Text>
           </TouchableOpacity>
         ))}
@@ -461,6 +551,12 @@ const s = StyleSheet.create({
   catDot: { width: 7, height: 7, borderRadius: 4 },
   catTabText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
   catTabTextActive: { color: Colors.primary, fontFamily: Typography.fontFamily.sansSemiBold },
+  periodRow: { paddingHorizontal: Spacing[5], paddingVertical: Spacing[2], backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  filterInner: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
+  periodPills: { flexDirection: 'row', gap: Spacing[2], alignItems: 'center' },
+  periodDivider: { width: 1, height: 24, backgroundColor: Colors.border },
+  rangeField: { width: 152 },
+  rangeClear: { padding: Spacing[2] },
   scroll: { flex: 1 },
   content: { padding: Spacing[4] },
   contentWeb: { padding: Spacing[8], maxWidth: 1100, alignSelf: 'center', width: '100%' },

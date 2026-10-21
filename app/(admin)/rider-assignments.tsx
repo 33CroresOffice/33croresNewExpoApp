@@ -8,7 +8,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Truck, Search, ArrowLeft, X, ChevronRight, Calendar, CircleCheck as CheckCircle, CircleAlert as AlertCircle, Clock, User, MapPin, Plus, ChevronDown, Package, Zap, RefreshCw, ShieldAlert, Star } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { format, isToday, parseISO } from 'date-fns';
+import { format, isToday, parseISO, subDays } from 'date-fns';
+import DatePickerField from '@/components/ui/DatePickerField';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -94,6 +95,21 @@ function RiderAssignmentsScreenContent() {
   const [showBulkResult, setShowBulkResult] = useState(false);
 
   const [reassignQueue, setReassignQueue] = useState<any[]>([]);
+  const [historyDatePreset, setHistoryDatePreset] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
+  const [historyDateFrom, setHistoryDateFrom] = useState<Date | null>(null);
+  const [historyDateTo, setHistoryDateTo] = useState<Date | null>(null);
+
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const todayISTStr = () => new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+  const yesterdayISTStr = () => new Date(Date.now() + IST_OFFSET_MS - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const getHistoryDate = (a: any) => {
+    const scheduled = a.order?.scheduled_date ?? a.order?.delivery_date ?? null;
+    if (scheduled) return String(scheduled).slice(0, 10);
+    if (a.delivered_at) return a.delivered_at.slice(0, 10);
+    if (a.failed_at) return a.failed_at.slice(0, 10);
+    return String(a.assigned_at ?? '').slice(0, 10);
+  };
 
   const load = useCallback(async () => {
     try {
@@ -102,7 +118,7 @@ function RiderAssignmentsScreenContent() {
       const [ridersRes, ordersRes, assignmentsRes, leaveRes] = await Promise.all([
         supabase.from('riders').select('id, full_name, mobile, zone, vehicle_type, is_active').eq('is_active', true).order('full_name'),
         supabase.from('orders').select('*, user:profiles(full_name, mobile), subscription:subscriptions(plan:subscription_plans(name), delivery_address:addresses(street, city))').in('status', ['scheduled', 'out_for_delivery']).order('scheduled_date').limit(100),
-        supabase.from('rider_order_assignments').select('*, rider:rider_id(full_name, mobile, zone, vehicle_type), order:orders(id, scheduled_date, status, user:profiles(full_name, mobile), subscription:subscriptions(primary_rider_id, delivery_address:addresses(street, city)))').order('assigned_at', { ascending: false }).limit(200),
+        supabase.from('rider_order_assignments').select('*, rider:rider_id(full_name, mobile, zone, vehicle_type), order:orders(id, scheduled_date, status, user:profiles(full_name, mobile), subscription:subscriptions(primary_rider_id, delivery_address:addresses(street, city)))').order('assigned_at', { ascending: false }).limit(2000),
         supabase.from('rider_leave_requests').select('rider_id, leave_date, end_date').eq('status', 'approved').lte('leave_date', today).gte('end_date', today),
       ]);
 
@@ -300,10 +316,29 @@ function RiderAssignmentsScreenContent() {
 
   const filteredHistory = historyAssignments.filter(a => {
     if (params.rider_id && a.rider_id !== params.rider_id) return false;
+    const d = getHistoryDate(a);
+    const todayStr = todayISTStr();
+    const yesterdayStr = yesterdayISTStr();
+    if (historyDatePreset === 'today' && d !== todayStr) return false;
+    if (historyDatePreset === 'yesterday' && d !== yesterdayStr) return false;
+    if (historyDatePreset === 'custom') {
+      if (historyDateFrom && d < format(historyDateFrom, 'yyyy-MM-dd')) return false;
+      if (historyDateTo && d > format(historyDateTo, 'yyyy-MM-dd')) return false;
+    }
     if (!search.trim()) return true;
     const q = search.toLowerCase();
     return (a.rider?.full_name ?? '').toLowerCase().includes(q) || (a.order?.user?.full_name ?? '').toLowerCase().includes(q);
   });
+
+  const historyGroups = (() => {
+    const map = new Map<string, typeof filteredHistory>();
+    filteredHistory.forEach(a => {
+      const d = getHistoryDate(a) || 'unknown';
+      if (!map.has(d)) map.set(d, []);
+      map.get(d)!.push(a);
+    });
+    return Array.from(map.entries()).sort((x, y) => (x[0] < y[0] ? 1 : -1));
+  })();
 
   const filteredRiders = riders.filter(r => {
     if (leaveSet.has(r.id)) return false;
@@ -492,37 +527,83 @@ function RiderAssignmentsScreenContent() {
 
           {/* HISTORY */}
           {activeTab === 'history' && (
-            filteredHistory.length === 0 ? (
-              <EmptyState icon={<Package size={36} color={Colors.textDisabled} strokeWidth={1.2} />} title="No history yet" sub="Completed deliveries will appear here." />
-            ) : (
-              filteredHistory.map(a => {
-                const cfg = ASSIGN_STATUS_CONFIG[a.status];
-                return (
-                  <View key={a.id} style={s.histCard}>
-                    <View style={[s.histDot, { backgroundColor: cfg.color }]} />
-                    <View style={s.histBody}>
-                      <View style={s.histTop}>
-                        <Text style={s.histOrderId}>#{a.order_id.slice(-8).toUpperCase()}</Text>
-                        <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
-                          <Text style={[s.statusText, { color: cfg.color }]}>{cfg.label}</Text>
-                        </View>
-                      </View>
-                      <View style={s.histMeta}>
-                        <Truck size={11} color={Colors.textTertiary} strokeWidth={1.8} />
-                        <Text style={s.histRider}>{a.rider?.full_name}</Text>
-                        <Text style={s.histSep}>·</Text>
-                        <User size={11} color={Colors.textTertiary} strokeWidth={1.8} />
-                        <Text style={s.histCustomer}>{a.order?.user?.full_name ?? a.order?.user?.mobile}</Text>
-                      </View>
-                      {a.delivered_at && <Text style={s.histTime}>Delivered {format(new Date(a.delivered_at), 'dd MMM · HH:mm')}</Text>}
-                      {a.failed_at && <Text style={s.histFail}>{a.failure_reason || 'Delivery failed'}</Text>}
-                      {a.swap_reason && <Text style={s.histSwap}>Swapped: {a.swap_reason}</Text>}
-                      {a.delivery_fee > 0 && <Text style={s.histFee}>Fee: ₹{a.delivery_fee}</Text>}
-                    </View>
+            <>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.histChips}>
+                {([
+                  { key: 'all', label: 'All dates' },
+                  { key: 'today', label: 'Today' },
+                  { key: 'yesterday', label: 'Yesterday' },
+                  { key: 'custom', label: 'Custom Date' },
+                ] as const).map(opt => {
+                  const isActive = historyDatePreset === opt.key;
+                  return (
+                    <TouchableOpacity
+                      key={opt.key}
+                      style={[s.histChip, isActive && s.histChipActive]}
+                      onPress={() => {
+                        setHistoryDatePreset(opt.key);
+                        if (opt.key !== 'custom') { setHistoryDateFrom(null); setHistoryDateTo(null); }
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[s.histChipText, isActive && s.histChipTextActive]}>{opt.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+              {historyDatePreset === 'custom' && (
+                <View style={s.histDateRow}>
+                  <View style={{ flex: 1 }}>
+                    <DatePickerField label="From" value={historyDateFrom} onChange={setHistoryDateFrom} maxDate={historyDateTo ?? undefined} />
                   </View>
-                );
-              })
-            )
+                  <View style={{ flex: 1 }}>
+                    <DatePickerField label="To" value={historyDateTo} onChange={setHistoryDateTo} minDate={historyDateFrom ?? undefined} />
+                  </View>
+                </View>
+              )}
+              {filteredHistory.length === 0 ? (
+                <EmptyState icon={<Package size={36} color={Colors.textDisabled} strokeWidth={1.2} />} title="No history yet" sub="Completed deliveries will appear here." />
+              ) : (
+                historyGroups.map(([date, group]) => (
+                  <View key={date}>
+                    <View style={s.histDateHeader}>
+                      <Calendar size={13} color={Colors.textSecondary} strokeWidth={2} />
+                      <Text style={s.histDateHeaderText}>
+                        {date === 'unknown' ? 'Unknown date' : format(new Date(date + 'T00:00:00'), 'EEEE, dd MMM yyyy')}
+                      </Text>
+                      <View style={s.histDateCount}><Text style={s.histDateCountText}>{group.length}</Text></View>
+                    </View>
+                    {group.map(a => {
+                      const cfg = ASSIGN_STATUS_CONFIG[a.status];
+                      return (
+                        <View key={a.id} style={s.histCard}>
+                          <View style={[s.histDot, { backgroundColor: cfg.color }]} />
+                          <View style={s.histBody}>
+                            <View style={s.histTop}>
+                              <Text style={s.histOrderId}>#{a.order_id.slice(-8).toUpperCase()}</Text>
+                              <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
+                                <Text style={[s.statusText, { color: cfg.color }]}>{cfg.label}</Text>
+                              </View>
+                            </View>
+                            <View style={s.histMeta}>
+                              <Truck size={11} color={Colors.textTertiary} strokeWidth={1.8} />
+                              <Text style={s.histRider}>{a.rider?.full_name}</Text>
+                              <Text style={s.histSep}>·</Text>
+                              <User size={11} color={Colors.textTertiary} strokeWidth={1.8} />
+                              <Text style={s.histCustomer}>{a.order?.user?.full_name ?? a.order?.user?.mobile}</Text>
+                            </View>
+                            {a.delivered_at && <Text style={s.histTime}>Delivered {format(new Date(a.delivered_at), 'dd MMM · HH:mm')}</Text>}
+                            {a.failed_at && <Text style={s.histFail}>{a.failure_reason || 'Delivery failed'}</Text>}
+                            {a.swap_reason && <Text style={s.histSwap}>Swapped: {a.swap_reason}</Text>}
+                            {a.delivery_fee > 0 && <Text style={s.histFee}>Fee: ₹{a.delivery_fee}</Text>}
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                ))
+              )}
+            </>
           )}
         </ScrollView>
       )}
@@ -915,6 +996,16 @@ const s = StyleSheet.create({
   histFail: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.error },
   histSwap: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.warning },
   histFee: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.success },
+  histChips: { gap: Spacing[2], paddingBottom: Spacing[1] },
+  histChip: { paddingHorizontal: Spacing[3], paddingVertical: Spacing[2], borderRadius: Radius.full, backgroundColor: Colors.neutral[100], borderWidth: 1, borderColor: Colors.border },
+  histChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  histChipText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.textSecondary },
+  histChipTextActive: { color: Colors.white },
+  histDateRow: { flexDirection: 'row', gap: Spacing[3], marginBottom: Spacing[2] },
+  histDateHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], marginTop: Spacing[4], marginBottom: Spacing[2], paddingHorizontal: Spacing[1] },
+  histDateHeaderText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary, flex: 1 },
+  histDateCount: { backgroundColor: Colors.neutral[100], borderRadius: Radius.full, paddingHorizontal: Spacing[2], paddingVertical: 2, minWidth: 24, alignItems: 'center' },
+  histDateCountText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.textSecondary },
   suggSection: { marginBottom: Spacing[3] },
   suggHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing[1], marginBottom: Spacing[2] },
   suggTitle: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.accentDark },

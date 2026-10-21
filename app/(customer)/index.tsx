@@ -15,7 +15,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowRight, Flower2, Truck, Heart, Star, Sparkles, ChevronRight, User, Calendar, CirclePause as PauseCircle, CircleCheck as CheckCircle2, Paintbrush, RotateCcw, TriangleAlert as AlertTriangle, Timer, Bell, Sun, Flame, Compass, Landmark, ShieldCheck } from 'lucide-react-native';
+import { ArrowRight, Flower2, Truck, Heart, Star, Sparkles, ChevronRight, User, Phone, Calendar, CirclePause as PauseCircle, CircleCheck as CheckCircle2, Paintbrush, RotateCcw, TriangleAlert as AlertTriangle, Timer, Bell, Sun, Flame, Compass, Landmark, ShieldCheck } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase, SUPABASE_URL } from '@/lib/supabase';
 import { Linking } from 'react-native';
@@ -135,6 +135,7 @@ export default function HomeScreen() {
   const [sharedPoojaNotifications, setSharedPoojaNotifications] = useState<Array<{ id: string; title: string; body: string; metadata: { share_token?: string }; created_at: string }>>([]);
   const [todayPanji, setTodayPanji] = useState<PanjiEntry | null>(null);
   const [otpBookings, setOtpBookings] = useState<Array<{ id: string; arrival_otp: string; preferred_date: string; preferred_time: string; provider_pooja_setups?: { pooja_type?: { name: string } | null } | null; provider_services?: { name: string } | null }>>([]);
+  const [todayRiders, setTodayRiders] = useState<Record<string, { riderName: string; mobile: string; photoUrl: string | null }>>({});
 
   const loadUnreadCount = useCallback(async () => {
     if (!session?.user?.id) return;
@@ -169,13 +170,22 @@ export default function HomeScreen() {
     return () => { supabase.removeChannel(channel); };
   }, [session?.user?.id, loadUnreadCount]);
 
+  // Rider picked up / delivered today → refresh assignment strip
+  useEffect(() => {
+    const channel = supabase
+      .channel('rider_assignment_home')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rider_order_assignments' }, () => { loadData(); })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
   const loadData = async () => {
     const todayStr = format(new Date(), 'yyyy-MM-dd');
     const [plansRes, subsRes, panjiRes, poojaRes, providersRes, otpRes] = await Promise.all([
       supabase.from('subscription_plans').select('*').eq('is_active', true).eq('show_in_customer_plans', true).order('sort_order'),
       supabase
         .from('subscriptions')
-        .select('id, plan_id, status, start_date, end_date, new_end_date, pause_start_date, next_delivery_date, pause_until, plan:subscription_plans(name, frequency, price, image_url), pause_history:subscription_pause_history(pause_start_date, pause_until, resumed_at)')
+        .select('id, plan_id, status, start_date, end_date, new_end_date, pause_start_date, next_delivery_date, pause_until, plan:subscription_plans(name, frequency, price, image_url), primary_rider:riders!subscriptions_primary_rider_id_fkey(full_name, mobile, profile_photo_url), pause_history:subscription_pause_history(pause_start_date, pause_until, resumed_at)')
         .in('status', ['active', 'paused', 'expired'])
         .order('created_at', { ascending: false })
         .limit(5),
@@ -189,8 +199,42 @@ export default function HomeScreen() {
     if (providersRes.data) setProviders(providersRes.data as HomeProvider[]);
     if (subsRes.data) setActiveSubs(subsRes.data as unknown as ActiveSub[]);
     setTodayPanji(panjiRes.data as PanjiEntry | null);
-    if (otpRes.data) setOtpBookings(otpRes.data as typeof otpBookings);
+    if (otpRes.data) setOtpBookings(otpRes.data as unknown as typeof otpBookings);
     else setOtpBookings([]);
+
+    const subIds = (subsRes.data ?? []).map((r: any) => r.id as string);
+    if (subIds.length > 0) {
+      const istToday = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const { data: taData } = await supabase
+        .from('rider_order_assignments')
+        .select('order:orders!inner(subscription_id), rider:riders!rider_order_assignments_rider_id_fkey(full_name, mobile, profile_photo_url)')        .in('order.subscription_id', subIds)
+        .eq('order.scheduled_date', istToday)
+        .neq('status', 'reassigned');
+      const taMap: Record<string, { riderName: string; mobile: string; photoUrl: string | null }> = {};
+      (taData ?? []).forEach((row: any) => {
+        const subId = row.order?.subscription_id;
+        if (!subId || !row.rider) return;
+        if (!taMap[subId]) {
+          taMap[subId] = {
+            riderName: row.rider.full_name ?? 'Rider',
+            mobile: row.rider.mobile ?? '',
+            photoUrl: row.rider.profile_photo_url ?? null,
+          };
+        }
+      });
+      for (const sub of (subsRes.data ?? []) as any[]) {
+        if (!taMap[sub.id] && sub.primary_rider?.mobile) {
+          taMap[sub.id] = {
+            riderName: sub.primary_rider.full_name ?? 'Rider',
+            mobile: sub.primary_rider.mobile,
+            photoUrl: sub.primary_rider.profile_photo_url ?? null,
+          };
+        }
+      }
+      setTodayRiders(taMap);
+    } else {
+      setTodayRiders({});
+    }
     setLoading(false);
     setRefreshing(false);
   };
@@ -324,6 +368,43 @@ export default function HomeScreen() {
           <ArrowRight size={13} color={C.white} strokeWidth={2.2} />
         </TouchableOpacity>
       </View>
+
+      {/* Today's rider — always visible for active subscriptions */}
+      {activeSubs
+        .filter((s) => todayRiders[s.id] && getEffectiveStatus(s as any) === 'active')
+        .map((sub) => {
+          const rider = todayRiders[sub.id];
+          return (
+            <View key={sub.id} style={styles.riderStrip}>
+              {rider.photoUrl ? (
+                <Image source={{ uri: rider.photoUrl }} style={styles.riderAvatar} />
+              ) : (
+                <View style={styles.riderAvatarFallback}>
+                  <User size={20} color={C.primary} strokeWidth={1.8} />
+                </View>
+              )}
+              <View style={styles.riderStripBody}>
+                <Text style={styles.riderStripTitle} numberOfLines={1}>
+                  {sub.plan?.name} · {formatPrice(sub.plan?.price ?? 0)}
+                </Text>
+                <View style={styles.riderStripRow}>
+                  <User size={11} color={C.textSoft} strokeWidth={2} />
+                  <Text style={styles.riderStripText} numberOfLines={1}>{rider.riderName}</Text>
+                </View>
+                {rider.mobile ? (
+                  <TouchableOpacity
+                    style={styles.riderStripRow}
+                    onPress={() => Linking.openURL(`tel:${rider.mobile}`)}
+                    activeOpacity={0.7}
+                  >
+                    <Phone size={11} color={C.primary} strokeWidth={2} />
+                    <Text style={styles.riderStripPhone}>{rider.mobile}</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </View>
+          );
+        })}
 
       {/* Odia Panji Banner */}
       <TouchableOpacity
@@ -1165,7 +1246,47 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     ...Shadow.md,
   },
-  subCardImg: {
+  riderStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[3],
+    backgroundColor: C.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: C.primary,
+    padding: Spacing[3],
+    marginHorizontal: Spacing[5],
+    marginTop: Spacing[3],
+    ...Shadow.sm,
+  },
+  riderStripIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: C.primarySurface, alignItems: 'center', justifyContent: 'center' },
+  riderAvatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: C.primarySurface },
+  riderAvatarFallback: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: C.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  riderStripBody: { flex: 1, gap: 2 },
+  riderStripTitle: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.sm,
+    color: C.text,
+  },
+  riderStripRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  riderStripText: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: 11,
+    color: C.textMid,
+  },
+  riderStripPhone: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: 11,
+    color: C.primary,
+    textDecorationLine: 'underline',
+  },  subCardImg: {
     width: 90,
     height: 120,
     alignSelf: 'stretch',

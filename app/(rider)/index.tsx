@@ -26,6 +26,7 @@ import { todayISTString, performAttendanceCheckIn, getCheckInErrorMessage } from
 import { getCurrentMonthIST, getMonthRangeIST } from '@/utils/riderPeriod';
 import { calculateMonthlyAttendanceCounts } from '@/utils/monthlyAttendance';
 import { calculateOnTimeDeliveryDays } from '@/utils/onTimeDelivery';
+import { calculateRiderIncentiveTotal } from '@/utils/riderIncentiveTotal';
 
 
 const GRADIENT_TOP = '#1A2E3A';
@@ -105,6 +106,7 @@ export default function RiderDashboard() {
   const [onTimeAttendance, setOnTimeAttendance] = useState(0);
   const [onTimeDelivery, setOnTimeDelivery] = useState(0);
   const [bonusBreakdown, setBonusBreakdown] = useState<BonusBreakdown[]>([]);
+  const [incentiveTotal, setIncentiveTotal] = useState(0);
   const [referralBonus, setReferralBonus] = useState<{ amount: number; approvedCount: number; eligibleCount: number; pendingCount: number } | null>(null);
 
   const load = useCallback(async () => {
@@ -262,6 +264,15 @@ export default function RiderDashboard() {
       });
     }
     setBonusBreakdown(breakdown);
+    setIncentiveTotal(calculateRiderIncentiveTotal(
+      (incentivesRes.data ?? []) as any[],
+      (evaluationsRes.data ?? []) as any[],
+      {
+        absentDays: monthlyCounts.absent,
+        onTimeAttendanceDays: onTimeAttendCount,
+        onTimeDeliveryDays: onTimeDeliverCount,
+      },
+    ));
 
     const rankingRows = (topRankingsRes.data ?? []) as any[];
     if (rankingRows.length > 0) {
@@ -361,7 +372,7 @@ export default function RiderDashboard() {
         <View style={bonusStyles.container}>
           <View style={bonusStyles.headingRow}>
             <Text style={bonusStyles.heading}>All incentives</Text>
-            <Text style={bonusStyles.total}>{`₹${bonusBreakdown.reduce((sum, bonus) => sum + bonus.total, 0).toLocaleString('en-IN')}`}</Text>
+            <Text style={bonusStyles.total}>{`₹${incentiveTotal.toLocaleString('en-IN')}`}</Text>
           </View>
           {bonusBreakdown.map((bonus) => (
             <View key={bonus.id} style={bonusStyles.row}>

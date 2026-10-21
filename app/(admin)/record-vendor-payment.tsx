@@ -76,9 +76,16 @@ function RecordVendorPaymentContent() {
   const amountDue = orderTotal - totalPaid;
   const fullyPaid = amountDue <= 0 && totalPaid > 0;
 
+  const enteredAmount = parseFloat(payAmount);
+  const amountExceeded = !isNaN(enteredAmount) && enteredAmount > amountDue;
+
   const recordPayment = async () => {
     const amt = parseFloat(payAmount);
     if (isNaN(amt) || amt <= 0) { setError('Enter a valid amount'); return; }
+    if (amt > amountDue) {
+      setError(`Payment amount cannot exceed the remaining balance of ₹${Math.max(amountDue, 0).toLocaleString('en-IN')}`);
+      return;
+    }
     setRecording(true);
     setError(null);
     const { data: { session } } = await supabase.auth.getSession();
@@ -197,6 +204,19 @@ function RecordVendorPaymentContent() {
                 placeholderTextColor={Colors.textDisabled}
               />
             </View>
+            {amountExceeded ? (
+              <Text style={styles.errorText}>
+                Exceeds the remaining balance of ₹{Math.max(amountDue, 0).toLocaleString('en-IN')}
+              </Text>
+            ) : (
+              <TouchableOpacity
+                style={styles.payFullBtn}
+                onPress={() => setPayAmount(String(Math.max(amountDue, 0)))}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.payFullText}>Pay Full Balance (₹{Math.max(amountDue, 0).toLocaleString('en-IN')})</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           <View style={styles.formDivider} />
@@ -275,13 +295,15 @@ function RecordVendorPaymentContent() {
         </View>
 
         <TouchableOpacity
-          style={[styles.recordBtn, fullyPaid && styles.recordBtnDisabled]}
+          style={[styles.recordBtn, (fullyPaid || amountExceeded) && styles.recordBtnDisabled]}
           onPress={recordPayment}
-          disabled={recording || fullyPaid}
+          disabled={recording || fullyPaid || amountExceeded}
           activeOpacity={0.85}
         >
           {fullyPaid ? (
             <Text style={styles.recordBtnText}>Fully Paid</Text>
+          ) : amountExceeded ? (
+            <Text style={styles.recordBtnText}>Amount Exceeds Balance</Text>
           ) : recording ? (
             <ActivityIndicator size="small" color={Colors.white} />
           ) : (
@@ -430,6 +452,9 @@ const styles = StyleSheet.create({
   },
 
   errorText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 12, color: Colors.error, marginTop: Spacing[2] },
+
+  payFullBtn: { alignSelf: 'flex-start', marginTop: Spacing[2], paddingVertical: 4, paddingHorizontal: 8, borderRadius: Radius.sm, backgroundColor: Colors.primarySurface },
+  payFullText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: 11, color: Colors.primary },
 
   recordBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,

@@ -12,10 +12,12 @@ import {
 } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { format, parseISO } from 'date-fns';
+import DatePickerField from '@/components/ui/DatePickerField';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 
 type PayoutStatus = 'draft' | 'approved' | 'paid';
+type DatePreset = 'this_month' | '3_months';
 
 interface RiderPayout {
   id: string;
@@ -72,6 +74,31 @@ function RiderPayoutsScreenContent() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<PayoutStatus | 'all'>('all');
+  const [riderFilter, setRiderFilter] = useState<string>('all');
+  const [customFrom, setCustomFrom] = useState<Date>(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const [customTo, setCustomTo] = useState<Date>(() => new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0));
+  const [showRiderDropdown, setShowRiderDropdown] = useState(false);
+
+  const dateRange = customFrom && customTo
+    ? { from: format(customFrom, 'yyyy-MM-dd'), to: format(customTo, 'yyyy-MM-dd') }
+    : null;
+
+  const activePreset: DatePreset | null = (() => {
+    if (!dateRange) return null;
+    const now = new Date();
+    const thisFrom = format(new Date(now.getFullYear(), now.getMonth(), 1), 'yyyy-MM-dd');
+    const thisTo = format(new Date(now.getFullYear(), now.getMonth() + 1, 0), 'yyyy-MM-dd');
+    const threeFrom = format(new Date(now.getFullYear(), now.getMonth() - 2, 1), 'yyyy-MM-dd');
+    if (dateRange.from === thisFrom && dateRange.to === thisTo) return 'this_month';
+    if (dateRange.from === threeFrom && dateRange.to === thisTo) return '3_months';
+    return null;
+  })();
+
+  const applyPreset = (preset: DatePreset) => {
+    const now = new Date();
+    setCustomFrom(new Date(now.getFullYear(), preset === 'this_month' ? now.getMonth() : now.getMonth() - 2, 1));
+    setCustomTo(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+  };
   const [payModal, setPayModal] = useState<RiderPayout | null>(null);
   const [payMethod, setPayMethod] = useState('cash');
   const [payRef, setPayRef] = useState('');
@@ -81,14 +108,23 @@ function RiderPayoutsScreenContent() {
 
   const load = useCallback(async () => {
     try {
-      const { data } = await supabase
+      setError('');
+      const { data, error: loadError } = await supabase
         .from('rider_payouts')
-        .select('*, rider:profiles!rider_payouts_rider_id_fkey(full_name, mobile)')
+        .select('*, rider:riders!rider_payouts_rider_id_fkey(full_name, mobile)')
         .order('created_at', { ascending: false })
         .limit(200);
-      if (data) setPayouts(data as RiderPayout[]);
-    } catch (e) {
+      if (loadError) {
+        console.error('payouts load error', loadError);
+        setError(`Could not load payouts: ${loadError.message}`);
+        setPayouts([]);
+      } else {
+        setPayouts((data ?? []) as RiderPayout[]);
+      }
+    } catch (e: any) {
       console.error('load error', e);
+      setError(`Could not load payouts: ${e?.message ?? 'Unknown error'}`);
+      setPayouts([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -97,8 +133,30 @@ function RiderPayoutsScreenContent() {
 
   usePageVisibility(load);
 
-  const filtered = payouts.filter(p => {
-    if (tab !== 'all' && p.status !== tab) return false;
+  const ridersList = (() => {
+    const map = new Map<string, { id: string; name: string }>();
+    payouts.forEach(p => {
+      if (p.rider_id && !map.has(p.rider_id)) {
+        map.set(p.rider_id, { id: p.rider_id, name: p.rider?.full_name ?? 'Unknown' });
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  })();
+
+  const filtersActive = riderFilter !== 'all' || dateRange !== null;
+
+  const clearFilters = () => {
+    setRiderFilter('all');
+    setCustomFrom(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+    setCustomTo(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0));
+    setShowRiderDropdown(false);
+  };
+
+  const dateRiderFiltered = payouts.filter(p => {
+    if (riderFilter !== 'all' && p.rider_id !== riderFilter) return false;
+    if (dateRange) {
+      if (p.period_end < dateRange.from || p.period_start > dateRange.to) return false;
+    }
     if (search.trim()) {
       const q = search.toLowerCase();
       return (p.rider?.full_name ?? '').toLowerCase().includes(q) || (p.rider?.mobile ?? '').toLowerCase().includes(q);
@@ -106,8 +164,10 @@ function RiderPayoutsScreenContent() {
     return true;
   });
 
-  const totalPaid = payouts.filter(p => p.status === 'paid').reduce((s, p) => s + p.final_amount, 0);
-  const totalPending = payouts.filter(p => p.status === 'draft' || p.status === 'approved').reduce((s, p) => s + p.final_amount, 0);
+  const filtered = dateRiderFiltered.filter(p => tab === 'all' || p.status === tab);
+
+  const totalPaid = filtered.filter(p => p.status === 'paid').reduce((s, p) => s + p.final_amount, 0);
+  const totalPending = filtered.filter(p => p.status === 'draft' || p.status === 'approved').reduce((s, p) => s + p.final_amount, 0);
   const fmt = (n: number) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
   const approve = async (payout: RiderPayout) => {
@@ -187,11 +247,64 @@ function RiderPayoutsScreenContent() {
         </View>
       </View>
 
+      <View style={[s.filterRow, isWeb && s.searchRowWeb]}>
+        <View style={s.filterItem}>
+          <Text style={s.filterLabel}>Rider</Text>
+          <View style={s.riderDropdownWrap}>
+            <TouchableOpacity style={s.filterPickerBtn} onPress={() => setShowRiderDropdown(v => !v)} activeOpacity={0.7}>
+              <Text style={s.filterPickerText} numberOfLines={1}>
+                {riderFilter === 'all' ? 'All Riders' : (ridersList.find(r => r.id === riderFilter)?.name ?? 'Unknown')}
+              </Text>
+              <ChevronDown size={14} color={Colors.textTertiary} strokeWidth={1.8} style={{ transform: [{ rotate: showRiderDropdown ? '180deg' : '0deg' }] }} />
+            </TouchableOpacity>
+            {showRiderDropdown && (
+              <View style={s.filterDropdown}>
+                <ScrollView style={s.filterDropdownScroll} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                  <TouchableOpacity style={[s.filterOption, riderFilter === 'all' && s.filterOptionActive]} onPress={() => { setRiderFilter('all'); setShowRiderDropdown(false); }}>
+                    <Text style={[s.filterOptionText, riderFilter === 'all' && s.filterOptionTextActive]}>All Riders</Text>
+                  </TouchableOpacity>
+                  {ridersList.map(r => (
+                    <TouchableOpacity key={r.id} style={[s.filterOption, riderFilter === r.id && s.filterOptionActive]} onPress={() => { setRiderFilter(r.id); setShowRiderDropdown(false); }}>
+                      <Text style={[s.filterOptionText, riderFilter === r.id && s.filterOptionTextActive]} numberOfLines={1}>{r.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+          </View>
+        </View>
+        <View style={s.presetGroup}>
+          <Text style={s.filterLabel}>Date Range</Text>
+          <View style={s.presetRow}>
+            <TouchableOpacity style={[s.presetChip, activePreset === 'this_month' && s.presetChipActive]} onPress={() => applyPreset('this_month')} activeOpacity={0.7}>
+              <Text style={[s.presetChipText, activePreset === 'this_month' && s.presetChipTextActive]}>This Month</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.presetChip, activePreset === '3_months' && s.presetChipActive]} onPress={() => applyPreset('3_months')} activeOpacity={0.7}>
+              <Text style={[s.presetChipText, activePreset === '3_months' && s.presetChipTextActive]}>3 Months</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+        <View style={s.filterItem}>
+          <Text style={s.filterLabel}>From</Text>
+          <DatePickerField label="From" value={customFrom} onChange={d => setCustomFrom(d)} compact hideLabel align="left" />
+        </View>
+        <View style={s.filterItem}>
+          <Text style={s.filterLabel}>To</Text>
+          <DatePickerField label="To" value={customTo} onChange={d => setCustomTo(d)} compact hideLabel align="right" />
+        </View>
+        {filtersActive ? (
+          <TouchableOpacity style={s.clearFilterBtn} onPress={clearFilters} activeOpacity={0.7}>
+            <X size={13} color={Colors.error} strokeWidth={2} />
+            <Text style={s.clearFilterText}>Clear Filters</Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
+
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabScroll} contentContainerStyle={s.tabs}>
         {STATUS_TABS.map(t => (
           <TouchableOpacity key={t.value} style={[s.tabBtn, tab === t.value && s.tabBtnActive]} onPress={() => setTab(t.value)}>
             <Text style={[s.tabText, tab === t.value && s.tabTextActive]}>
-              {t.label} ({t.value === 'all' ? payouts.length : payouts.filter(p => p.status === t.value).length})
+              {t.label} ({t.value === 'all' ? dateRiderFiltered.length : dateRiderFiltered.filter(p => p.status === t.value).length})
             </Text>
           </TouchableOpacity>
         ))}
@@ -412,6 +525,27 @@ const s = StyleSheet.create({
   searchRowWeb: { paddingHorizontal: Spacing[8] },
   searchWrap: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], backgroundColor: Colors.neutral[50], borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingHorizontal: Spacing[3], paddingVertical: Spacing[2] },
   searchInput: { flex: 1, fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary, outlineStyle: 'none' } as any,
+  filterRow: { flexDirection: 'row', alignItems: 'flex-end', gap: Spacing[3], paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border, flexWrap: 'wrap', zIndex: 20, elevation: 20 },
+  filterItem: { minWidth: 150, flex: 1, maxWidth: 220 },
+  riderDropdownWrap: { position: 'relative', zIndex: 1000, elevation: 1000 },
+  filterLabel: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.textTertiary, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 },
+  filterPickerBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing[1], borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], backgroundColor: Colors.neutral[50] },
+  filterPickerText: { flex: 1, fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  filterDropdown: { position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 2, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, backgroundColor: Colors.white, overflow: 'hidden', zIndex: 1000, ...Shadow.lg },
+  filterDropdownScroll: { maxHeight: 220 },
+  filterOption: { paddingVertical: Spacing[2], paddingHorizontal: Spacing[3] },
+  filterOptionActive: { backgroundColor: Colors.primarySurface },
+  filterOptionText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  filterOptionTextActive: { color: Colors.primary, fontFamily: Typography.fontFamily.sansSemiBold },
+  filterInput: { borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textPrimary, backgroundColor: Colors.neutral[50], outlineStyle: 'none' } as any,
+  presetGroup: { minWidth: 180 },
+  presetRow: { flexDirection: 'row', gap: Spacing[2], flexWrap: 'wrap' },
+  presetChip: { paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.neutral[50] },
+  presetChipActive: { backgroundColor: Colors.primarySurface, borderColor: Colors.primary },
+  presetChipText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
+  presetChipTextActive: { color: Colors.primary, fontFamily: Typography.fontFamily.sansSemiBold },
+  clearFilterBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.error + '30', backgroundColor: '#FFF5F5', marginBottom: 1 },
+  clearFilterText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.error },
   tabScroll: { backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border, maxHeight: 48, flexGrow: 0 },
   tabs: { flexDirection: 'row', paddingHorizontal: Spacing[5], paddingVertical: Spacing[3], gap: Spacing[2] },
   tabBtn: { paddingVertical: Spacing[1], paddingHorizontal: Spacing[3], borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.neutral[50] },

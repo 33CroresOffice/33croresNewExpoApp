@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { PackageCheck, MapPin, Phone, Clock, CircleCheck as CheckCircle2, Package, Sparkles, ShoppingBag, ChevronDown, Flower2, Camera } from 'lucide-react-native';
+import { PackageCheck, MapPin, Phone, Clock, CircleCheck as CheckCircle2, Package, Sparkles, ShoppingBag, ChevronDown, Flower2, Camera, RefreshCw } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -28,7 +28,7 @@ const GRADIENT_MID = '#1E3D50';
 const GRADIENT_BOT = '#235068';
 const ACCENT = '#3AAFE4';
 
-type AssignmentStatus = 'assigned' | 'accepted' | 'picked_up' | 'delivered' | 'failed';
+type AssignmentStatus = 'assigned' | 'accepted' | 'picked_up' | 'delivered' | 'failed' | 'reassigned';
 
 interface CustomOrderItem {
   flower_name: string;
@@ -152,7 +152,6 @@ export default function RiderAssignments() {
         .from('rider_order_assignments')
         .select('id, order_id, custom_order_id, status, assigned_at, accepted_at, picked_up_at, delivered_at, failed_at, failure_reason, delivery_fee, notes, delivery_sequence, auto_assigned')
         .eq('rider_id', rId)
-        .neq('status', 'reassigned')
         .order('assigned_at', { ascending: false }),
       supabase
         .from('rider_attendance')
@@ -280,26 +279,24 @@ export default function RiderAssignments() {
       });
     }
 
-    const seenOrderIds = new Set<string>();
-    const enriched = rawAssignments
-      .map((a) => {
-        const key = a.custom_order_id ?? a.order_id;
-        return { ...a, orderDetail: key ? orderDetailsMap[key] ?? undefined : undefined };
-      })
-      .filter((a) => {
-        const key = a.custom_order_id ?? a.order_id;
-        if (!key || seenOrderIds.has(key)) return false;
-        if (a.orderDetail?.order_type === 'subscription' && a.orderDetail.subscription_status !== 'active') return false;
-        seenOrderIds.add(key);
-        return true;
-      })
+    const latestByKey = new Map<string, Assignment & { orderDetail?: OrderDetail }>();
+    const orderedAsc = [...rawAssignments].sort((x, y) => new Date(x.assigned_at).getTime() - new Date(y.assigned_at).getTime());
+    orderedAsc.forEach((a) => {
+      if (a.orderDetail?.order_type === 'subscription' && a.orderDetail.subscription_status !== 'active') return;
+      const key = a.custom_order_id ?? a.order_id;
+      if (!key) return;
+      latestByKey.set(key, a);
+    });
+    // Newest record per order wins; older records (including reassigned) are
+    // only visible in the admin/rider history views, not the live queue.
+    const enriched = Array.from(latestByKey.values())
+      .map((a) => ({ ...a, orderDetail: orderDetailsMap[(a.custom_order_id ?? a.order_id)!] }))
       .sort((a, b) => {
         const aSeq = a.delivery_sequence ?? 9999;
         const bSeq = b.delivery_sequence ?? 9999;
         if (aSeq !== bSeq) return aSeq - bSeq;
         return new Date(b.assigned_at).getTime() - new Date(a.assigned_at).getTime();
       });
-
     setAssignments(enriched);
     setLoading(false);
     setRefreshing(false);
@@ -720,7 +717,12 @@ export default function RiderAssignments() {
                 </TouchableOpacity>
               </>
             )}
-            {isDeliveredToday(a) ? (
+            {a.status === 'reassigned' ? (
+              <View style={[mStyles.deliveredBadge, { backgroundColor: Colors.neutral[100] }]}>
+                <RefreshCw size={14} color={Colors.textTertiary} strokeWidth={2.2} />
+                <Text style={[mStyles.deliveredBadgeText, { color: Colors.textTertiary }]}>Reassigned</Text>
+              </View>
+            ) : isDeliveredToday(a) ? (
               <View style={mStyles.deliveredBadge}>
                 <CheckCircle2 size={14} color={Colors.success} strokeWidth={2.2} />
                 <Text style={mStyles.deliveredBadgeText}>Delivered</Text>
@@ -928,7 +930,12 @@ export default function RiderAssignments() {
                           </TouchableOpacity>
                         </>
                       )}
-                      {isDeliveredToday(a) ? (
+                      {a.status === 'reassigned' ? (
+                        <View style={[wStyles.deliveredBadge, { backgroundColor: Colors.neutral[100] }]}>
+                          <RefreshCw size={14} color={Colors.textTertiary} strokeWidth={2.2} />
+                          <Text style={[wStyles.deliveredBadgeText, { color: Colors.textTertiary }]}>Reassigned</Text>
+                        </View>
+                      ) : isDeliveredToday(a) ? (
                         <View style={wStyles.deliveredBadge}>
                           <CheckCircle2 size={14} color={Colors.success} strokeWidth={2.2} />
                           <Text style={wStyles.deliveredBadgeText}>Delivered</Text>

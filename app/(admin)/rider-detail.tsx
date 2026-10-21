@@ -9,16 +9,40 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeft, Bike, Phone, MapPin, Package, CreditCard, Calendar, CircleCheck as CheckCircle, Circle as XCircle, Clock, Plus, X, Truck, Star, ChevronDown, ChevronRight, Pencil, CircleAlert as AlertCircle, Users, ChartBar as BarChart3, IndianRupee, BedDouble } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { format, subDays, subMonths, startOfMonth, endOfMonth } from 'date-fns';
+import { calculateMonthlyAttendanceCounts, type MonthlyAttendanceRecord } from '@/utils/monthlyAttendance';
+import { calculateOnTimeDeliveryDays } from '@/utils/onTimeDelivery';
+import { calculateRiderIncentiveTotal } from '@/utils/riderIncentiveTotal';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const toISTDateStr = (ts: string | null | undefined) => (ts ? new Date(new Date(ts).getTime() + IST_OFFSET_MS).toISOString().slice(0, 10) : '');
+const formatISTTime = (ts: string) => new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date(ts));
 const todayISTStr = () => new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
 const yesterdayISTStr = () => new Date(Date.now() + IST_OFFSET_MS - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+function getPayoutAbsenceDays(records: MonthlyAttendanceRecord[], monthKey: string): number {
+  const today = todayISTStr();
+  const currentMonthKey = today.slice(0, 7);
+  const [year, month] = monthKey.split('-').map(Number);
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const cutoff = monthKey === currentMonthKey
+    ? today
+    : monthKey < currentMonthKey
+      ? `${monthKey}-${String(daysInMonth).padStart(2, '0')}`
+      : `${monthKey}-01`;
+  return calculateMonthlyAttendanceCounts(records, monthKey, cutoff).absent;
+}
+
+function getPayoutAbsenceDeduction(records: MonthlyAttendanceRecord[], monthKey: string, monthlySalary: string | number): number {
+  const salary = Math.max(Number(monthlySalary) || 0, 0);
+  return Math.round((salary / 30) * getPayoutAbsenceDays(records, monthKey));
+}
+
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import StatusChip from '@/components/ui/StatusChip';
 
-type Tab = 'overview' | 'assigned_orders' | 'assignments' | 'attendance' | 'payouts' | 'leave' | 'zones';
+type Tab = 'overview' | 'assigned_orders' | 'assignments' | 'attendance' | 'payouts' | 'pickup' | 'leave' | 'zones';
 
 const ASSIGN_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
   assigned:   { label: 'Assigned',   color: Colors.primary,      bg: Colors.primarySurface },
@@ -36,10 +60,12 @@ const ATTENDANCE_CONFIG: Record<string, { label: string; color: string; bg: stri
   leave:    { label: 'Leave',    color: Colors.textTertiary, bg: Colors.neutral[100] },
 };
 
-const LEAVE_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
-  pending:  { label: 'Pending',  color: Colors.warning,      bg: '#FFF3E0' },
-  approved: { label: 'Approved', color: Colors.success,      bg: '#E8F5E9' },
-  rejected: { label: 'Rejected', color: Colors.error,        bg: '#FFEBEE' },
+const ABSENCE_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
+  present:     { label: 'Present',     color: Colors.success,      bg: '#E8F5E9' },
+  absent:      { label: 'Absent',      color: Colors.error,        bg: '#FFEBEE' },
+  half_day:    { label: 'Half Day',    color: Colors.accentDark,   bg: Colors.accentSurface },
+  leave:       { label: 'Leave',       color: Colors.textTertiary, bg: Colors.neutral[100] },
+  no_check_in: { label: 'No Check-in', color: Colors.error,        bg: '#FFEBEE' },
 };
 
 const PAYOUT_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
@@ -67,7 +93,13 @@ function RiderDetailScreenContent() {
   const [deliveredAssignments, setDeliveredAssignments] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
   const [payouts, setPayouts] = useState<any[]>([]);
-  const [leaveRequests, setLeaveRequests] = useState<any[]>([]);
+  const [pickupOrders, setPickupOrders] = useState<any[]>([]);
+  const [pickupMonthKey, setPickupMonthKey] = useState(todayISTStr().slice(0, 7));
+  const [pickupPrice, setPickupPrice] = useState(0);
+  const [pickupPriceInput, setPickupPriceInput] = useState('');
+  const [showPickupPriceModal, setShowPickupPriceModal] = useState(false);
+  const [savingPickupPrice, setSavingPickupPrice] = useState(false);
+  const [loadingPickupPrice, setLoadingPickupPrice] = useState(false);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('overview');
 
@@ -81,17 +113,21 @@ function RiderDetailScreenContent() {
 
   const [showPayoutModal, setShowPayoutModal] = useState(false);
   const [payoutForm, setPayoutForm] = useState({ period_start: format(startOfMonth(new Date()), 'yyyy-MM-dd'), period_end: format(endOfMonth(new Date()), 'yyyy-MM-dd'), base_amount: '', delivery_bonus: '', deductions: '', notes: '', payment_method: 'upi' });
+  const [payoutMonthKey, setPayoutMonthKey] = useState(format(new Date(), 'yyyy-MM'));
+  const [incentiveBonus, setIncentiveBonus] = useState(0);
+  const [fetchingIncentive, setFetchingIncentive] = useState(false);
   const [savingPayout, setSavingPayout] = useState(false);
   const [pmPicker, setPmPicker] = useState(false);
 
   const [dateFrom, setDateFrom] = useState<Date | null>(null);
   const [dateTo, setDateTo] = useState<Date | null>(null);
-  const [deliveryDatePreset, setDeliveryDatePreset] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
-  const [assignedDatePreset, setAssignedDatePreset] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
+  const [deliveryDatePreset, setDeliveryDatePreset] = useState<'today' | 'yesterday' | 'custom' | 'all'>('today');
+  const [assignedDatePreset, setAssignedDatePreset] = useState<'today' | 'yesterday' | 'custom' | 'all'>('today');
   const [assignedDateFrom, setAssignedDateFrom] = useState<Date | null>(null);
   const [assignedDateTo, setAssignedDateTo] = useState<Date | null>(null);
   const [assignedOrdersFilter, setAssignedOrdersFilter] = useState<string>('all');
 
+  const [leaveMonthKey, setLeaveMonthKey] = useState(todayISTStr().slice(0, 7));
   const [showLeaveModal, setShowLeaveModal] = useState(false);
   const [leaveForm, setLeaveForm] = useState({ leave_date: format(new Date(), 'yyyy-MM-dd'), end_date: format(new Date(), 'yyyy-MM-dd'), reason: '', notes: '' });
   const [savingLeave, setSavingLeave] = useState(false);
@@ -103,14 +139,14 @@ function RiderDetailScreenContent() {
 
   const load = useCallback(async () => {
     try {
-      const [riderRes, assignRes, attRes, payoutRes, leaveRes, zoneRes, locRes] = await Promise.all([
+      const [riderRes, assignRes, attRes, payoutRes, zoneRes, locRes, pickupRes] = await Promise.all([
         supabase.from('riders').select('*').eq('id', id).maybeSingle(),
-        supabase.from('rider_order_assignments').select('*').eq('rider_id', id).neq('status', 'reassigned').order('assigned_at', { ascending: false }),
-        supabase.from('rider_attendance').select('*').eq('rider_id', id).order('date', { ascending: false }).limit(60),
+        supabase.from('rider_order_assignments').select('*').eq('rider_id', id).order('assigned_at', { ascending: false }),
+        supabase.from('rider_attendance').select('*').eq('rider_id', id).order('date', { ascending: false }).order('check_in_time', { ascending: false }),
         supabase.from('rider_payouts').select('*').eq('rider_id', id).order('created_at', { ascending: false }),
-        supabase.from('rider_leave_requests').select('*').eq('rider_id', id).order('leave_date', { ascending: false }),
         supabase.from('rider_zone_assignments').select('*, locality:localities(id, locality_name)').eq('rider_id', id).order('created_at', { ascending: false }),
         supabase.from('localities').select('id, locality_name').order('locality_name'),
+        supabase.from('procurement_orders').select('id, order_number, status, requirement_date, pickup_assigned_at, picked_up_at, vendor:vendors(business_name)').eq('pickup_rider_id', id).not('status', 'eq', 'cancelled').order('requirement_date', { ascending: false }),
       ]);
 
       const rawAssignments = assignRes.data ?? [];
@@ -156,23 +192,37 @@ function RiderDetailScreenContent() {
         order: assignment.order_id ? orderMap[assignment.order_id] ?? null : null,
         custom_order: assignment.custom_order_id ? customOrderMap[assignment.custom_order_id] ?? null : null,
       }));
-      const seen = new Set<string>();
+      const seen = new Map<string, any>();
       const filteredAssignments = enrichedAssignments.filter((assignment: any) => {
         const key = assignment.custom_order_id ?? assignment.order_id;
-        if (!key || seen.has(key)) return false;
-        if (assignment.order_id && assignment.order?.subscription && assignment.order.subscription.status !== 'active') return false;
-        seen.add(key);
-        return true;
+        if (!key) return false;
+        const existing = seen.get(key);
+        if (!existing) {
+          if (assignment.order_id && assignment.order?.subscription && assignment.order.subscription.status !== 'active') return false;
+          seen.set(key, assignment);
+          return true;
+        }
+        // Keep the most conclusive record per order: a delivered/failed/active
+        // assignment outranks an older reassigned one.
+        if (existing.status === 'reassigned' && assignment.status !== 'reassigned') {
+          if (assignment.order_id && assignment.order?.subscription && assignment.order.subscription.status !== 'active') return false;
+          seen.set(key, assignment);
+          return true;
+        }
+        return false;
       });
+      const deduped = Array.from(seen.values());
+      deduped.sort((a: any, b: any) => (a.assigned_at < b.assigned_at ? 1 : -1));
+      const finalAssignments = deduped;
 
       setZoneAssignments(zoneRes.data ?? []);
       setAllLocalities(locRes.data ?? []);
       if (riderRes.data) setRider(riderRes.data);
-      setAssignments(filteredAssignments);
-      setDeliveredAssignments(filteredAssignments.filter((assignment: any) => assignment.status === 'delivered'));
+      setAssignments(finalAssignments);
+      setDeliveredAssignments(finalAssignments.filter((assignment: any) => assignment.status === 'delivered'));
       setAttendance(attRes.data ?? []);
       setPayouts(payoutRes.data ?? []);
-      setLeaveRequests(leaveRes.data ?? []);
+      setPickupOrders(pickupRes.data ?? []);
     } catch (e) {
       console.error('load error', e);
     } finally {
@@ -181,6 +231,50 @@ function RiderDetailScreenContent() {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+
+  const loadPickupPrice = useCallback(async () => {
+    setLoadingPickupPrice(true);
+    const { data, error } = await supabase
+      .from('rider_pickup_prices')
+      .select('per_day_price')
+      .eq('rider_id', id)
+      .eq('month', pickupMonthKey)
+      .maybeSingle();
+    if (!error) {
+      const price = Number(data?.per_day_price ?? 0);
+      setPickupPrice(price);
+      setPickupPriceInput(price > 0 ? String(price) : '');
+    }
+    setLoadingPickupPrice(false);
+  }, [id, pickupMonthKey]);
+
+  useEffect(() => { loadPickupPrice(); }, [loadPickupPrice]);
+
+  useEffect(() => {
+    if (activeTab !== 'pickup') return;
+    const channel = supabase
+      .channel(`rider-pickup-${id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'procurement_orders', filter: `pickup_rider_id=eq.${id}` }, () => { load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rider_pickup_prices', filter: `rider_id=eq.${id}` }, () => { loadPickupPrice(); })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [activeTab, id, load, loadPickupPrice]);
+
+  const savePickupPrice = async () => {
+    const price = Math.max(Number(pickupPriceInput) || 0, 0);
+    setSavingPickupPrice(true);
+    const { error } = await supabase.from('rider_pickup_prices').upsert({
+      rider_id: id,
+      month: pickupMonthKey,
+      per_day_price: price,
+      created_by: adminProfile?.id,
+    }, { onConflict: 'rider_id,month' });
+    if (!error) {
+      setPickupPrice(price);
+      setShowPickupPriceModal(false);
+    }
+    setSavingPickupPrice(false);
+  };
 
   const saveAttendance = async () => {
     if (!attForm.date) return;
@@ -200,18 +294,115 @@ function RiderDetailScreenContent() {
     load();
   };
 
+  const fetchIncentiveBonus = useCallback(async (riderId: string, monthKey: string) => {
+    setFetchingIncentive(true);
+    const [year, month] = monthKey.split('-').map(Number);
+    const monthStart = format(new Date(year, month - 1, 1), 'yyyy-MM-dd');
+    const nextMonth = format(new Date(year, month, 1), 'yyyy-MM-dd');
+    const monthStartISO = new Date(`${monthStart}T00:00:00+05:30`).toISOString();
+    const nextMonthISO = new Date(`${nextMonth}T00:00:00+05:30`).toISOString();
+
+    const [incentivesRes, evaluationsRes, rankingRes, attendanceRes, assignmentsRes] = await Promise.all([
+      supabase.from('rider_incentives').select('id, amount, type, evaluation_basis, bonus_category, cutoff_time').eq('is_active', true),
+      supabase.from('rider_incentive_evaluations').select('incentive_id, status, earned_amount').eq('rider_id', riderId).eq('month', monthKey),
+      supabase.from('rider_monthly_rankings').select('on_time_attendance_days').eq('rider_id', riderId).eq('month', monthKey).maybeSingle(),
+      supabase.from('rider_attendance').select('date, status').eq('rider_id', riderId).gte('date', monthStart).lt('date', nextMonth),
+      supabase.from('rider_order_assignments').select('order_id, custom_order_id, status, delivered_at, assigned_at').eq('rider_id', riderId).neq('status', 'reassigned').gte('assigned_at', monthStartISO).lt('assigned_at', nextMonthISO),
+    ]);
+
+    const errors = [incentivesRes.error, evaluationsRes.error, rankingRes.error, attendanceRes.error, assignmentsRes.error].filter(Boolean);
+    if (errors.length > 0) {
+      console.error('incentive total load error', errors[0]);
+      setIncentiveBonus(0);
+      setPayoutForm(p => ({ ...p, delivery_bonus: '0' }));
+      setFetchingIncentive(false);
+      return;
+    }
+
+    const assignments = assignmentsRes.data ?? [];
+    const orderIds = assignments.map((assignment: any) => assignment.order_id).filter(Boolean);
+    const customOrderIds = assignments.map((assignment: any) => assignment.custom_order_id).filter(Boolean);
+    const [ordersRes, customOrdersRes] = await Promise.all([
+      orderIds.length > 0
+        ? supabase.from('orders').select('id, scheduled_date').in('id', orderIds)
+        : Promise.resolve({ data: [] }),
+      customOrderIds.length > 0
+        ? supabase.from('custom_orders').select('id, delivery_date').in('id', customOrderIds)
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const deliveryCutoff = (incentivesRes.data ?? []).find((incentive: any) => incentive.bonus_category === 'on_time_delivery')?.cutoff_time ?? null;
+    const onTimeDeliveryDays = calculateOnTimeDeliveryDays(
+      assignments as any[],
+      (ordersRes.data ?? []) as any[],
+      (customOrdersRes.data ?? []) as any[],
+      deliveryCutoff,
+    );
+    const absentDays = getPayoutAbsenceDays((attendanceRes.data ?? []) as MonthlyAttendanceRecord[], monthKey);
+    const earned = calculateRiderIncentiveTotal(
+      (incentivesRes.data ?? []) as any[],
+      (evaluationsRes.data ?? []) as any[],
+      {
+        absentDays,
+        onTimeAttendanceDays: Number(rankingRes.data?.on_time_attendance_days ?? 0),
+        onTimeDeliveryDays,
+      },
+    );
+
+    setIncentiveBonus(earned);
+    setPayoutForm(p => ({ ...p, delivery_bonus: String(Math.round(earned)) }));
+    setFetchingIncentive(false);
+  }, []);
+
+  useEffect(() => {
+    if (!showPayoutModal || !id) return;
+    const channel = supabase
+      .channel(`rider-payout-incentives-${id}-${payoutMonthKey}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rider_incentive_evaluations', filter: `rider_id=eq.${id}` }, () => fetchIncentiveBonus(id, payoutMonthKey))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rider_attendance', filter: `rider_id=eq.${id}` }, () => fetchIncentiveBonus(id, payoutMonthKey))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rider_order_assignments', filter: `rider_id=eq.${id}` }, () => fetchIncentiveBonus(id, payoutMonthKey))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rider_incentives' }, () => fetchIncentiveBonus(id, payoutMonthKey))
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [showPayoutModal, id, payoutMonthKey, fetchIncentiveBonus]);
+
+  const openPayoutModal = () => {
+    const monthKey = format(new Date(), 'yyyy-MM');
+    const start = format(startOfMonth(new Date()), 'yyyy-MM-dd');
+    const end = format(endOfMonth(new Date()), 'yyyy-MM-dd');
+    const salary = String(rider.monthly_salary ?? 0);
+    setPayoutMonthKey(monthKey);
+    setPayoutForm({ period_start: start, period_end: end, base_amount: salary, delivery_bonus: '', deductions: String(getPayoutAbsenceDeduction(attendance, monthKey, salary)), notes: '', payment_method: 'upi' });
+    setIncentiveBonus(0);
+    setShowPayoutModal(true);
+    fetchIncentiveBonus(id, monthKey);
+  };
+
+  const selectPayoutMonth = (monthKey: string) => {
+    const [y, m] = monthKey.split('-').map(Number);
+    const start = format(new Date(y, m - 1, 1), 'yyyy-MM-dd');
+    const end = format(endOfMonth(new Date(y, m - 1)), 'yyyy-MM-dd');
+    const salary = String(rider.monthly_salary ?? 0);
+    setPayoutMonthKey(monthKey);
+    setPayoutForm(p => ({ ...p, period_start: start, period_end: end, base_amount: salary, delivery_bonus: '', deductions: String(getPayoutAbsenceDeduction(attendance, monthKey, salary)) }));
+    fetchIncentiveBonus(id, monthKey);
+  };
+
   const savePayout = async () => {
     setSavingPayout(true);
-    const base = parseInt(payoutForm.base_amount) || 0;
-    const bonus = parseInt(payoutForm.delivery_bonus) || 0;
-    const deductions = parseInt(payoutForm.deductions) || 0;
-    const final = base + bonus - deductions;
+    const base = Math.round(Number(payoutForm.base_amount) || 0);
+    const bonus = Math.round(Number(payoutForm.delivery_bonus) || 0);
+    const deductions = Math.round(Number(payoutForm.deductions) || 0);
+    const final = Math.round(base + bonus - deductions);
     await supabase.from('rider_payouts').insert({
       rider_id: id,
       period_start: payoutForm.period_start,
       period_end: payoutForm.period_end,
       total_deliveries: assignments.filter(a => a.status === 'delivered').length,
-      total_days_worked: attendance.filter(a => a.status === 'present' || a.status === 'half_day').length,
+      total_days_worked: attendance.filter(a => a.date?.startsWith(payoutMonthKey) && (a.status === 'present' || a.status === 'half_day')).length,
       base_amount: base,
       delivery_bonus: bonus,
       deductions,
@@ -263,24 +454,6 @@ function RiderDetailScreenContent() {
     load();
   };
 
-  const updateLeaveStatus = async (leave: any, status: string) => {
-    await supabase.from('rider_leave_requests').update({ status, updated_at: new Date().toISOString() }).eq('id', leave.id);
-    if (status === 'approved') {
-      await supabase.from('rider_attendance').upsert({
-        rider_id: id,
-        date: leave.leave_date,
-        status: 'leave',
-        notes: leave.reason || 'Leave approved',
-        recorded_by: adminProfile?.id,
-      }, { onConflict: 'rider_id,date' });
-    }
-    load();
-  };
-
-  const deleteLeave = async (leaveId: string) => {
-    await supabase.from('rider_leave_requests').delete().eq('id', leaveId);
-    load();
-  };
 
   const fmt = (n: number) => `₹${n.toLocaleString('en-IN')}`;
   const getAssignmentTargetId = (assignment: any) => assignment.order_id ?? assignment.custom_order_id;
@@ -299,8 +472,51 @@ function RiderDetailScreenContent() {
   const presentDays = attendance.filter(a => a.status === 'present').length;
   const halfDays = attendance.filter(a => a.status === 'half_day').length;
   const totalPaid = payouts.filter(p => p.status === 'paid').reduce((s, p) => s + p.final_amount, 0);
-  const approvedLeaves = leaveRequests.filter(l => l.status === 'approved').length;
-  const pendingLeaves = leaveRequests.filter(l => l.status === 'pending').length;
+
+  // Mirror the Rider App: absences for the current month are derived from
+  // rider_attendance — any elapsed day without a 'present' record counts,
+  // using the same shared counting utility for the headline number. Today is
+  // shown once the rider checks in, but is not counted absent until day end.
+  const todayIST = todayISTStr();
+  const currentMonthKey = todayIST.slice(0, 7);
+  const [leaveYear, leaveMonth] = leaveMonthKey.split('-').map(Number);
+  const leaveDaysInMonth = new Date(Date.UTC(leaveYear, leaveMonth, 0)).getUTCDate();
+  const leaveCutoff = leaveMonthKey === currentMonthKey
+    ? todayIST
+    : leaveMonthKey < currentMonthKey
+      ? `${leaveMonthKey}-${String(leaveDaysInMonth).padStart(2, '0')}`
+      : `${leaveMonthKey}-01`;
+  const monthlyCounts = calculateMonthlyAttendanceCounts(
+    attendance.filter((record: any) => record.date.startsWith(leaveMonthKey)),
+    leaveMonthKey,
+    leaveCutoff,
+  );
+  const absenceCount = monthlyCounts.absent;
+
+  const attendanceByDate = new Map<string, any>();
+  attendance.forEach((record: any) => {
+    if (record.date.startsWith(leaveMonthKey) && (!attendanceByDate.has(record.date) || record.status === 'present')) {
+      attendanceByDate.set(record.date, record);
+    }
+  });
+  const presentEntries = Array.from(attendanceByDate.values())
+    .filter((record: any) => record.status === 'present')
+    .sort((a: any, b: any) => b.date.localeCompare(a.date));
+  const absenceEntries: { date: string; status: string; notes: string | null; checkIn: string | null }[] = [];
+  const cutoffDay = Number(leaveCutoff.slice(8, 10));
+  const lastListDay = leaveMonthKey === currentMonthKey ? cutoffDay : leaveDaysInMonth;
+  for (let day = lastListDay; day >= 1; day -= 1) {
+    const dateStr = `${leaveMonthKey}-${String(day).padStart(2, '0')}`;
+    const record = attendanceByDate.get(dateStr);
+    if (record?.status === 'present') continue;
+    if (dateStr === todayIST && !record) continue;
+    absenceEntries.push({
+      date: dateStr,
+      status: record ? (record.status ?? 'absent') : 'no_check_in',
+      notes: record?.notes ?? null,
+      checkIn: record?.check_in_time ?? null,
+    });
+  }
 
   if (loading) {
     return (
@@ -327,7 +543,8 @@ function RiderDetailScreenContent() {
     { key: 'assignments',     label: 'Deliveries', count: deliveredAssignments.length },
     { key: 'attendance',  label: 'Attendance', count: attendance.length },
     { key: 'payouts',     label: 'Payouts',    count: payouts.length },
-    { key: 'leave',       label: 'Leave',      count: leaveRequests.length },
+    { key: 'pickup',      label: 'Pickup',     count: pickupOrders.length },
+    { key: 'leave',       label: 'Leave',      count: absenceCount },
     { key: 'zones',       label: 'Zones',      count: zoneAssignments.length },
   ];
 
@@ -466,8 +683,9 @@ function RiderDetailScreenContent() {
         {/* ASSIGNED ORDERS */}
         {activeTab === 'assigned_orders' && (() => {
           const statusFilter = assignedOrdersFilter;
-          const filtered = assignments.filter(a => {
-            if (statusFilter !== 'all' && a.status !== statusFilter) return false;
+          // Apply the date filter first so stat totals and status chip counts
+          // always describe the currently selected day/range.
+          const dateFiltered = assignments.filter(a => {
             const date = (getAssignmentScheduledDate(a) ?? a.assigned_at ?? '').slice(0, 10);
             const todayStr = todayISTStr();
             const yesterdayStr = yesterdayISTStr();
@@ -479,18 +697,20 @@ function RiderDetailScreenContent() {
             }
             return true;
           });
+          const filtered = dateFiltered.filter(a => statusFilter === 'all' || a.status === statusFilter);
           return (
           <>
             <View style={[s.assignStats, isWeb && s.assignStatsWeb]}>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{assignments.length}</Text><Text style={s.assignStatLabel}>Total</Text></View>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>{assignments.filter(a => ['assigned', 'accepted', 'picked_up'].includes(a.status)).length}</Text><Text style={s.assignStatLabel}>In Progress</Text></View>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.success }]}>{totalDeliveries}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
-              <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.error }]}>{totalFailed}</Text><Text style={s.assignStatLabel}>Failed</Text></View>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{dateFiltered.length}</Text><Text style={s.assignStatLabel}>Total</Text></View>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{dateFiltered.filter(a => a.status === 'assigned').length}</Text><Text style={s.assignStatLabel}>Assigned</Text></View>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>{dateFiltered.filter(a => ['accepted', 'picked_up'].includes(a.status)).length}</Text><Text style={s.assignStatLabel}>Pending</Text></View>
+              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.success }]}>{dateFiltered.filter(a => a.status === 'delivered').length}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
+              <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.error }]}>{dateFiltered.filter(a => a.status === 'failed').length}</Text><Text style={s.assignStatLabel}>Failed</Text></View>
             </View>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
-              {(['all', 'assigned', 'accepted', 'picked_up', 'delivered', 'failed'] as const).map(st => {
-                const count = st === 'all' ? assignments.length : assignments.filter(a => a.status === st).length;
+              {(['all', 'assigned', 'accepted', 'picked_up', 'delivered', 'failed', 'reassigned'] as const).map(st => {
+                const count = st === 'all' ? dateFiltered.length : dateFiltered.filter(a => a.status === st).length;
                 const cfg = st === 'all' ? null : ASSIGN_STATUS_CONFIG[st] ?? ASSIGN_STATUS_CONFIG.assigned;
                 const isActive = statusFilter === st;
                 const label = st === 'all' ? 'All' : cfg!.label;
@@ -510,7 +730,7 @@ function RiderDetailScreenContent() {
             </ScrollView>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
-              {(['all', 'today', 'yesterday', 'custom'] as const).map(key => (
+              {(['today', 'yesterday', 'custom', 'all'] as const).map(key => (
                 <TouchableOpacity
                   key={key}
                   style={[s.attMonthChip, assignedDatePreset === key && s.attMonthChipActive]}
@@ -589,10 +809,10 @@ function RiderDetailScreenContent() {
             {/* Date Preset Chips */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
               {([
-                { key: 'all', label: 'All dates' },
                 { key: 'today', label: 'Today' },
                 { key: 'yesterday', label: 'Yesterday' },
                 { key: 'custom', label: 'Custom Date' },
+                { key: 'all', label: 'All dates' },
               ] as const).map(opt => {
                 const isActive = deliveryDatePreset === opt.key;
                 return (
@@ -637,8 +857,15 @@ function RiderDetailScreenContent() {
             {(() => {
               const todayStr = todayISTStr();
               const yesterdayStr = yesterdayISTStr();
-              const filtered = deliveredAssignments.filter(a => {
-                const d = a.delivered_at ? a.delivered_at.slice(0, 10) : (a.assigned_at ? a.assigned_at.slice(0, 10) : '');
+              // Group by the delivery's scheduled day (IST); fall back to the
+              // IST day the assignment was actually delivered/handed out.
+              const getDeliveryDate = (a: any) => {
+                const sched = getAssignmentScheduledDate(a);
+                if (sched) return sched.slice(0, 10);
+                return a.delivered_at ? toISTDateStr(a.delivered_at) : (a.assigned_at ? toISTDateStr(a.assigned_at) : '');
+              };
+              const filtered = assignments.filter(a => {
+                const d = getDeliveryDate(a);
                 if (deliveryDatePreset === 'today' && d !== todayStr) return false;
                 if (deliveryDatePreset === 'yesterday' && d !== yesterdayStr) return false;
                 if (deliveryDatePreset === 'custom') {
@@ -647,10 +874,52 @@ function RiderDetailScreenContent() {
                 }
                 return true;
               });
-              return filtered.length === 0 ? (
-                <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={deliveredAssignments.length === 0 ? 'No delivered orders yet' : 'No delivered orders match this filter'} sub={deliveredAssignments.length === 0 ? 'Delivered orders for this rider will appear here.' : 'Try a different date filter.'} />
+              const dayGroups = new Map<string, any[]>();
+              filtered.forEach(a => {
+                const d = getDeliveryDate(a) || 'unknown';
+                if (!dayGroups.has(d)) dayGroups.set(d, []);
+                dayGroups.get(d)!.push(a);
+              });
+              const groupArr = Array.from(dayGroups.entries()).sort((x, y) => (x[0] < y[0] ? 1 : -1));
+              const countOf = (list: any[], pred: (a: any) => boolean) => list.filter(pred).length;
+              const groupCounts = (list: any[]) => ({
+                assigned: countOf(list, a => a.status === 'assigned'),
+                pending: countOf(list, a => ['accepted', 'picked_up'].includes(a.status)),
+                delivered: countOf(list, a => a.status === 'delivered'),
+                failed: countOf(list, a => a.status === 'failed'),
+              });
+              const labelFor = (d: string) => {
+                if (d === 'unknown') return 'Unknown date';
+                const base = format(new Date(d + 'T00:00:00'), 'EEE, dd MMM yyyy');
+                if (d === todayStr) return `${base} · Today`;
+                if (d === yesterdayStr) return `${base} · Yesterday`;
+                return base;
+              };
+              return (
+              <>
+              <View style={[s.assignStats, isWeb && s.assignStatsWeb]}>
+                <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{filtered.filter(a => a.status === 'assigned').length}</Text><Text style={s.assignStatLabel}>Assigned</Text></View>
+                <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>{filtered.filter(a => ['accepted', 'picked_up'].includes(a.status)).length}</Text><Text style={s.assignStatLabel}>Pending</Text></View>
+                <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.success }]}>{filtered.filter(a => a.status === 'delivered').length}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
+                <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.error }]}>{filtered.filter(a => a.status === 'failed').length}</Text><Text style={s.assignStatLabel}>Failed</Text></View>
+              </View>
+              {groupArr.length === 0 ? (
+                <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={assignments.length === 0 ? 'No delivery records yet' : 'No records match this date filter'} sub={assignments.length === 0 ? 'Deliveries for this rider will appear here day by day.' : 'Try a different date filter.'} />
               ) : (
-                filtered.map(a => {
+                groupArr.map(([day, list]) => {
+                  const counts = groupCounts(list);
+                  return (
+                    <View key={day} style={s.dayGroup}>
+                      <View style={s.dayGroupHeader}>
+                        <Text style={s.dayGroupDate}>{labelFor(day)}</Text>
+                        <View style={s.dayGroupCounts}>
+                          {counts.assigned > 0 && <View style={[s.dayCountPill, { backgroundColor: Colors.primarySurface }]}><Text style={[s.dayCountText, { color: Colors.primary }]}>Assigned {counts.assigned}</Text></View>}
+                          {counts.pending > 0 && <View style={[s.dayCountPill, { backgroundColor: '#FFF3E0' }]}><Text style={[s.dayCountText, { color: Colors.warning }]}>Pending {counts.pending}</Text></View>}
+                          {counts.delivered > 0 && <View style={[s.dayCountPill, { backgroundColor: '#E8F5E9' }]}><Text style={[s.dayCountText, { color: Colors.success }]}>Delivered {counts.delivered}</Text></View>}
+                          {counts.failed > 0 && <View style={[s.dayCountPill, { backgroundColor: '#FFEBEE' }]}><Text style={[s.dayCountText, { color: Colors.error }]}>Failed {counts.failed}</Text></View>}
+                        </View>
+                      </View>
+                      {list.map(a => {
                 const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
                 return (
                   <TouchableOpacity key={a.id} style={s.assignCard} onPress={() => getAssignmentTargetId(a) && router.push({ pathname: a.order_id ? '/(admin)/order-detail' as any : '/(admin)/custom-order-detail' as any, params: { id: getAssignmentTargetId(a) } })} activeOpacity={0.8}>
@@ -679,6 +948,12 @@ function RiderDetailScreenContent() {
                   </TouchableOpacity>
                 );
               })
+              }
+            </View>
+          );
+        })
+      )}
+              </>
               );
             })()}
           </>
@@ -778,7 +1053,7 @@ function RiderDetailScreenContent() {
         {/* PAYOUTS */}
         {activeTab === 'payouts' && (
           <>
-            <TouchableOpacity style={s.addBtn} onPress={() => { setPayoutForm({ period_start: format(startOfMonth(new Date()), 'yyyy-MM-dd'), period_end: format(endOfMonth(new Date()), 'yyyy-MM-dd'), base_amount: String(rider.daily_rate * presentDays), delivery_bonus: String(rider.per_delivery_rate * totalDeliveries), deductions: '0', notes: '', payment_method: 'upi' }); setShowPayoutModal(true); }} activeOpacity={0.8}>
+            <TouchableOpacity style={s.addBtn} onPress={openPayoutModal} activeOpacity={0.8}>
               <Plus size={15} color={Colors.white} strokeWidth={2} />
               <Text style={s.addBtnText}>Create Payout</Text>
             </TouchableOpacity>
@@ -828,6 +1103,93 @@ function RiderDetailScreenContent() {
             )}
           </>
         )}
+
+        {/* PICKUP */}
+        {activeTab === 'pickup' && (() => {
+          const monthOrders = pickupOrders.filter(order => (order.requirement_date ?? '').startsWith(pickupMonthKey));
+          const byDate = new Map<string, any[]>();
+          monthOrders.forEach(order => {
+            const date = order.requirement_date ?? 'unknown';
+            const list = byDate.get(date) ?? [];
+            list.push(order);
+            byDate.set(date, list);
+          });
+          const pickupDays = Array.from(byDate.entries()).sort((a, b) => b[0].localeCompare(a[0])).map(([date, orders]) => ({
+            date,
+            orders,
+            completed: orders.length > 0 && orders.every(order => order.status === 'fulfilled'),
+          }));
+          const completedDays = pickupDays.filter(day => day.completed).length;
+          const monthTotal = completedDays * pickupPrice;
+          return (
+            <>
+              <View style={s.infoCard}>
+                <View style={s.assignSectionHeader}>
+                  <View>
+                    <Text style={s.infoCardTitle}>Pickup Salary</Text>
+                    <Text style={s.infoCardSub}>Completed dates count once, even when a date has multiple orders.</Text>
+                  </View>
+                  <TouchableOpacity style={s.addBtn} onPress={() => { setPickupPriceInput(pickupPrice > 0 ? String(pickupPrice) : ''); setShowPickupPriceModal(true); }} activeOpacity={0.8}>
+                    <IndianRupee size={13} color={Colors.white} strokeWidth={2} />
+                    <Text style={s.addBtnText}>Set Per Day Price</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={[s.leaveStats, isWeb && s.leaveStatsWeb]}>
+                  <View style={[s.leaveStat, { backgroundColor: Colors.primarySurface }]}>
+                    <Text style={[s.leaveStatVal, { color: Colors.primary }]}>{fmt(pickupPrice)}</Text>
+                    <Text style={[s.leaveStatLabel, { color: Colors.primary }]}>Per completed day</Text>
+                  </View>
+                  <View style={[s.leaveStat, { backgroundColor: Colors.successSurface }]}>
+                    <Text style={[s.leaveStatVal, { color: Colors.success }]}>{completedDays}</Text>
+                    <Text style={[s.leaveStatLabel, { color: Colors.success }]}>Completed days</Text>
+                  </View>
+                  <View style={[s.leaveStat, { backgroundColor: Colors.accentSurface }]}>
+                    <Text style={[s.leaveStatVal, { color: Colors.accentDark }]}>{fmt(monthTotal)}</Text>
+                    <Text style={[s.leaveStatLabel, { color: Colors.accentDark }]}>Monthly pickup salary</Text>
+                  </View>
+                </View>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
+                {Array.from({ length: 6 }, (_, index) => {
+                  const month = subMonths(startOfMonth(new Date()), index);
+                  const key = format(month, 'yyyy-MM');
+                  return (
+                    <TouchableOpacity key={key} style={[s.attMonthChip, pickupMonthKey === key && s.attMonthChipActive]} onPress={() => setPickupMonthKey(key)} activeOpacity={0.7}>
+                      <Text style={[s.attMonthChipText, pickupMonthKey === key && s.attMonthChipTextActive]}>{format(month, 'MMM yyyy')}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+              {pickupDays.length === 0 ? (
+                <EmptyBlock icon={<Package size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title="No pickup orders this month" sub="Orders assigned from Daily Requirements will appear here." />
+              ) : pickupDays.map(day => (
+                <View key={day.date} style={s.infoCard}>
+                  <View style={s.assignSectionHeader}>
+                    <View>
+                      <Text style={s.infoCardTitle}>{format(new Date(`${day.date}T00:00:00`), 'dd MMM yyyy')}</Text>
+                      <Text style={s.infoCardSub}>{day.orders.length} assigned order{day.orders.length === 1 ? '' : 's'}</Text>
+                    </View>
+                    <View style={[s.statusBadge, { backgroundColor: day.completed ? Colors.successSurface : Colors.warningSurface }]}>
+                      <Text style={[s.statusBadgeText, { color: day.completed ? Colors.success : Colors.warning }]}>{day.completed ? `Completed · ${fmt(pickupPrice)}` : 'Pending pickup'}</Text>
+                    </View>
+                  </View>
+                  {day.orders.map(order => (
+                    <View key={order.id} style={s.leaveCard}>
+                      <View style={[s.leaveCardAccent, { backgroundColor: order.status === 'fulfilled' ? Colors.success : Colors.warning }]} />
+                      <View style={s.leaveCardBody}>
+                        <View style={s.leaveCardTop}>
+                          <Text style={s.leaveDate}>{order.order_number}</Text>
+                          <Text style={s.leaveNotes}>{order.vendor?.business_name ?? 'Vendor'}</Text>
+                        </View>
+                        <Text style={s.leaveNotes}>{order.status === 'fulfilled' ? 'Picked Up' : 'Pending Pickup'}</Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ))}
+            </>
+          );
+        })()}
 
         {/* ZONES */}
         {activeTab === 'zones' && (
@@ -884,7 +1246,7 @@ function RiderDetailScreenContent() {
           </>
         )}
 
-        {/* LEAVE */}
+        {/* LEAVE — mirrors the Rider App attendance log (absences this month) */}
         {activeTab === 'leave' && (
           <>
             <TouchableOpacity style={s.addBtn} onPress={() => { setLeaveForm({ leave_date: format(new Date(), 'yyyy-MM-dd'), end_date: format(new Date(), 'yyyy-MM-dd'), reason: '', notes: '' }); setShowLeaveModal(true); }} activeOpacity={0.8}>
@@ -892,60 +1254,66 @@ function RiderDetailScreenContent() {
               <Text style={s.addBtnText}>Mark Leave</Text>
             </TouchableOpacity>
 
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
+              {Array.from({ length: 12 }, (_, index) => {
+                const month = subMonths(startOfMonth(new Date()), index);
+                const key = format(month, 'yyyy-MM');
+                return (
+                  <TouchableOpacity key={key} style={[s.attMonthChip, leaveMonthKey === key && s.attMonthChipActive]} onPress={() => setLeaveMonthKey(key)} activeOpacity={0.7}>
+                    <Text style={[s.attMonthChipText, leaveMonthKey === key && s.attMonthChipTextActive]}>{format(month, 'MMM yyyy')}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
             <View style={[s.leaveStats, isWeb && s.leaveStatsWeb]}>
-              <View style={[s.leaveStat, { backgroundColor: '#E8F5E9' }]}>
-                <Text style={[s.leaveStatVal, { color: Colors.success }]}>{approvedLeaves}</Text>
-                <Text style={[s.leaveStatLabel, { color: Colors.success }]}>Approved</Text>
-              </View>
-              <View style={[s.leaveStat, { backgroundColor: '#FFF3E0' }]}>
-                <Text style={[s.leaveStatVal, { color: Colors.warning }]}>{pendingLeaves}</Text>
-                <Text style={[s.leaveStatLabel, { color: Colors.warning }]}>Pending</Text>
-              </View>
               <View style={[s.leaveStat, { backgroundColor: '#FFEBEE' }]}>
-                <Text style={[s.leaveStatVal, { color: Colors.error }]}>{leaveRequests.filter(l => l.status === 'rejected').length}</Text>
-                <Text style={[s.leaveStatLabel, { color: Colors.error }]}>Rejected</Text>
+                <Text style={[s.leaveStatVal, { color: Colors.error }]}>{absenceCount}</Text>
+                <Text style={[s.leaveStatLabel, { color: Colors.error }]}>Absent / Leave days</Text>
+              </View>
+              <View style={[s.leaveStat, { backgroundColor: '#E8F5E9' }]}>
+                <Text style={[s.leaveStatVal, { color: Colors.success }]}>{monthlyCounts.present}</Text>
+                <Text style={[s.leaveStatLabel, { color: Colors.success }]}>Present days</Text>
               </View>
             </View>
 
-            {leaveRequests.length === 0 ? (
-              <EmptyBlock icon={<BedDouble size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title="No leave records" sub="Mark leave days for this rider to track absences." />
-            ) : (
-              leaveRequests.map(lr => {
-                const cfg = LEAVE_STATUS_CONFIG[lr.status] ?? LEAVE_STATUS_CONFIG.pending;
-                return (
-                  <View key={lr.id} style={s.leaveCard}>
-                    <View style={[s.leaveCardAccent, { backgroundColor: cfg.color }]} />
-                    <View style={s.leaveCardBody}>
-                      <View style={s.leaveCardTop}>
-                        <Text style={s.leaveDate}>{format(new Date(lr.leave_date + 'T00:00:00'), 'dd MMM yyyy')}{lr.end_date && lr.end_date !== lr.leave_date ? ` – ${format(new Date(lr.end_date + 'T00:00:00'), 'dd MMM yyyy')}` : ''}</Text>
-                        <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}>
-                          <Text style={[s.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
-                        </View>
-                      </View>
-                      {lr.reason ? <Text style={s.leaveReason}>{lr.reason}</Text> : null}
-                      {lr.notes ? <Text style={s.leaveNotes}>{lr.notes}</Text> : null}
-                      <View style={s.leaveActions}>
-                        {lr.status === 'pending' && (
-                          <>
-                            <TouchableOpacity style={[s.leaveActionBtn, { backgroundColor: '#E8F5E9', borderColor: Colors.success + '40' }]} onPress={() => updateLeaveStatus(lr, 'approved')}>
-                              <CheckCircle size={13} color={Colors.success} strokeWidth={2} />
-                              <Text style={[s.leaveActionText, { color: Colors.success }]}>Approve</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={[s.leaveActionBtn, { backgroundColor: '#FFEBEE', borderColor: Colors.error + '40' }]} onPress={() => updateLeaveStatus(lr, 'rejected')}>
-                              <XCircle size={13} color={Colors.error} strokeWidth={2} />
-                              <Text style={[s.leaveActionText, { color: Colors.error }]}>Reject</Text>
-                            </TouchableOpacity>
-                          </>
-                        )}
-                        <TouchableOpacity style={[s.leaveActionBtn, { backgroundColor: Colors.neutral[100], borderColor: Colors.border }]} onPress={() => deleteLeave(lr.id)}>
-                          <Text style={[s.leaveActionText, { color: Colors.textTertiary }]}>Remove</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
+            <Text style={s.infoCardTitle}>Present</Text>
+            {presentEntries.length === 0 ? (
+              <EmptyBlock icon={<Calendar size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title="No present records" sub="No check-in records were found for this month." />
+            ) : presentEntries.map((entry: any) => (
+              <View key={`present-${entry.date}`} style={s.leaveCard}>
+                <View style={[s.leaveCardAccent, { backgroundColor: Colors.success }]} />
+                <View style={s.leaveCardBody}>
+                  <View style={s.leaveCardTop}>
+                    <Text style={s.leaveDate}>{format(new Date(entry.date + 'T00:00:00'), 'dd MMM yyyy')} · {format(new Date(entry.date + 'T00:00:00'), 'EEEE')}</Text>
+                    <View style={[s.statusBadge, { backgroundColor: '#E8F5E9' }]}><Text style={[s.statusBadgeText, { color: Colors.success }]}>Present</Text></View>
                   </View>
-                );
-              })
-            )}
+                  {entry.check_in_time ? <Text style={s.leaveNotes}>Check-in: {formatISTTime(entry.check_in_time)}</Text> : null}
+                  {entry.notes ? <Text style={s.leaveNotes}>{entry.notes}</Text> : null}
+                </View>
+              </View>
+            ))}
+
+            <Text style={s.infoCardTitle}>Absent / Leave</Text>
+            {absenceEntries.length === 0 ? (
+              <EmptyBlock icon={<BedDouble size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title="No absences" sub="This rider has no absent or leave days recorded for this month." />
+            ) : absenceEntries.map(entry => {
+              const cfg = ABSENCE_STATUS_CONFIG[entry.status] ?? ABSENCE_STATUS_CONFIG.absent;
+              return (
+                <View key={`absence-${entry.date}`} style={s.leaveCard}>
+                  <View style={[s.leaveCardAccent, { backgroundColor: cfg.color }]} />
+                  <View style={s.leaveCardBody}>
+                    <View style={s.leaveCardTop}>
+                      <Text style={s.leaveDate}>{format(new Date(entry.date + 'T00:00:00'), 'dd MMM yyyy')} · {format(new Date(entry.date + 'T00:00:00'), 'EEEE')}</Text>
+                      <View style={[s.statusBadge, { backgroundColor: cfg.bg }]}><Text style={[s.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text></View>
+                    </View>
+                    {entry.status === 'no_check_in' ? <Text style={s.leaveReason}>No check-in recorded for this day</Text> : null}
+                    {entry.checkIn ? <Text style={s.leaveNotes}>Check-in: {formatISTTime(entry.checkIn)}</Text> : null}
+                    {entry.notes ? <Text style={s.leaveNotes}>{entry.notes}</Text> : null}
+                  </View>
+                </View>
+              );
+            })}
           </>
         )}
       </ScrollView>
@@ -996,20 +1364,48 @@ function RiderDetailScreenContent() {
               <TouchableOpacity onPress={() => setShowPayoutModal(false)}><X size={18} color={Colors.textSecondary} /></TouchableOpacity>
             </View>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
+                {(() => {
+                  const now = new Date();
+                  const months: string[] = [];
+                  for (let i = 0; i < 6; i += 1) {
+                    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                    months.push(format(d, 'yyyy-MM'));
+                  }
+                  return months.map(mk => (
+                    <TouchableOpacity
+                      key={mk}
+                      style={[s.attMonthChip, payoutMonthKey === mk && s.attMonthChipActive]}
+                      onPress={() => selectPayoutMonth(mk)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[s.attMonthChipText, payoutMonthKey === mk && s.attMonthChipTextActive]}>
+                        {format(new Date(Number(mk.slice(0, 4)), Number(mk.slice(5, 7)) - 1, 1), 'MMM yyyy')}
+                      </Text>
+                    </TouchableOpacity>
+                  ));
+                })()}
+              </ScrollView>
               <View style={s.fieldRowHoriz}>
                 <ModalField label="Period Start" value={payoutForm.period_start} onChange={v => setPayoutForm(p => ({ ...p, period_start: v }))} placeholder="2026-04-01" flex={1} />
                 <ModalField label="Period End" value={payoutForm.period_end} onChange={v => setPayoutForm(p => ({ ...p, period_end: v }))} placeholder="2026-04-30" flex={1} />
               </View>
               <View style={s.fieldRowHoriz}>
-                <ModalField label="Base Amount (₹)" value={payoutForm.base_amount} onChange={v => setPayoutForm(p => ({ ...p, base_amount: v }))} placeholder="0" keyboardType="numeric" flex={1} />
-                <ModalField label="Delivery Bonus (₹)" value={payoutForm.delivery_bonus} onChange={v => setPayoutForm(p => ({ ...p, delivery_bonus: v }))} placeholder="0" keyboardType="numeric" flex={1} />
+                <ModalField label="Base Amount (₹) — Monthly Salary" value={payoutForm.base_amount} onChange={v => setPayoutForm(p => ({ ...p, base_amount: v, deductions: String(getPayoutAbsenceDeduction(attendance, payoutMonthKey, v)) }))} placeholder="0" keyboardType="numeric" flex={1} />
+                <View style={[s.fieldGroup, { flex: 1, marginBottom: 0 }]}>
+                  <Text style={s.fieldLabel}>Delivery Bonus (₹) — Incentives earned in {format(new Date(Number(payoutMonthKey.slice(0, 4)), Number(payoutMonthKey.slice(5, 7)) - 1, 1), 'MMMM yyyy')}</Text>
+                  <TextInput style={s.input} value={fetchingIncentive ? '…' : payoutForm.delivery_bonus} editable={false} placeholder="0" placeholderTextColor={Colors.textDisabled} keyboardType="numeric" />
+                  {!fetchingIncentive && (
+                    <Text style={s.payoutBonusHint}>{incentiveBonus > 0 ? `Includes ₹${incentiveBonus.toLocaleString('en-IN')} incentives earned this month` : 'No incentives earned for this month yet'}</Text>
+                  )}
+                </View>
               </View>
               <View style={s.fieldRowHoriz}>
                 <ModalField label="Deductions (₹)" value={payoutForm.deductions} onChange={v => setPayoutForm(p => ({ ...p, deductions: v }))} placeholder="0" keyboardType="numeric" flex={1} />
                 <View style={[s.fieldGroup, { flex: 1, justifyContent: 'flex-end' }]}>
                   <Text style={s.fieldLabel}>Total</Text>
                   <View style={s.totalBox}>
-                    <Text style={s.totalText}>{fmt((parseInt(payoutForm.base_amount) || 0) + (parseInt(payoutForm.delivery_bonus) || 0) - (parseInt(payoutForm.deductions) || 0))}</Text>
+                    <Text style={s.totalText}>{fmt(Math.round((Number(payoutForm.base_amount) || 0) + (Number(payoutForm.delivery_bonus) || 0) - (Number(payoutForm.deductions) || 0)))}</Text>
                   </View>
                 </View>
               </View>
@@ -1032,6 +1428,22 @@ function RiderDetailScreenContent() {
               <ModalField label="Notes" value={payoutForm.notes} onChange={v => setPayoutForm(p => ({ ...p, notes: v }))} placeholder="Optional notes" multiline />
             </ScrollView>
             <ModalFooter onCancel={() => setShowPayoutModal(false)} onSave={savePayout} saving={savingPayout} saveLabel="Create Draft" />
+          </View>
+        </View>
+      </Modal>
+
+      {/* Pickup Price Modal */}
+      <Modal visible={showPickupPriceModal} transparent animationType="fade" onRequestClose={() => setShowPickupPriceModal(false)}>
+        <View style={s.overlay}>
+          <View style={[s.modal, isWeb && s.modalWeb]}>
+            <View style={s.modalHeader}>
+              <Text style={s.modalTitle}>Set Pickup Price</Text>
+              <TouchableOpacity onPress={() => setShowPickupPriceModal(false)}><X size={18} color={Colors.textSecondary} /></TouchableOpacity>
+            </View>
+            <Text style={s.fieldLabel}>{format(new Date(Number(pickupMonthKey.slice(0, 4)), Number(pickupMonthKey.slice(5, 7)) - 1, 1), 'MMMM yyyy')}</Text>
+            <TextInput style={s.input} value={pickupPriceInput} onChangeText={setPickupPriceInput} placeholder="0" placeholderTextColor={Colors.textDisabled} keyboardType="numeric" />
+            <Text style={s.infoCardSub}>This fixed amount is paid for each date where every assigned pickup order is marked Picked Up.</Text>
+            <ModalFooter onCancel={() => setShowPickupPriceModal(false)} onSave={savePickupPrice} saving={savingPickupPrice} saveLabel="Save Price" />
           </View>
         </View>
       </Modal>
@@ -1163,6 +1575,12 @@ const s = StyleSheet.create({
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], backgroundColor: Colors.primary, paddingVertical: Spacing[3], paddingHorizontal: Spacing[5], borderRadius: Radius.md, alignSelf: 'flex-start' },
   addBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.white },
   assignStats: { flexDirection: 'row', backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden', ...Shadow.sm },
+  dayGroup: { gap: Spacing[2] },
+  dayGroupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: Spacing[2], paddingHorizontal: Spacing[1], marginTop: Spacing[1] },
+  dayGroupDate: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  dayGroupCounts: { flexDirection: 'row', gap: Spacing[1], flexWrap: 'wrap' },
+  dayCountPill: { paddingHorizontal: Spacing[2], paddingVertical: 2, borderRadius: Radius.full },
+  dayCountText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10 },
   assignStatsWeb: {},
   assignStat: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing[3], borderRightWidth: 1, borderRightColor: Colors.divider },
   assignStatLast: { borderRightWidth: 0 },
@@ -1238,6 +1656,7 @@ const s = StyleSheet.create({
   payoutActionBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing[1], paddingVertical: Spacing[2], paddingHorizontal: Spacing[3], borderRadius: Radius.md },
   payoutActionText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm },
   payoutNotes: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  payoutBonusHint: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginTop: 4 },
   emptyBlock: { alignItems: 'center', paddingTop: 50, gap: Spacing[3] },
   emptyTitle: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textSecondary },
   emptySub: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary, textAlign: 'center', maxWidth: 260 },

@@ -3,6 +3,7 @@ import { LayoutDashboard, ClipboardList, Flower2, Users } from 'lucide-react-nat
 import { Colors, Typography } from '@/constants/theme';
 import { Platform, View, StyleSheet } from 'react-native';
 import AdminSidebar from '@/components/admin/AdminSidebar';
+import AdminHelpButton from '@/components/admin/AdminHelpButton';
 import { Slot } from 'expo-router';
 import { useEffect } from 'react';
 import { notifyAdminRefresh } from '@/hooks/useAdminRefresh';
@@ -24,6 +25,7 @@ function WebLayout() {
       <View style={styles.webContent}>
         <Slot />
       </View>
+      <AdminHelpButton />
     </View>
   );
 }
@@ -94,6 +96,7 @@ export default function AdminLayout() {
       <Tabs.Screen name="procurement-order-detail" options={{ href: null }} />
       <Tabs.Screen name="record-vendor-payment"   options={{ href: null }} />
 <Tabs.Screen name="finance"             options={{ href: null }} />
+      <Tabs.Screen name="monthly-report"      options={{ href: null }} />
       <Tabs.Screen name="finance-payments"    options={{ href: null }} />
       <Tabs.Screen name="vendor-payments"       options={{ href: null }} />
       <Tabs.Screen name="payment-history"       options={{ href: null }} />

@@ -7,7 +7,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  Flower2, ArrowLeft, Sparkles, TrendingDown, TrendingUp, Wallet, X,
+  Flower2, ArrowLeft, Sparkles, TrendingDown, TrendingUp, Wallet, X, List, LayoutGrid,
+  ChevronDown, ChevronRight,
 } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { format, startOfMonth, subMonths } from 'date-fns';
@@ -57,6 +58,17 @@ function FlowerPaymentsScreenContent() {
   const [rangeFrom, setRangeFrom] = useState<Date | null>(null);
   const [rangeTo, setRangeTo] = useState<Date | null>(null);
   const [openPicker, setOpenPicker] = useState<'from' | 'to' | null>(null);
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set());
+
+  const toggleDate = useCallback((date: string) => {
+    setExpandedDates(prev => {
+      const next = new Set(prev);
+      if (next.has(date)) next.delete(date);
+      else next.add(date);
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -160,11 +172,44 @@ function FlowerPaymentsScreenContent() {
     return `${qty} pc`;
   };
 
+  const renderGridCard = (it: FlowerPurchaseItem) => {
+    const custom = isCustomItem(it);
+    return (
+      <View key={it.id} style={[s.gridCard, isWeb && s.gridCardWeb]}>
+        <View style={s.gridCardTop}>
+          <Text style={s.gridCardName} numberOfLines={1}>{it.flower_type?.name ?? '—'}</Text>
+          <Text style={s.gridCardAmt}>{fmt(Number(it.total_price ?? 0))}</Text>
+        </View>
+        {custom && (
+          <View style={[s.customBadge, { alignSelf: 'flex-start', marginTop: Spacing[1] }]}>
+            <Sparkles size={10} color={Colors.accentDark} strokeWidth={2} />
+            <Text style={s.customBadgeText}>Customization</Text>
+          </View>
+        )}
+        <View style={s.gridCardMeta}>
+          <View style={s.gridCardMetaRow}>
+            <Text style={s.gridCardMetaLabel}>Quantity</Text>
+            <Text style={s.gridCardMetaValue}>{qtyLabel(it)}</Text>
+          </View>
+          <View style={s.gridCardMetaRow}>
+            <Text style={s.gridCardMetaLabel}>Price / Unit</Text>
+            <Text style={s.gridCardMetaValue}>{it.price_per_unit != null ? fmt(Number(it.price_per_unit)) : '—'}</Text>
+          </View>
+        </View>
+        <View style={s.gridCardFooter}>
+          <Text style={s.gridCardVendor} numberOfLines={1}>{it.procurement_order?.vendor?.business_name ?? '—'}</Text>
+          <Text style={s.gridCardOrder} numberOfLines={1}>{it.procurement_order?.order_number ?? '—'}</Text>
+        </View>
+      </View>
+    );
+  };
+
   const renderRow = (it: FlowerPurchaseItem, idx: number) => {
     const custom = isCustomItem(it);
     return isWeb ? (
       <View key={it.id} style={[s.tableRow, idx % 2 === 1 && s.tableRowAlt]}>
-        <View style={[s.tdCell, { flex: 2 }]}>
+        <Text style={[s.tdCell, { width: 110 }, s.tdDate]}>{it.procurement_order?.order_date ? format(new Date(`${it.procurement_order.order_date}T00:00:00`), 'dd MMM yyyy') : '—'}</Text>
+        <View style={[s.tdCell, { flex: 2.2 }]}>
           <View style={s.nameRow}>
             <Text style={s.tdPrimary}>{it.flower_type?.name ?? '—'}</Text>
             {custom && (
@@ -176,10 +221,10 @@ function FlowerPaymentsScreenContent() {
           </View>
           <Text style={s.tdSub}>{it.procurement_order?.order_number ?? '—'}</Text>
         </View>
-        <Text style={[s.tdCell, { width: 120 }, s.tdSec]}>{qtyLabel(it)}</Text>
-        <Text style={[s.tdCell, { width: 110, textAlign: 'right' }, s.tdSec]}>{it.price_per_unit != null ? fmt(Number(it.price_per_unit)) : '—'}</Text>
-        <Text style={[s.tdCell, { width: 110, textAlign: 'right' }, s.tdBold]}>{fmt(Number(it.total_price ?? 0))}</Text>
-        <Text style={[s.tdCell, { width: 150, textAlign: 'right' }, s.tdSec]}>{it.procurement_order?.vendor?.business_name ?? '—'}</Text>
+        <Text style={[s.tdCell, { flex: 1, textAlign: 'right' }, s.tdSec]}>{qtyLabel(it)}</Text>
+        <Text style={[s.tdCell, { flex: 1.1, textAlign: 'right' }, s.tdSec]}>{it.price_per_unit != null ? fmt(Number(it.price_per_unit)) : '—'}</Text>
+        <Text style={[s.tdCell, { flex: 1.2, textAlign: 'right' }, s.tdBold]}>{fmt(Number(it.total_price ?? 0))}</Text>
+        <Text style={[s.tdCell, { flex: 1.4, textAlign: 'right' }, s.tdSec]} numberOfLines={1}>{it.procurement_order?.vendor?.business_name ?? '—'}</Text>
       </View>
     ) : (
       <View key={it.id} style={s.mobileCard}>
@@ -296,6 +341,22 @@ function FlowerPaymentsScreenContent() {
               <X size={14} color={Colors.textTertiary} strokeWidth={2} />
             </TouchableOpacity>
           )}
+          <View style={s.viewToggleWrap}>
+            <TouchableOpacity
+              style={[s.viewToggleBtn, s.viewToggleLeft, viewMode === 'list' && s.viewToggleBtnActive]}
+              onPress={() => setViewMode('list')}
+            >
+              <List size={14} color={viewMode === 'list' ? Colors.primary : Colors.textTertiary} strokeWidth={2} />
+              <Text style={[s.viewToggleText, viewMode === 'list' && s.viewToggleTextActive]}>List</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.viewToggleBtn, s.viewToggleRight, viewMode === 'grid' && s.viewToggleBtnActive]}
+              onPress={() => setViewMode('grid')}
+            >
+              <LayoutGrid size={14} color={viewMode === 'grid' ? Colors.primary : Colors.textTertiary} strokeWidth={2} />
+              <Text style={[s.viewToggleText, viewMode === 'grid' && s.viewToggleTextActive]}>Grid</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
 
@@ -316,25 +377,51 @@ function FlowerPaymentsScreenContent() {
           ) : (
             dateGroups.map(([date, group]) => {
               const dayTotal = group.reduce((sum, it) => sum + Number(it.total_price ?? 0), 0);
+              const expanded = viewMode === 'grid' || expandedDates.has(date);
               return (
                 <View key={date} style={s.dateGroup}>
-                  <View style={s.dateHead}>
-                    <Text style={s.dateHeadText}>{format(new Date(`${date}T00:00:00`), 'EEEE, dd MMM yyyy')}</Text>
-                    <Text style={s.dateHeadTotal}>{fmt(dayTotal)}</Text>
-                  </View>
-                  {isWeb ? (
-                    <View style={s.table}>
-                      <View style={s.tableHead}>
-                        <Text style={[s.thCell, { flex: 2 }]}>Flower</Text>
-                        <Text style={[s.thCell, { width: 120 }]}>Quantity</Text>
-                        <Text style={[s.thCell, { width: 110, textAlign: 'right' }]}>Price / Unit</Text>
-                        <Text style={[s.thCell, { width: 110, textAlign: 'right' }]}>Total</Text>
-                        <Text style={[s.thCell, { width: 150, textAlign: 'right' }]}>Vendor</Text>
+                  {viewMode === 'list' ? (
+                    <TouchableOpacity
+                      style={s.dateHeadBtn}
+                      onPress={() => toggleDate(date)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={s.dateHeadLeft}>
+                        <Text style={s.dateHeadText}>
+                          {format(new Date(`${date}T00:00:00`), isWeb ? 'dd MMM yyyy' : 'EEEE, dd MMM yyyy')}
+                        </Text>
+                        <Text style={s.dateHeadCount}>{group.length} {group.length === 1 ? 'item' : 'items'}</Text>
                       </View>
-                      {group.map((it, idx) => renderRow(it, idx))}
-                    </View>
+                      <View style={s.dateHeadRight}>
+                        <Text style={s.dateHeadTotal}>{fmt(dayTotal)}</Text>
+                        {expanded
+                          ? <ChevronDown size={16} color={Colors.textSecondary} strokeWidth={2} />
+                          : <ChevronRight size={16} color={Colors.textSecondary} strokeWidth={2} />}
+                      </View>
+                    </TouchableOpacity>
                   ) : (
-                    <View>{group.map((it, idx) => renderRow(it, idx))}</View>
+                    <View style={s.dateHead}>
+                      <Text style={s.dateHeadText}>{format(new Date(`${date}T00:00:00`), 'EEEE, dd MMM yyyy')}</Text>
+                      <Text style={s.dateHeadTotal}>{fmt(dayTotal)}</Text>
+                    </View>
+                  )}
+                  {expanded && (
+                    viewMode === 'grid' ? (
+                      <View style={s.gridWrap}>{group.map(renderGridCard)}</View>
+                    ) : isWeb ? (
+                      <View style={s.table}>
+                        <View style={s.tableHead}>
+                          <Text style={[s.thCell, { flex: 2.2 }]}>Flower</Text>
+                          <Text style={[s.thCell, { flex: 1, textAlign: 'right' }]}>Quantity</Text>
+                          <Text style={[s.thCell, { flex: 1.1, textAlign: 'right' }]}>Price / Unit</Text>
+                          <Text style={[s.thCell, { flex: 1.2, textAlign: 'right' }]}>Total Amount</Text>
+                          <Text style={[s.thCell, { flex: 1.4, textAlign: 'right' }]}>Vendor</Text>
+                        </View>
+                        {group.map((it, idx) => renderRow(it, idx))}
+                      </View>
+                    ) : (
+                      <View>{group.map((it, idx) => renderRow(it, idx))}</View>
+                    )
                   )}
                 </View>
               );
@@ -373,6 +460,26 @@ const s = StyleSheet.create({
   periodPillActive: { backgroundColor: Colors.primarySurface, borderColor: Colors.primary },
   periodPillText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textSecondary },
   periodPillTextActive: { color: Colors.primary, fontFamily: Typography.fontFamily.sansSemiBold },
+  viewToggleWrap: { flexDirection: 'row', marginLeft: 'auto', borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, overflow: 'hidden', backgroundColor: Colors.neutral[50] },
+  viewToggleBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: Spacing[1] + 2, paddingHorizontal: Spacing[3] },
+  viewToggleLeft: { borderRightWidth: 1, borderRightColor: Colors.border },
+  viewToggleRight: {},
+  viewToggleBtnActive: { backgroundColor: Colors.primarySurface },
+  viewToggleText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  viewToggleTextActive: { color: Colors.primary, fontFamily: Typography.fontFamily.sansSemiBold },
+  gridWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing[3] },
+  gridCard: { flexGrow: 1, flexBasis: '46%', backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing[3], ...Shadow.sm },
+  gridCardWeb: { flexBasis: '30%', minWidth: 220 },
+  gridCardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing[2] },
+  gridCardName: { flex: 1, fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textPrimary },
+  gridCardAmt: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, color: Colors.error },
+  gridCardMeta: { marginTop: Spacing[3], gap: Spacing[1] },
+  gridCardMetaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  gridCardMetaLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  gridCardMetaValue: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.textSecondary },
+  gridCardFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: Spacing[3], paddingTop: Spacing[2], borderTopWidth: 1, borderTopColor: Colors.divider, gap: Spacing[2] },
+  gridCardVendor: { flex: 1, fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.textSecondary, textAlign: 'left' },
+  gridCardOrder: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, textAlign: 'right' },
   scroll: { flex: 1 },
   content: { padding: Spacing[4] },
   contentWeb: { padding: Spacing[8], maxWidth: 1100, alignSelf: 'center', width: '100%' },
@@ -380,6 +487,15 @@ const s = StyleSheet.create({
   emptyState: { alignItems: 'center', paddingTop: 60, gap: Spacing[3] },
   emptyTitle: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textSecondary },
   dateGroup: { marginBottom: Spacing[6] },
+  dateHeadBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.border,
+    borderRadius: Radius.md, paddingVertical: Spacing[3], paddingHorizontal: Spacing[4],
+    ...Shadow.sm,
+  },
+  dateHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2], flex: 1 },
+  dateHeadRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing[2] },
+  dateHeadCount: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
   dateHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: Spacing[2], paddingHorizontal: Spacing[1] },
   dateHeadText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
   dateHeadTotal: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.error },
@@ -395,6 +511,7 @@ const s = StyleSheet.create({
   tdPrimary: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.sm, color: Colors.textPrimary },
   tdSub: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginTop: 1 },
   tdSec: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textSecondary },
+  tdDate: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
   tdBold: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
   mobileCard: { flexDirection: 'row', backgroundColor: Colors.white, borderRadius: Radius.lg, padding: Spacing[4], marginBottom: Spacing[3], borderWidth: 1, borderColor: Colors.border, ...Shadow.sm },
   mobileCardInfo: { flex: 1 },

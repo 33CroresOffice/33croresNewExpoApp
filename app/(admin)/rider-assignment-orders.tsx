@@ -4,7 +4,7 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Bike, UserMinus, Square, CheckSquare, ChevronRight, Truck, MapPin, User, RefreshCw, AlertCircle, Filter, ChevronDown, ArrowUp, ArrowDown, ListOrdered, ArrowRightLeft, Zap, CircleCheck as CheckCircle, Star } from 'lucide-react-native';
+import { ArrowLeft, Bike, UserMinus, Square, CheckSquare, ChevronRight, Truck, MapPin, User, RefreshCw, AlertCircle, Filter, ChevronDown, ArrowUp, ArrowDown, ListOrdered, ArrowRightLeft, Zap, CircleCheck as CheckCircle, Search } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { usePageVisibility } from '@/hooks/usePageVisibility';
@@ -36,10 +36,22 @@ interface AssignedOrder {
   delivery_sequence: number | null;
   rider_id: string;
   swapped_from_rider_id: string | null;
+  swapped_from_rider_name: string | null;
   swap_reason: string | null;
+  is_temporary_reassign: boolean;
+  temp_reassign_start_date: string | null;
+  temp_reassign_end_date: string | null;
   auto_assigned: boolean;
   is_primary_rider: boolean;
   standing_only: boolean;
+  rider_history: RiderChangeEntry[];
+}
+
+interface RiderChangeEntry {
+  previous_rider_name: string | null;
+  new_rider_name: string | null;
+  reason: string;
+  changed_at: string;
 }
 
 interface UnassignedOrder {
@@ -99,6 +111,7 @@ function RiderAssignmentOrdersContent() {
   const [showStatusFilter, setShowStatusFilter] = useState(false);
   const [statusSearchQuery, setStatusSearchQuery] = useState('');
   const [riderSearchQuery, setRiderSearchQuery] = useState('');
+  const [customerSearchQuery, setCustomerSearchQuery] = useState('');
 
   const [assignedOrders, setAssignedOrders] = useState<AssignedOrder[]>([]);
   const [unassignedOrders, setUnassignedOrders] = useState<UnassignedOrder[]>([]);
@@ -124,11 +137,13 @@ function RiderAssignmentOrdersContent() {
     setLoading(true);
     setError(null);
     try {
-      const [assignedRes, unassignedRes, ridersRes, leaveRes, subsRes] = await Promise.all([
+      const [assignedRes, unassignedRes, ridersRes, leaveRes, subsRes, subHistoryRes] = await Promise.all([
         supabase
           .from('rider_order_assignments')
           .select(`
             id, order_id, status, assigned_at, delivery_sequence, rider_id, swapped_from_rider_id, swap_reason, auto_assigned,
+            is_temporary_reassign, temp_reassign_start_date, temp_reassign_end_date,
+            swapped_from_rider:riders!rider_order_assignments_swapped_from_rider_id_fkey(full_name),
             order:orders(
               id, scheduled_date, status, subscription_id,
               user:profiles(full_name, mobile),
@@ -159,6 +174,15 @@ function RiderAssignmentOrdersContent() {
             delivery_address:addresses(apartment_name, street, landmark, city, state, pincode)
           `)
           .not('primary_rider_id', 'is', null),
+        supabase
+          .from('subscription_rider_history')
+          .select(`
+            subscription_id, reason, changed_at,
+            previous_rider:riders!subscription_rider_history_previous_rider_id_fkey(full_name),
+            new_rider:riders!subscription_rider_history_new_rider_id_fkey(full_name)
+          `)
+          .order('changed_at', { ascending: false })
+          .limit(500),
       ]);
 
       if (assignedRes.error) throw new Error(assignedRes.error.message);
@@ -187,7 +211,11 @@ function RiderAssignmentOrdersContent() {
         delivery_sequence: row.delivery_sequence ?? null,
         rider_id: row.rider_id ?? '',
         swapped_from_rider_id: row.swapped_from_rider_id ?? null,
+        swapped_from_rider_name: row.swapped_from_rider?.full_name ?? null,
         swap_reason: row.swap_reason ?? null,
+        is_temporary_reassign: row.is_temporary_reassign ?? false,
+        temp_reassign_start_date: row.temp_reassign_start_date ?? null,
+        temp_reassign_end_date: row.temp_reassign_end_date ?? null,
         auto_assigned: row.auto_assigned ?? false,
         is_primary_rider: row.order?.subscription?.primary_rider_id != null && row.order?.subscription?.primary_rider_id === row.rider_id,
         subscription_status: row.order?.subscription ? getEffectiveStatus(row.order.subscription) : 'active',
@@ -204,6 +232,7 @@ function RiderAssignmentOrdersContent() {
         address_state: row.order?.subscription?.delivery_address?.state ?? '',
         address_pincode: row.order?.subscription?.delivery_address?.pincode ?? '',
         standing_only: false,
+        rider_history: [],
       }));
 
       const unassigned: UnassignedOrder[] = (unassignedRes.data ?? []).map((row: any) => ({
@@ -225,6 +254,18 @@ function RiderAssignmentOrdersContent() {
       // assignments take precedence so in-flight statuses and sequences show.
       const riderLookup = new Map<string, { name: string; mobile: string }>();
       (ridersRes.data ?? []).forEach((r: any) => riderLookup.set(r.id, { name: r.full_name ?? 'Unknown', mobile: r.mobile ?? '' }));
+
+      const subHistoryMap = new Map<string, RiderChangeEntry[]>();
+      (subHistoryRes.data ?? []).forEach((h: any) => {
+        const list = subHistoryMap.get(h.subscription_id) ?? [];
+        list.push({
+          previous_rider_name: h.previous_rider?.full_name ?? null,
+          new_rider_name: h.new_rider?.full_name ?? null,
+          reason: h.reason,
+          changed_at: h.changed_at,
+        });
+        subHistoryMap.set(h.subscription_id, list);
+      });
 
       const activeByKey = new Map<string, AssignedOrder>();
       const historyRows: AssignedOrder[] = [];
@@ -277,10 +318,15 @@ function RiderAssignmentOrdersContent() {
           address_pincode: sub.delivery_address?.pincode ?? '',
           delivery_sequence: prior?.delivery_sequence ?? null,
           swapped_from_rider_id: null,
+          swapped_from_rider_name: null,
           swap_reason: null,
+          is_temporary_reassign: false,
+          temp_reassign_start_date: null,
+          temp_reassign_end_date: null,
           auto_assigned: false,
           is_primary_rider: true,
           standing_only: true,
+          rider_history: subHistoryMap.get(sub.id) ?? [],
         });
       }
       setAssignedOrders([...historyRows, ...standing]);
@@ -426,33 +472,75 @@ function RiderAssignmentOrdersContent() {
     if (subStatusFilter) {
       result = result.filter((order) => order.subscription_status === subStatusFilter);
     }
+    const query = customerSearchQuery.trim().toLowerCase();
+    if (query && activeTab !== 'history') {
+      result = result.filter((order) => {
+        const address = [order.address_apartment, order.address_street, order.address_landmark, order.address_city, order.address_state, order.address_pincode]
+          .filter(Boolean)
+          .join(', ');
+        return (
+          order.customer_name.toLowerCase().includes(query) ||
+          order.customer_mobile.toLowerCase().includes(query) ||
+          address.toLowerCase().includes(query)
+        );
+      });
+    }
     if (selectedRiderId) {
       result = [...result].sort((a, b) => {
         const aSeq = a.delivery_sequence ?? 9999;
         const bSeq = b.delivery_sequence ?? 9999;
         return aSeq - bSeq;
       });
+    } else {
+      // Group by rider so each rider's delivery sequence reads 1, 2, 3... in order
+      result = [...result].sort((a, b) => {
+        const riderCmp = a.rider_name.localeCompare(b.rider_name);
+        if (riderCmp !== 0) return riderCmp;
+        const aSeq = a.delivery_sequence ?? 9999;
+        const bSeq = b.delivery_sequence ?? 9999;
+        return aSeq - bSeq;
+      });
     }
     return result;
-  }, [liveAssignedOrders, historyOrders, activeTab, selectedRiderId, subStatusFilter]);
+  }, [liveAssignedOrders, historyOrders, activeTab, selectedRiderId, subStatusFilter, customerSearchQuery]);
 
   const [sequencing, setSequencing] = useState(false);
   const [sequenceError, setSequenceError] = useState<string | null>(null);
 
   const autoAssignSequence = async () => {
-    if (!selectedRiderId) return;
     setSequencing(true);
     setSequenceError(null);
     try {
-      const riderOrders = assignedOrders.filter(
-        (o) => o.rider_name + '|' + o.rider_mobile === selectedRiderId
-      );
-      for (let i = 0; i < riderOrders.length; i++) {
-        const { error } = await supabase
-          .from('rider_order_assignments')
-          .update({ delivery_sequence: i + 1 })
-          .eq('id', riderOrders[i].assignment_id);
-        if (error) throw new Error(error.message);
+      // Number each rider's orders 1..n independently, so sequences stay
+      // per-rider whether one rider or all riders are being sequenced.
+      const ridersToSequence = selectedRiderId
+        ? [selectedRiderId]
+        : Array.from(new Set(
+            assignedOrders
+              .filter((o) => ACTIVE_ASSIGNMENT_STATUSES.includes(o.status) && !o.standing_only)
+              .map((o) => o.rider_name + '|' + o.rider_mobile)
+          ));
+      for (const riderKey of ridersToSequence) {
+        const riderOrders = assignedOrders
+          .filter(
+            (o) =>
+              o.rider_name + '|' + o.rider_mobile === riderKey &&
+              ACTIVE_ASSIGNMENT_STATUSES.includes(o.status) && !o.standing_only
+          )
+          .sort((a, b) => {
+            const sequenceDifference = (a.delivery_sequence ?? Number.MAX_SAFE_INTEGER) - (b.delivery_sequence ?? Number.MAX_SAFE_INTEGER);
+            if (sequenceDifference !== 0) return sequenceDifference;
+            return (a.scheduled_date || '').localeCompare(b.scheduled_date || '');
+          });
+        for (let i = 0; i < riderOrders.length; i++) {
+          const { data: updatedRows, error } = await supabase
+            .from('rider_order_assignments')
+            .update({ delivery_sequence: i + 1 })
+            .eq('id', riderOrders[i].assignment_id)
+            .select('id');
+          if (error) throw new Error(error.message);
+          if (!updatedRows || updatedRows.length === 0) throw new Error('The delivery sequence could not be saved for one of these assignments.');
+        }
       }
       await load();
     } catch (e: any) {
@@ -464,7 +552,13 @@ function RiderAssignmentOrdersContent() {
 
   const moveSequence = async (orderId: string, direction: 'up' | 'down') => {
     if (!selectedRiderId) return;
-    const sorted = [...filteredAssignedOrders];
+    const sorted = liveAssignedOrders
+      .filter((order) => order.rider_name + '|' + order.rider_mobile === selectedRiderId && !order.standing_only)
+      .sort((a, b) => {
+        const sequenceDifference = (a.delivery_sequence ?? Number.MAX_SAFE_INTEGER) - (b.delivery_sequence ?? Number.MAX_SAFE_INTEGER);
+        if (sequenceDifference !== 0) return sequenceDifference;
+        return (a.scheduled_date || '').localeCompare(b.scheduled_date || '');
+      });
     const idx = sorted.findIndex((o) => o.assignment_id === orderId);
     if (idx < 0) return;
     const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
@@ -475,11 +569,14 @@ function RiderAssignmentOrdersContent() {
     setSequenceError(null);
     try {
       const updates = [
-        supabase.from('rider_order_assignments').update({ delivery_sequence: (b.delivery_sequence ?? swapIdx + 1) }).eq('id', a.assignment_id),
-        supabase.from('rider_order_assignments').update({ delivery_sequence: (a.delivery_sequence ?? idx + 1) }).eq('id', b.assignment_id),
+        supabase.from('rider_order_assignments').update({ delivery_sequence: (b.delivery_sequence ?? swapIdx + 1) }).eq('id', a.assignment_id).select('id'),
+        supabase.from('rider_order_assignments').update({ delivery_sequence: (a.delivery_sequence ?? idx + 1) }).eq('id', b.assignment_id).select('id'),
       ];
       const results = await Promise.all(updates);
-      for (const r of results) { if (r.error) throw new Error(r.error.message); }
+      for (const result of results) {
+        if (result.error) throw new Error(result.error.message);
+        if (!result.data || result.data.length === 0) throw new Error('The delivery sequence could not be saved.');
+      }
       await load();
     } catch (e: any) {
       setSequenceError(e.message ?? 'Failed to reorder');
@@ -490,6 +587,7 @@ function RiderAssignmentOrdersContent() {
 
   const [editingSeqId, setEditingSeqId] = useState<string | null>(null);
   const [seqInputValue, setSeqInputValue] = useState('');
+  const [expandedReassignId, setExpandedReassignId] = useState<string | null>(null);
 
   const startEditSeq = (assignmentId: string, currentSeq: number | null) => {
     setEditingSeqId(assignmentId);
@@ -506,11 +604,13 @@ function RiderAssignmentOrdersContent() {
     setSequencing(true);
     setSequenceError(null);
     try {
-      const { error } = await supabase
+      const { data: updatedRows, error } = await supabase
         .from('rider_order_assignments')
         .update({ delivery_sequence: num })
-        .eq('id', assignmentId);
+        .eq('id', assignmentId)
+        .select('id');
       if (error) throw new Error(error.message);
+      if (!updatedRows || updatedRows.length === 0) throw new Error('The delivery sequence could not be saved for this assignment.');
       await load();
     } catch (e: any) {
       setSequenceError(e.message ?? 'Failed to save sequence');
@@ -559,22 +659,30 @@ function RiderAssignmentOrdersContent() {
   };
 
   const riderAssignmentSummary = useMemo(() => {
-    const counts = new Map<string, { riderName: string; total: number; activeCustomerKeys: Set<string> }>();
-    riderFilteredOrders.forEach((order) => {
+    const activeRiderIds = new Set(riders.map((rider) => rider.id));
+    const counts = new Map<string, { riderName: string; totalKeys: Set<string>; activeKeys: Set<string> }>();
+    assignedOrders.forEach((order) => {
+      if (!activeRiderIds.has(order.rider_id)) return;
       const riderId = order.rider_name + '|' + order.rider_mobile;
+      if (selectedRiderId && riderId !== selectedRiderId) return;
       const entry = counts.get(riderId) ?? {
         riderName: order.rider_name,
-        total: 0,
-        activeCustomerKeys: new Set<string>(),
+        totalKeys: new Set<string>(),
+        activeKeys: new Set<string>(),
       };
-      entry.total += 1;
-      if (order.subscription_status === 'active') {
-        entry.activeCustomerKeys.add(order.customer_mobile || order.customer_name || order.order_id || order.assignment_id);
+      const orderKey = order.subscription_id || order.order_id || order.assignment_id;
+      entry.totalKeys.add(orderKey);
+      if (order.subscription_status === 'active' && ACTIVE_ASSIGNMENT_STATUSES.includes(order.status)) {
+        entry.activeKeys.add(orderKey);
       }
       counts.set(riderId, entry);
     });
-    return Array.from(counts.entries()).sort((a, b) => b[1].total - a[1].total || a[1].riderName.localeCompare(b[1].riderName));
-  }, [riderFilteredOrders, subStatusFilter]);
+    return Array.from(counts.entries()).map(([riderId, entry]) => [riderId, {
+      riderName: entry.riderName,
+      total: entry.totalKeys.size,
+      active: entry.activeKeys.size,
+    }] as const).sort((a, b) => b[1].total - a[1].total || a[1].riderName.localeCompare(b[1].riderName));
+  }, [assignedOrders, riders, selectedRiderId]);
 
   const renderRiderAssignmentSummary = () => (
     <View style={styles.summaryCard}>
@@ -609,7 +717,7 @@ function RiderAssignmentOrdersContent() {
               <Text style={styles.summaryRiderText} numberOfLines={1}>{summary.riderName}</Text>
             </View>
             <View style={styles.summaryActiveBadge}>
-              <Text style={styles.summaryActiveText}>{summary.activeCustomerKeys.size}</Text>
+              <Text style={styles.summaryActiveText}>{summary.active}</Text>
             </View>
             <View style={styles.summaryCountBadge}>
               <Text style={styles.summaryCountText}>{summary.total}</Text>
@@ -764,6 +872,27 @@ function RiderAssignmentOrdersContent() {
         ) : null}
 
         {activeTab === 'assigned' ? (
+        <View style={styles.customerSearchWrap}>
+          <Search size={15} color={Colors.textTertiary} strokeWidth={1.8} />
+          <TextInput
+            style={styles.customerSearchInput}
+            value={customerSearchQuery}
+            onChangeText={setCustomerSearchQuery}
+            placeholder="Search customer name or address..."
+            placeholderTextColor={Colors.textDisabled}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="search"
+          />
+          {customerSearchQuery ? (
+            <TouchableOpacity onPress={() => setCustomerSearchQuery('')} activeOpacity={0.7}>
+              <Text style={styles.customerSearchClear}>Clear</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+        ) : null}
+
+        {activeTab === 'assigned' ? (
         <View style={styles.bulkActionBar}>
           <TouchableOpacity
             style={styles.selectToggle}
@@ -776,10 +905,15 @@ function RiderAssignmentOrdersContent() {
               {allSelected ? `Deselect All (${filteredAssignedOrders.length})` : `Select All (${filteredAssignedOrders.length})`}
             </Text>
           </TouchableOpacity>
-          {selectedRiderId && (
+          {selectedRiderId ? (
             <TouchableOpacity style={styles.sequenceBtn} onPress={autoAssignSequence} disabled={sequencing} activeOpacity={0.8}>
               {sequencing ? <ActivityIndicator size="small" color={Colors.primary} /> : <ListOrdered size={15} color={Colors.primary} strokeWidth={2} />}
               <Text style={styles.sequenceBtnText}>Auto-Sequence</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity style={styles.sequenceBtn} onPress={autoAssignSequence} disabled={sequencing || filteredAssignedOrders.length === 0} activeOpacity={0.8}>
+              {sequencing ? <ActivityIndicator size="small" color={Colors.primary} /> : <ListOrdered size={15} color={Colors.primary} strokeWidth={2} />}
+              <Text style={styles.sequenceBtnText}>Auto-Sequence All</Text>
             </TouchableOpacity>
           )}
           {selectedCount > 0 ? (
@@ -790,12 +924,12 @@ function RiderAssignmentOrdersContent() {
           ) : null}
         </View>
         ) : null}
-        {selectedRiderId && (
+        {selectedRiderId ? (
           <View style={styles.sequenceLegendBar}>
             <ListOrdered size={13} color={Colors.primary} strokeWidth={2} />
             <Text style={styles.sequenceLegendText}>Tap the number to edit the delivery order. Use arrows to reorder.</Text>
           </View>
-        )}
+        ) : null}
         {sequenceError ? (
           <View style={styles.sequenceErrorBar}>
             <AlertCircle size={14} color={Colors.error} />
@@ -830,7 +964,7 @@ function RiderAssignmentOrdersContent() {
               >
                 <View style={styles.orderTopRow}>
                   <View style={styles.orderIdRow}>
-                    {selectedRiderId ? (
+                    {selectedRiderId && !order.standing_only ? (
                       editingSeqId === order.assignment_id ? (
                         <TextInput
                           style={styles.seqInput}
@@ -857,14 +991,8 @@ function RiderAssignmentOrdersContent() {
                     <View style={styles.riderPill}>
                       <Bike size={11} color={Colors.primary} strokeWidth={2.2} />
                       <Text style={styles.riderPillText} numberOfLines={1}>{order.rider_name}{order.rider_mobile ? ' · ' + order.rider_mobile : ''}</Text>
-                      {order.is_primary_rider && (
-                        <View style={styles.primaryBadge}>
-                          <Star size={8} color={Colors.warning} strokeWidth={2.5} fill={Colors.warning} />
-                          <Text style={styles.primaryBadgeText}>PRIMARY</Text>
-                        </View>
-                      )}
                     </View>
-                    {selectedRiderId && (
+                    {selectedRiderId && !order.standing_only && (
                       <View style={styles.sequenceControls}>
                         <TouchableOpacity onPress={() => moveSequence(order.assignment_id, 'up')} disabled={sequencing} activeOpacity={0.7} style={styles.sequenceArrowBtn}>
                           <ArrowUp size={12} color={Colors.primary} strokeWidth={2.2} />
@@ -884,10 +1012,20 @@ function RiderAssignmentOrdersContent() {
                     <View style={[styles.statusBadge, { backgroundColor: cfg.bg }]}>
                       <Text style={[styles.statusBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
                     </View>
-                    {order.swapped_from_rider_id && (
-                      <View style={styles.reassignedBadge}>
+                    {order.swapped_from_rider_id || order.rider_history.length > 0 ? (
+                      <TouchableOpacity
+                        style={styles.reassignedBadge}
+                        onPress={() => setExpandedReassignId(expandedReassignId === order.assignment_id ? null : order.assignment_id)}
+                        activeOpacity={0.7}
+                      >
                         <ArrowRightLeft size={9} color={Colors.secondary} strokeWidth={2.5} />
                         <Text style={styles.reassignedBadgeText}>REASSIGNED</Text>
+                        <ChevronDown size={9} color={Colors.secondary} strokeWidth={2.5} />
+                      </TouchableOpacity>
+                    ) : null}
+                    {order.is_temporary_reassign && (
+                      <View style={styles.tempBadge}>
+                        <Text style={styles.tempBadgeText}>TEMP</Text>
                       </View>
                     )}
                     {order.auto_assigned && (
@@ -916,6 +1054,56 @@ function RiderAssignmentOrdersContent() {
                     {order.plan_name ? ' · ' + order.plan_name : ''}
                   </Text>
                 </View>
+
+                {order.swapped_from_rider_id && expandedReassignId !== order.assignment_id ? (
+                  <View style={styles.reassignDetailBox}>
+                    <View style={styles.reassignDetailRow}>
+                      <User size={11} color={Colors.secondary} strokeWidth={2} />
+                      <Text style={styles.reassignDetailText} numberOfLines={1}>
+                        From: {order.swapped_from_rider_name ?? 'Unknown rider'} → {order.rider_name}
+                      </Text>
+                    </View>
+                    {order.is_temporary_reassign && (order.temp_reassign_start_date || order.temp_reassign_end_date) ? (
+                      <View style={styles.reassignDetailRow}>
+                        <Truck size={11} color={Colors.secondary} strokeWidth={2} />
+                        <Text style={styles.reassignDetailText} numberOfLines={1}>
+                          Period: {order.temp_reassign_start_date ? format(new Date(order.temp_reassign_start_date), 'dd MMM yyyy') : '—'} – {order.temp_reassign_end_date ? format(new Date(order.temp_reassign_end_date), 'dd MMM yyyy') : '—'} · returns to {order.swapped_from_rider_name ?? 'original rider'}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {order.swap_reason ? (
+                      <View style={styles.reassignDetailRow}>
+                        <AlertCircle size={11} color={Colors.secondary} strokeWidth={2} />
+                        <Text style={styles.reassignDetailText} numberOfLines={2}>{order.swap_reason}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
+
+                {expandedReassignId === order.assignment_id && (order.swapped_from_rider_id || order.rider_history.length > 0) ? (
+                  <View style={styles.reassignHistoryBox}>
+                    {order.swapped_from_rider_id ? (
+                      <View style={styles.reassignDetailRow}>
+                        <ArrowRightLeft size={11} color={Colors.secondary} strokeWidth={2} />
+                        <Text style={styles.reassignDetailText} numberOfLines={2}>
+                          This delivery: {order.swapped_from_rider_name ?? 'Unknown rider'} → {order.rider_name}
+                          {order.is_temporary_reassign && order.temp_reassign_start_date && order.temp_reassign_end_date
+                            ? ` (${format(new Date(order.temp_reassign_start_date), 'dd MMM')} – ${format(new Date(order.temp_reassign_end_date), 'dd MMM yyyy')}, returns to ${order.swapped_from_rider_name ?? 'original rider'})`
+                            : ''}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {order.rider_history.map((entry, idx) => (
+                      <View key={idx} style={styles.reassignDetailRow}>
+                        <User size={11} color={Colors.secondary} strokeWidth={2} />
+                        <Text style={styles.reassignDetailText}>
+                          {format(new Date(entry.changed_at), 'dd MMM yyyy')} · {entry.previous_rider_name ?? 'No rider'} → {entry.new_rider_name ?? 'Unknown'}
+                          {entry.reason ? ` · ${entry.reason}` : ''}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
               </TouchableOpacity>
 
               <ChevronRight size={16} color={Colors.textTertiary} strokeWidth={1.8} />
@@ -1191,6 +1379,26 @@ const styles = StyleSheet.create({
   contentColumnsWeb: { flexDirection: 'row', alignItems: 'flex-start' },
   orderListColumn: { flex: 1, minWidth: 0 },
   loadingWrap: { paddingVertical: Spacing[10], alignItems: 'center' },
+  customerSearchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+    backgroundColor: Colors.white,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    paddingHorizontal: Spacing[3],
+    paddingVertical: Spacing[2],
+    marginBottom: Spacing[2],
+  },
+  customerSearchInput: {
+    flex: 1,
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.sm,
+    color: Colors.textPrimary,
+    outlineStyle: 'none',
+  } as any,
+  customerSearchClear: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.error },
   filtersRow: {
     flexDirection: 'row',
     alignItems: 'stretch',
@@ -1432,10 +1640,14 @@ const styles = StyleSheet.create({
   manualReassignBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.primary },
   reassignedBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: Spacing[1], paddingVertical: 2, borderRadius: Radius.sm, backgroundColor: '#E0E7FF' },
   reassignedBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 9, color: '#4F46E5' },
+  tempBadge: { paddingHorizontal: Spacing[1], paddingVertical: 2, borderRadius: Radius.sm, backgroundColor: '#FEF3C7' },
+  tempBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 9, color: '#B45309' },
+  reassignDetailBox: { marginTop: Spacing[2], backgroundColor: '#FCEEF1', borderRadius: Radius.sm, padding: Spacing[2], gap: 3 },
+  reassignHistoryBox: { marginTop: Spacing[2], backgroundColor: '#FCEEF1', borderRadius: Radius.sm, padding: Spacing[2], gap: 3, borderWidth: 1, borderColor: Colors.secondaryLight },
+  reassignDetailRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  reassignDetailText: { flex: 1, fontFamily: Typography.fontFamily.sansMedium, fontSize: 10, color: Colors.secondaryDark, lineHeight: 14 },
   autoBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: Spacing[1], paddingVertical: 2, borderRadius: Radius.sm, backgroundColor: '#FEF3C7' },
   autoBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 9, color: '#B45309' },
-  primaryBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 4, paddingVertical: 1, borderRadius: Radius.sm, backgroundColor: '#FFF8E1', marginLeft: 4 },
-  primaryBadgeText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 8, color: '#F59E0B' },
   manualModal: {
     width: '100%',
     maxWidth: 480,

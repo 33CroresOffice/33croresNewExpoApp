@@ -88,6 +88,13 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    title: 'Reports',
+    module: 'finance',
+    items: [
+      { label: 'Monthly Tracking Report', icon: FileText, href: '/(admin)/monthly-report' },
+    ],
+  },
+  {
     title: 'CRM',
     module: 'crm',
     items: [

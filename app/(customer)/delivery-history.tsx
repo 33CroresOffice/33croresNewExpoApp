@@ -12,7 +12,6 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
-  Truck,
   CircleCheck as CheckCircle,
   Clock,
   CircleX as XCircle,
@@ -31,6 +30,7 @@ import { useAuthStore } from '@/store/authStore';
 import { Skeleton } from '@/components/ui/SkeletonLoader';
 import { addDays, format, parseISO } from 'date-fns';
 import { getEffectiveStatus } from '@/utils/subscriptionStatus';
+import { nowInIST } from '@/utils/istCutoff';
 
 const C = Colors;
 
@@ -52,6 +52,7 @@ type SubDelivery = {
   status: string;
   delivered_at: string | null;
   isSynthetic?: boolean;
+  standingRider?: { full_name: string; mobile: string } | null;
   subscription: {
     plan: { name: string; price: number; image_url: string | null } | null;
   } | null;
@@ -67,6 +68,8 @@ type ActiveSubscription = {
   pause_start_date: string | null;
   pause_until: string | null;
   created_at?: string;
+  primary_rider_id: string | null;
+  primary_rider: { full_name: string; mobile: string } | null;
   plan: { name: string; price: number; image_url: string | null; frequency: string } | null;
 };
 
@@ -94,18 +97,6 @@ type CustomDelivery = {
 };
 
 const SUB_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: React.ReactNode }> = {
-  scheduled: {
-    label: 'Scheduled',
-    color: '#1D6FA4',
-    bg: '#E8F4FD',
-    icon: <Clock size={13} color="#1D6FA4" strokeWidth={2} />,
-  },
-  out_for_delivery: {
-    label: 'Out for Delivery',
-    color: C.accent,
-    bg: C.accentSurface,
-    icon: <Truck size={13} color={C.accent} strokeWidth={2} />,
-  },
   delivered: {
     label: 'Delivered',
     color: C.success,
@@ -145,12 +136,6 @@ const CUSTOM_STATUS_CONFIG: Record<string, { label: string; color: string; bg: s
     bg: C.primarySurface,
     icon: <CheckCircle size={13} color={C.primary} strokeWidth={2} />,
   },
-  out_for_delivery: {
-    label: 'Out for Delivery',
-    color: C.accent,
-    bg: C.accentSurface,
-    icon: <Truck size={13} color={C.accent} strokeWidth={2} />,
-  },
   delivered: {
     label: 'Delivered',
     color: C.success,
@@ -166,12 +151,8 @@ const CUSTOM_STATUS_CONFIG: Record<string, { label: string; color: string; bg: s
 };
 
 function StatusBadge({ status, config }: { status: string; config: typeof SUB_STATUS_CONFIG }) {
-  const cfg = config[status] ?? {
-    label: status,
-    color: C.textTertiary,
-    bg: C.neutral[100],
-    icon: <Clock size={13} color={C.textTertiary} strokeWidth={2} />,
-  };
+  const cfg = config[status];
+  if (!cfg) return null;
   return (
     <View style={[styles.badge, { backgroundColor: cfg.bg }]}>
       {cfg.icon}
@@ -202,6 +183,11 @@ function RiderInfo({ rider, deliveredAt }: { rider: { full_name: string; mobile:
       )}
     </View>
   );
+}
+
+function getISTTodayStr(): string {
+  const ist = nowInIST();
+  return `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, '0')}-${String(ist.getUTCDate()).padStart(2, '0')}`;
 }
 
 function formatPrice(paise: number) {
@@ -241,32 +227,25 @@ function buildSubscriptionDeliveries(
   orders: SubDelivery[],
   pausePeriods: PausePeriod[],
 ): SubDelivery[] {
-  const today = format(new Date(), 'yyyy-MM-dd');
+  const today = getISTTodayStr();
   const startDate = format(parseISO(subscription.start_date), 'yyyy-MM-dd');
   const endDate = subscription.new_end_date ?? subscription.end_date;
   const upperBound = endDate && endDate < today ? endDate : today;
-  const maxOrderDate = orders.length > 0
-    ? orders.map(o => o.scheduled_date).sort().reverse()[0]
-    : null;
-  const extendedBound = maxOrderDate && maxOrderDate > upperBound ? maxOrderDate : upperBound;
   const orderByDate = new Map<string, SubDelivery>();
   for (const order of orders) orderByDate.set(order.scheduled_date, order);
 
   const deliveries: SubDelivery[] = [];
   let date = parseISO(subscription.start_date);
-  while (format(date, 'yyyy-MM-dd') <= extendedBound) {
+  while (format(date, 'yyyy-MM-dd') <= upperBound) {
     const dateString = format(date, 'yyyy-MM-dd');
     if (dateString < startDate) { date = addDays(date, 1); continue; }
     const order = orderByDate.get(dateString);
-    if (dateString > today && !order) { date = addDays(date, 1); continue; }
     const paused = isExcludedDate(dateString, pausePeriods);
     const orderStatus = paused
       ? 'paused'
-      : order?.status === 'scheduled'
-        ? 'out_for_delivery'
-        : order
-          ? effectiveStatus(order.status, order.assignments)
-          : 'out_for_delivery';
+      : order
+        ? effectiveStatus(order.status, order.assignments)
+        : '';
     deliveries.push(order
       ? { ...order, status: orderStatus }
       : {
@@ -276,6 +255,7 @@ function buildSubscriptionDeliveries(
           status: orderStatus,
           delivered_at: null,
           isSynthetic: true,
+          standingRider: subscription.primary_rider ?? null,
           subscription: { plan: subscription.plan },
           assignments: [],
         });
@@ -291,12 +271,12 @@ function SubscriptionCard({ delivery }: { delivery: SubDelivery }) {
   const price = delivery.subscription?.plan?.price ?? 0;
   const scheduledDate = parseISO(delivery.scheduled_date);
   const assignment = delivery.assignments?.[0];
-  const rider = assignment?.rider;
+  const rider = assignment?.rider ?? delivery.standingRider ?? null;
   const deliveredAt = assignment?.delivered_at ?? delivery.delivered_at;
   const effStatus = delivery.status;
   const isPaused = effStatus === 'paused';
   const hasRider = !!(rider || assignment);
-  const isClickable = !isPaused && !delivery.isSynthetic && (effStatus === 'out_for_delivery' || hasRider);
+  const isClickable = !isPaused && !delivery.isSynthetic && (hasRider || effStatus === 'delivered' || effStatus === 'failed');
 
   const cardContent = (
     <>
@@ -542,7 +522,10 @@ export default function DeliveryHistoryScreen() {
 
     const activeSubRes = await supabase
       .from('subscriptions')
-      .select('id, start_date, end_date, new_end_date, status, pause_start_date, pause_until, created_at, plan:subscription_plans(name, price, image_url, frequency)')
+      .select(`id, start_date, end_date, new_end_date, status, pause_start_date, pause_until, created_at,
+        primary_rider_id,
+        primary_rider:riders!subscriptions_primary_rider_id_fkey(full_name, mobile),
+        plan:subscription_plans(name, price, image_url, frequency)`)
       .eq('user_id', uid)
       .order('created_at', { ascending: false });
 
@@ -592,6 +575,7 @@ export default function DeliveryHistoryScreen() {
           .from('rider_order_assignments')
           .select('order_id, custom_order_id, status, delivered_at, rider:riders!rider_order_assignments_rider_id_fkey(full_name, mobile)')
           .or(`order_id.in.(${subOrderIds.join(',')}),custom_order_id.in.(${customOrderIds.join(',')})`)
+          .neq('status', 'reassigned')
         : { data: [], error: null } as any;
     if (assignmentsRes.error) console.error('[delivery-history] assignments error:', assignmentsRes.error.message);
 
@@ -618,9 +602,16 @@ export default function DeliveryHistoryScreen() {
     }
 
     const ordersBySubscription = new Map<string, SubDelivery[]>();
+    const standingRiderBySubscription = new Map(
+      activeSubscriptions.map((subscription) => [subscription.id, subscription.primary_rider ?? null])
+    );
     for (const order of (subRes.data ?? []) as unknown as (SubDelivery & { subscription_id: string })[]) {
       const orders = ordersBySubscription.get(order.subscription_id) ?? [];
-      orders.push({ ...order, assignments: assignmentsByOrderId.get(order.id) ?? [] });
+      orders.push({
+        ...order,
+        standingRider: standingRiderBySubscription.get(order.subscription_id) ?? null,
+        assignments: assignmentsByOrderId.get(order.id) ?? [],
+      });
       ordersBySubscription.set(order.subscription_id, orders);
     }
 
@@ -650,7 +641,7 @@ export default function DeliveryHistoryScreen() {
       return buildSubscriptionDeliveries(subscription, ordersBySubscription.get(subscription.id) ?? [], pauses);
     });
 
-    const today = format(new Date(), 'yyyy-MM-dd');
+    const today = getISTTodayStr();
     const activeSubIds = new Set(activeSubscriptions.map((s) => s.id));
     const validDeliveries = subscriptionDeliveries.filter((delivery) => {
       const subscription = allSubscriptions.find((item) => item.id === delivery.subscription_id);
@@ -659,8 +650,7 @@ export default function DeliveryHistoryScreen() {
       const endDate = subscription.new_end_date ?? subscription.end_date;
       const upperBound = endDate && endDate < today ? endDate : today;
       if (delivery.scheduled_date < startDate) return false;
-      if (delivery.scheduled_date <= upperBound) return true;
-      return !delivery.isSynthetic;
+      return delivery.scheduled_date <= upperBound;
     });
     const dedupedDeliveries = validDeliveries
       .sort((a, b) => (a.scheduled_date < b.scheduled_date ? 1 : -1) || (a.isSynthetic ? 1 : 0) - (b.isSynthetic ? 1 : 0))
@@ -721,7 +711,7 @@ export default function DeliveryHistoryScreen() {
 
   const availableMonths: { key: string; label: string }[] = React.useMemo(() => {
     const monthSet = new Map<string, string>();
-    const todayKey = format(new Date(), 'yyyy-MM');
+    const todayKey = getISTTodayStr().slice(0, 7);
     for (const sub of activeSubscriptions) {
       const start = parseISO(sub.start_date);
       const endStr = sub.new_end_date ?? sub.end_date;
@@ -740,7 +730,7 @@ export default function DeliveryHistoryScreen() {
   }, [activeSubscriptions]);
 
   const filteredSubDeliveries = React.useMemo(() => {
-    const today = format(new Date(), 'yyyy-MM-dd');
+    const today = getISTTodayStr();
     const activeSubIds = new Set(activeSubscriptions.map((s) => s.id));
     const subMap = new Map(allSubscriptionsList.map((subscription) => [subscription.id, subscription]));
     return subDeliveries.filter((delivery) => {
@@ -750,7 +740,7 @@ export default function DeliveryHistoryScreen() {
       const endDate = subscription.new_end_date ?? subscription.end_date;
       const upperBound = endDate && endDate < today ? endDate : today;
       if (delivery.scheduled_date < startDate) return false;
-      if (delivery.scheduled_date > upperBound && delivery.isSynthetic) return false;
+      if (delivery.scheduled_date > upperBound) return false;
       if (!selectedMonth || selectedMonth === 'all') return true;
       return format(parseISO(delivery.scheduled_date), 'yyyy-MM') === selectedMonth;
     });

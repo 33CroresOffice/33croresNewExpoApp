@@ -40,7 +40,16 @@ export default function AdminLoginScreen() {
       });
 
       if (signInError) {
-        setError('Invalid credentials. Please try again.');
+        const message = signInError.message.toLowerCase();
+        if (message.includes('failed to fetch') || message.includes('network') || message.includes('timeout')) {
+          setError('Unable to connect to the login service. Please try again in a moment.');
+        } else if (message.includes('invalid login credentials') || message.includes('invalid credentials')) {
+          setError('The email or password is incorrect. Please check both and try again.');
+        } else if (message.includes('email not confirmed')) {
+          setError('This admin email is not confirmed yet. Please contact support.');
+        } else {
+          setError('Sign-in could not be completed. Please try again or contact support.');
+        }
         setLoading(false);
         return;
       }

@@ -63,6 +63,7 @@ function VendorPaymentsScreenContent() {
   const [rangeTo, setRangeTo] = useState<Date | null>(null);
   const [openPicker, setOpenPicker] = useState<'from' | 'to' | null>(null);
   const [pendingExtra, setPendingExtra] = useState(0);
+  const [orderPaid, setOrderPaid] = useState<Record<string, number>>({});
 
   const load = useCallback(async () => {
     try {
@@ -119,6 +120,26 @@ function VendorPaymentsScreenContent() {
         if (unpaid > 0) pendingExtraVal += unpaid;
       });
       setPendingExtra(pendingExtraVal);
+
+      // Total payments received per order, across ALL completed payments for
+      // those orders (not just the ones inside the visible date range), so
+      // the pending balance is correct for partially paid orders.
+      const listedOrderIds = Array.from(new Set((data ?? []).map((p: any) => p.procurement_order_id as string)));
+      if (listedOrderIds.length > 0) {
+        const { data: allPaymentsForOrders } = await supabase
+          .from('vendor_payments')
+          .select('procurement_order_id, amount')
+          .in('procurement_order_id', listedOrderIds)
+          .eq('status', 'completed')
+          .limit(1000);
+        const paidMap: Record<string, number> = {};
+        (allPaymentsForOrders ?? []).forEach((p: any) => {
+          paidMap[p.procurement_order_id] = (paidMap[p.procurement_order_id] ?? 0) + Number(p.amount);
+        });
+        setOrderPaid(paidMap);
+      } else {
+        setOrderPaid({});
+      }
     } catch (e) {
       console.error('load error', e);
     } finally {
@@ -249,7 +270,9 @@ function VendorPaymentsScreenContent() {
               <View style={s.tableHead}>
                 <Text style={[s.thCell, { flex: 2 }]}>Vendor</Text>
                 <Text style={[s.thCell, { flex: 1.5 }]}>Order</Text>
-                <Text style={[s.thCell, { width: 100, textAlign: 'right' }]}>Amount</Text>
+                <Text style={[s.thCell, { width: 100, textAlign: 'right' }]}>Total Amount</Text>
+                <Text style={[s.thCell, { width: 100, textAlign: 'right' }]}>Paid Amount</Text>
+                <Text style={[s.thCell, { width: 100, textAlign: 'right' }]}>Pending Amount</Text>
                 <Text style={[s.thCell, { width: 90, textAlign: 'center' }]}>Method</Text>
                 <Text style={[s.thCell, { width: 90, textAlign: 'center' }]}>Status</Text>
                 <Text style={[s.thCell, { width: 100, textAlign: 'right' }]}>Date</Text>
@@ -274,7 +297,17 @@ function VendorPaymentsScreenContent() {
                     <Text style={[s.tdCell, { flex: 1.5 }, s.tdSec]} numberOfLines={1}>
                       {p.procurement_order?.order_number ?? '—'}
                     </Text>
+                    <Text style={[s.tdCell, { width: 100, textAlign: 'right' }, s.tdSec]}>
+                      {fmt(Number(p.procurement_order?.total_amount))}
+                    </Text>
                     <Text style={[s.tdCell, { width: 100, textAlign: 'right' }, s.tdBold]}>{fmt(Number(p.amount))}</Text>
+                    <Text style={[s.tdCell, { width: 100, textAlign: 'right' }, s.tdPending]}>
+                      {fmt(Math.max(
+                        Number(p.procurement_order?.total_amount ?? 0)
+                          - (orderPaid[p.procurement_order_id] ?? Number(p.amount)),
+                        0,
+                      ))}
+                    </Text>
                     <Text style={[s.tdCell, { width: 90, textAlign: 'center' }, s.tdSec]}>
                       {p.payment_method?.replace('_', ' ')}
                     </Text>
@@ -320,7 +353,17 @@ function VendorPaymentsScreenContent() {
                     </Text>
                   </View>
                   <View style={s.mobileCardRight}>
+                    <Text style={s.mobileCardSubLabel}>
+                      Total {fmt(Number(p.procurement_order?.total_amount))}
+                    </Text>
                     <Text style={s.mobileCardAmt}>{fmt(Number(p.amount))}</Text>
+                    <Text style={s.mobileCardPending}>
+                      Pending {fmt(Math.max(
+                        Number(p.procurement_order?.total_amount ?? 0)
+                          - (orderPaid[p.procurement_order_id] ?? Number(p.amount)),
+                        0,
+                      ))}
+                    </Text>
                     <View style={[s.statusPill, { backgroundColor: p.status === 'completed' ? '#E8F5E9' : Colors.accentSurface }]}>
                       <Text style={[s.statusText, { color: p.status === 'completed' ? Colors.success : Colors.accentDark }]}>
                         {p.status === 'completed' ? 'Paid' : 'Pending'}
@@ -385,6 +428,8 @@ const s = StyleSheet.create({
   tdSub: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginTop: 1 },
   tdSec: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textSecondary },
   tdBold: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
+  tdPending: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.accentDark },
+  mobileCardPending: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.accentDark },
   tdDate: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
   statusPill: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingVertical: 3, paddingHorizontal: Spacing[2], borderRadius: Radius.full },
   statusText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 11 },
@@ -395,5 +440,6 @@ const s = StyleSheet.create({
   mobileCardNotes: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 11, color: Colors.textTertiary, marginTop: 2 },
   mobileCardDate: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary, marginTop: 2 },
   mobileCardRight: { alignItems: 'flex-end', gap: Spacing[1] },
+  mobileCardSubLabel: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
   mobileCardAmt: { fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, color: Colors.textPrimary },
 });
