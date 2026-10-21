@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   TextInput,
   Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -198,6 +199,7 @@ export default function CustomOrderScreen() {
   const [showAllAddresses, setShowAllAddresses] = useState(false);
   const [specialInstructions, setSpecialInstructions] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const submitLock = useRef(false);
   const [error, setError] = useState('');
   const [successModal, setSuccessModal] = useState(false);
   const [successDate, setSuccessDate] = useState('');
@@ -322,18 +324,23 @@ export default function CustomOrderScreen() {
 
   // --- Submit ---
   const validateAndSubmit = async () => {
+    if (submitLock.current) return;
+    submitLock.current = true;
     setError('');
 
     const totalItems = savedFlowers.length + savedGarlands.length;
     if (totalItems === 0) {
+      submitLock.current = false;
       setError('Please add at least one flower or garland item.');
       return;
     }
     if (deliveryDate < minDate) {
+      submitLock.current = false;
       setError(`Delivery date must be ${format(minDate, 'dd MMM yyyy')} or later.`);
       return;
     }
     if (!selectedAddress) {
+      submitLock.current = false;
       setShowAddressWarning(true);
       setError('Please select a delivery address.');
       return;
@@ -341,8 +348,14 @@ export default function CustomOrderScreen() {
 
     setSubmitting(true);
 
-    const { data: { user } } = await supabase.auth.getUser();
-    const uid = user?.id ?? profile!.id;
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const uid = user?.id ?? profile?.id;
+    if (authError || !uid) {
+      submitLock.current = false;
+      setSubmitting(false);
+      setError('We could not verify your account. Please try again.');
+      return;
+    }
 
     const flowerItems = savedFlowers.map(({ flower_name, quantity, unit }) => ({
       flower_name, quantity, unit,
@@ -370,14 +383,19 @@ export default function CustomOrderScreen() {
 
     setSubmitting(false);
 
-    if (insertError) {
-      setError(`Failed to place order: ${insertError.message}`);
+    if (insertError || !newOrder?.id) {
+      submitLock.current = false;
+      setError('We could not place your order. Please try again.');
       return;
     }
 
-    // Send Push + In-App notifications for order placement (deduped in send-notification)
-    if (newOrder?.id) {
-      for (const notifChannel of ['push', 'in_app'] as const) {
+    setSuccessDate(format(deliveryDate, 'dd MMM yyyy'));
+    resetForm();
+    setSuccessModal(true);
+    submitLock.current = false;
+
+    void Promise.all(
+      (['push', 'in_app'] as const).map(async (notifChannel) => {
         try {
           await supabase.functions.invoke('send-notification', {
             body: {
@@ -387,13 +405,11 @@ export default function CustomOrderScreen() {
               custom_order_id: newOrder.id,
             },
           });
-        } catch { /* notification failure should not block order flow */ }
-      }
-    }
-
-    setSuccessDate(format(deliveryDate, 'dd MMM yyyy'));
-    resetForm();
-    setSuccessModal(true);
+        } catch {
+          // Notification delivery must not delay order confirmation.
+        }
+      }),
+    );
   };
 
   const resetForm = () => {
@@ -840,10 +856,17 @@ export default function CustomOrderScreen() {
             end={{ x: 1, y: 0 }}
             style={styles.buyBtnGradient}
           >
-            <Text style={styles.buyBtnText}>
-              {submitting ? 'Placing Order...' : 'BUY NOW'}
-            </Text>
-            {!submitting && <ArrowRight size={18} color="#fff" strokeWidth={2.5} />}
+            {submitting ? (
+              <>
+                <ActivityIndicator size="small" color={Colors.white} />
+                <Text style={styles.buyBtnText}>Placing your order, please wait...</Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.buyBtnText}>BUY NOW</Text>
+                <ArrowRight size={18} color="#fff" strokeWidth={2.5} />
+              </>
+            )}
           </LinearGradient>
         </TouchableOpacity>
       </View>
@@ -889,8 +912,19 @@ export default function CustomOrderScreen() {
             </View>
             <Text style={styles.errorTitle}>Something went wrong</Text>
             <Text style={styles.errorMessage}>{error}</Text>
-            <TouchableOpacity style={styles.errorButton} onPress={() => setError('')} activeOpacity={0.85}>
-              <Text style={styles.errorButtonText}>Okay</Text>
+            <TouchableOpacity
+              style={styles.errorButton}
+              onPress={() => { setError(''); validateAndSubmit(); }}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.errorButtonText}>Retry</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.errorDismissButton}
+              onPress={() => setError('')}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.errorDismissText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1359,6 +1393,14 @@ const styles = StyleSheet.create({
     fontFamily: Typography.fontFamily.sansSemiBold,
     fontSize: Typography.size.base,
     color: Colors.white,
+  },
+  errorDismissButton: {
+    paddingVertical: Spacing[2],
+  },
+  errorDismissText: {
+    fontFamily: Typography.fontFamily.sansMedium,
+    fontSize: Typography.size.sm,
+    color: Colors.textTertiary,
   },
   footer: {
     paddingHorizontal: Spacing[5],
