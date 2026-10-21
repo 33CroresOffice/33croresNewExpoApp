@@ -24,6 +24,9 @@ const EVENT_ICONS: Record<string, { emoji: string; color: string; bg: string }> 
   renewal_due:                 { emoji: '🔔', color: Colors.accent,  bg: Colors.accentSurface },
   order_dispatched:            { emoji: '🚴', color: Colors.primary, bg: Colors.primarySurface },
   order_delivered:             { emoji: '🌸', color: Colors.success, bg: Colors.successSurface },
+  custom_order_placed:          { emoji: '🌸', color: Colors.primary, bg: Colors.primarySurface },
+  custom_order_priced:          { emoji: '🌸', color: Colors.primary, bg: Colors.primarySurface },
+  custom_order_payment_success:  { emoji: '✅', color: Colors.success, bg: Colors.successSurface },
   custom:                      { emoji: '💬', color: Colors.textSecondary, bg: Colors.neutral[100] },
   booking_request_sent:        { emoji: '🔔', color: Colors.primary, bg: Colors.primarySurface },
   booking_pandit_accepted:     { emoji: '✅', color: Colors.success, bg: Colors.successSurface },
@@ -133,6 +136,8 @@ export default function NotificationFeedScreen() {
       router.push({ pathname: '/(customer)/order-detail', params: { id: notif.related_order_id } });
     } else if (notif.related_booking_id) {
       router.push({ pathname: '/(customer)/service-order-details' as any, params: { id: notif.related_booking_id } });
+    } else if (notif.related_custom_order_id) {
+      router.push({ pathname: '/(customer)/custom-order-detail', params: { id: notif.related_custom_order_id } });
     } else if (notif.event_type === 'pooja_list_shared' && (notif as any).metadata?.share_token) {
       router.push({ pathname: '/(customer)/pooja-list-view', params: { token: (notif as any).metadata.share_token } });
     }
@@ -184,7 +189,7 @@ export default function NotificationFeedScreen() {
         >
           {notifications.map((notif) => {
             const cfg = getIconConfig(notif.event_type);
-            const isActionable = !!(notif.related_subscription_id || notif.related_order_id || notif.related_booking_id || (notif.event_type === 'pooja_list_shared' && (notif as any).metadata?.share_token));
+            const isActionable = !!(notif.related_subscription_id || notif.related_order_id || notif.related_booking_id || notif.related_custom_order_id || (notif.event_type === 'pooja_list_shared' && (notif as any).metadata?.share_token));
             return (
               <TouchableOpacity
                 key={notif.id}

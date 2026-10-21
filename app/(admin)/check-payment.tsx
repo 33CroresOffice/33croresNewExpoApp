@@ -81,7 +81,7 @@ function CheckPaymentContent() {
           .from('subscriptions')
           .select('id, user_id, start_date, end_date, new_end_date, status, created_at, plan:subscription_plans(name), user:profiles(full_name, mobile), payments(status, created_at)')
           .not('end_date', 'is', null)
-          .in('status', ['expired', 'renewed', 'cancelled', 'active', 'pending'])
+          .in('status', ['expired', 'active', 'pending'])
           .order('end_date', { ascending: false })
           .limit(2000);
         if (qErr) throw qErr;
@@ -201,7 +201,7 @@ function CheckPaymentContent() {
           }
           // The renewal period itself (still active), under its own end date
           userSubs
-            .filter((o) => o.status !== 'cancelled' && chain.includes(o) && !seen.has(o.id))
+            .filter((o) => chain.includes(o) && !seen.has(o.id))
             .forEach((r) => {
               seen.add(r.id);
               const row = toRow(r, 'renewed');

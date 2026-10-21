@@ -57,6 +57,7 @@ export type NotificationEventType =
   | 'custom_order_placed'
   | 'custom_order_priced'
   | 'custom_order_delivered'
+  | 'custom_order_payment_success'
   | 'special_info'
   | 'festival_greeting'
   | 'marketing_promo'
@@ -97,7 +98,7 @@ export interface PanjiEntry {
   updated_at: string;
 }
 export type NotificationLogStatus = 'pending' | 'sent' | 'failed' | 'skipped';
-export type SubscriptionStatus = 'active' | 'paused' | 'cancelled' | 'expired' | 'renewed';
+export type SubscriptionStatus = 'active' | 'paused' | 'expired' | 'pending';
 export type RenewalStatus = 'none' | 'notified' | 'expired' | 'renewed';
 export type OrderStatus = 'scheduled' | 'out_for_delivery' | 'delivered' | 'failed';
 export type PaymentStatus = 'pending' | 'success' | 'failed' | 'refunded';
@@ -204,6 +205,7 @@ export interface InAppNotification {
   related_order_id: string | null;
   related_booking_id: string | null;
   related_procurement_order_id: string | null;
+  related_custom_order_id: string | null;
   priority: NotificationPriority;
   dismissed_at: string | null;
   metadata: Record<string, unknown>;

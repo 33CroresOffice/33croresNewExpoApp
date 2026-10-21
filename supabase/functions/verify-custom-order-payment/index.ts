@@ -66,7 +66,7 @@ Deno.serve(async (req: Request) => {
     // Verify the order belongs to this user
     const { data: order, error: orderFetchError } = await serviceSupabase
       .from("custom_orders")
-      .select("id, user_id, payment_status, razorpay_order_id")
+      .select("id, user_id, payment_status, razorpay_order_id, flower_price, delivery_price")
       .eq("id", custom_order_id)
       .eq("user_id", user.id)
       .maybeSingle();
@@ -103,6 +103,26 @@ Deno.serve(async (req: Request) => {
     if (updateError) {
       console.error("custom order update error:", JSON.stringify(updateError));
       return respond({ success: false, error: "Failed to confirm payment: " + updateError.message });
+    }
+
+    // Send Push + In-App notifications for payment success (deduped via send-notification)
+    const totalAmountPaise = (order.flower_price ?? 0) + (order.delivery_price ?? 0);
+    const amountRupees = (totalAmountPaise / 100).toFixed(2).replace(/\.00$/, "");
+    const notifVars = { amount: amountRupees };
+    for (const notifChannel of ["push", "in_app"] as const) {
+      try {
+        await serviceSupabase.functions.invoke("send-notification", {
+          body: {
+            user_id: order.user_id,
+            event_type: "custom_order_payment_success",
+            channel: notifChannel,
+            variables: notifVars,
+            custom_order_id: order.id,
+          },
+        });
+      } catch (notifErr) {
+        console.error("payment-success notification error:", String(notifErr));
+      }
     }
 
     return respond({ success: true });

@@ -36,7 +36,6 @@ const SUB_STATUSES = [
   { value: 'paused',   label: 'Paused',   color: '#B45309' },
   { value: 'expired',  label: 'Expired',  color: Colors.error },
   { value: 'pending',  label: 'Pending',  color: Colors.warning },
-  { value: 'cancelled',label: 'Cancelled',color: Colors.textSecondary },
   { value: 'scheduled_pause', label: 'Pause Scheduled', color: '#7C3AED' },
 ];
 

@@ -358,7 +358,7 @@ export default function CustomOrderScreen() {
         ? 'garland'  // mixed order stored as 'garland' type (supports both)
         : savedGarlands.length > 0 ? 'garland' : 'flower';
 
-    const { error: insertError } = await supabase.from('custom_orders').insert({
+    const { data: newOrder, error: insertError } = await supabase.from('custom_orders').insert({
       user_id: uid,
       order_type: derivedOrderType,
       items,
@@ -366,13 +366,29 @@ export default function CustomOrderScreen() {
       delivery_time: deliveryTime,
       address_id: selectedAddress || null,
       special_instructions: specialInstructions.trim() || null,
-    });
+    }).select('id').single();
 
     setSubmitting(false);
 
     if (insertError) {
       setError(`Failed to place order: ${insertError.message}`);
       return;
+    }
+
+    // Send Push + In-App notifications for order placement (deduped in send-notification)
+    if (newOrder?.id) {
+      for (const notifChannel of ['push', 'in_app'] as const) {
+        try {
+          await supabase.functions.invoke('send-notification', {
+            body: {
+              user_id: uid,
+              event_type: 'custom_order_placed',
+              channel: notifChannel,
+              custom_order_id: newOrder.id,
+            },
+          });
+        } catch { /* notification failure should not block order flow */ }
+      }
     }
 
     setSuccessDate(format(deliveryDate, 'dd MMM yyyy'));
@@ -884,13 +900,11 @@ export default function CustomOrderScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
             <View style={styles.modalIconBg}>
-              <Text style={{ fontSize: 36 }}>{savedGarlands.length > 0 && savedFlowers.length > 0 ? '🌸' : savedGarlands.length > 0 ? '🌼' : '🌺'}</Text>
+              <Text style={{ fontSize: 36 }}>🌸</Text>
             </View>
             <Text style={styles.modalTitle}>Order Placed!</Text>
             <Text style={styles.modalBody}>
-              Your custom order for{' '}
-              <Text style={styles.modalBold}>{successDate}</Text> has been received.
-              We will confirm it shortly.
+              Your customization order has been placed successfully! Our team will review your order and set the price. Once the price is confirmed, please complete the payment. After successful payment, your order will be processed and delivered to your doorstep.{'\n\n'}Thank you for choosing 33 Crores!
             </Text>
             <TouchableOpacity
               style={styles.modalBtn}

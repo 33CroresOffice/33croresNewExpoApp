@@ -432,10 +432,9 @@ export default function SubscriptionDetailScreen() {
   const isPaused = effectiveStatus === 'paused';
   const isScheduledPause = effectiveStatus === 'scheduled_pause';
   const isExpired = effectiveStatus === 'expired';
-  const isRenewed = effectiveStatus === 'renewed';
 
   const renewalWarningState = (() => {
-    if (isRenewed || effectiveStatus === 'cancelled') return null;
+    if (!isExpired && !isActive && !isPaused && !isScheduledPause) return null;
     if (!subscription.end_date) return null;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -749,18 +748,6 @@ export default function SubscriptionDetailScreen() {
                 <X size={14} color={Colors.error} />
                 <Text style={styles.cancelPauseBtnText}>Cancel Pause</Text>
               </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
-        {isRenewed && (
-          <View style={styles.renewedBanner}>
-            <CheckCircle size={16} color={Colors.success} />
-            <View style={styles.renewedBannerText}>
-              <Text style={styles.renewedTitle}>Subscription Renewed</Text>
-              <Text style={styles.renewedSubText}>
-                This subscription has been renewed. It will remain active until its end date, after which your new subscription takes over.
-              </Text>
             </View>
           </View>
         )}

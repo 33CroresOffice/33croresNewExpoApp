@@ -23,7 +23,7 @@ import { format, differenceInDays, parseISO } from 'date-fns';
 import { getEffectiveStatus } from '@/utils/subscriptionStatus';
 
 function getRenewalState(sub: Subscription): 'expired' | 'grace' | 'warning' | null {
-  if (sub.status === 'renewed' || sub.status === 'cancelled') return null;
+
   const effectiveEndDate = sub.new_end_date ?? sub.end_date;
   if (!effectiveEndDate) return null;
   const today = new Date();
@@ -38,7 +38,7 @@ function getRenewalState(sub: Subscription): 'expired' | 'grace' | 'warning' | n
 }
 
 function isPastSubscription(sub: Subscription): boolean {
-  return sub.status === 'expired' || sub.status === 'cancelled' || sub.status === 'renewed';
+  return sub.status === 'expired';
 }
 
 export default function SubscriptionsScreen() {

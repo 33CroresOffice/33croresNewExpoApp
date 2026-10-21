@@ -348,6 +348,24 @@ function AdminCustomOrderDetailScreenContent() {
       } : prev);
       setPricesSaved(true);
       setTimeout(() => setPricesSaved(false), 3000);
+
+      const totalRupeesStr = ((fp + dp) / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+      const userId = order?.user_id;
+      if (userId) {
+        for (const notifChannel of ['push', 'in_app'] as const) {
+          try {
+            await supabase.functions.invoke('send-notification', {
+              body: {
+                user_id: userId,
+                event_type: 'custom_order_priced',
+                channel: notifChannel,
+                variables: { amount: totalRupeesStr },
+                custom_order_id: id,
+              },
+            });
+          } catch { /* notification failure should not block price save */ }
+        }
+      }
     }
     setSavingPrices(false);
   };

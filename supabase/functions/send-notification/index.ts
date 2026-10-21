@@ -199,20 +199,72 @@ Deno.serve(async (req: Request) => {
       variables = {},
       subscription_id = null,
       order_id = null,
+      custom_order_id = null,
       triggered_by = null,
     } = await req.json();
 
-    if (!user_id || !channel) {
+    if (!channel || (event_type === "custom_order_priced" && !custom_order_id) || (event_type !== "custom_order_priced" && !user_id)) {
       return new Response(
-        JSON.stringify({ error: "user_id and channel are required" }),
+        JSON.stringify({ error: "channel and required notification reference are missing" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
+    }
+
+    let recipientUserId = user_id;
+    let orderVariables: Record<string, string> = {};
+
+    if (event_type === "custom_order_priced") {
+      const { data: customOrder, error: customOrderError } = await supabase
+        .from("custom_orders")
+        .select("user_id, flower_price, delivery_price")
+        .eq("id", custom_order_id)
+        .maybeSingle();
+
+      if (customOrderError || !customOrder?.user_id) {
+        return new Response(
+          JSON.stringify({ error: "Custom order not found" }),
+          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      if (user_id && user_id !== customOrder.user_id) {
+        return new Response(
+          JSON.stringify({ error: "Notification recipient does not match the custom order" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      recipientUserId = customOrder.user_id;
+      const totalPaise = Number(customOrder.flower_price ?? 0) + Number(customOrder.delivery_price ?? 0);
+      orderVariables = {
+        amount: (totalPaise / 100).toLocaleString("en-IN", { maximumFractionDigits: 2 }),
+      };
+    }
+
+    // Dedup: skip if a notification for this (user, event_type, custom_order_id, channel)
+    // already exists. Prevents duplicate sends on retries/re-invocations.
+    if (custom_order_id && event_type) {
+      const { data: existing } = await supabase
+        .from("notification_logs")
+        .select("id")
+        .eq("user_id", recipientUserId)
+        .eq("event_type", event_type)
+        .eq("custom_order_id", custom_order_id)
+        .eq("channel", channel)
+        .limit(1)
+        .maybeSingle();
+      if (existing) {
+        return new Response(
+          JSON.stringify({ success: true, status: "skipped", deduped: true }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
     }
 
     const { data: profile } = await supabase
       .from("profiles")
       .select("mobile, full_name")
-      .eq("id", user_id)
+      .eq("id", recipientUserId)
       .maybeSingle();
 
     if (!profile) {
@@ -250,8 +302,9 @@ Deno.serve(async (req: Request) => {
     }
 
     const allVars: Record<string, string> = {
-      customer_name: profile.full_name || "Customer",
       ...variables,
+      ...orderVariables,
+      customer_name: profile.full_name || "Customer",
     };
 
     const renderedBody = renderTemplate(template.body, allVars);
@@ -318,13 +371,14 @@ Deno.serve(async (req: Request) => {
       const { error: inAppError } = await supabase
         .from("in_app_notifications")
         .insert({
-          user_id,
+          user_id: recipientUserId,
           title: renderedSubject || "Notification",
           body: renderedBody,
           event_type: event_type || "custom",
           is_read: false,
           related_subscription_id: subscription_id,
           related_order_id: order_id,
+          related_custom_order_id: custom_order_id,
         });
 
       if (inAppError) {
@@ -336,7 +390,7 @@ Deno.serve(async (req: Request) => {
       const { data: pushTokenRow } = await supabase
         .from("expo_push_tokens")
         .select("token")
-        .eq("user_id", user_id)
+        .eq("user_id", recipientUserId)
         .maybeSingle();
 
       if (!pushTokenRow) {
@@ -361,7 +415,7 @@ Deno.serve(async (req: Request) => {
     const { data: logRow } = await supabase
       .from("notification_logs")
       .insert({
-        user_id,
+        user_id: recipientUserId,
         event_type: event_type || "custom",
         channel,
         template_id: template_id || null,
@@ -372,6 +426,7 @@ Deno.serve(async (req: Request) => {
         error_message: errorMessage,
         provider_response: providerResponse,
         triggered_by,
+        custom_order_id: custom_order_id || null,
       })
       .select("id")
       .single();

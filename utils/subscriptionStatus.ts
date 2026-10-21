@@ -5,17 +5,11 @@ export type EffectiveStatus =
   | 'pending'
   | 'paused'
   | 'scheduled_pause'
-  | 'expired'
-  | 'cancelled'
-  | 'renewed';
+  | 'expired';
 
 export function getEffectiveStatus(sub: Subscription): EffectiveStatus {
-  if (
-    sub.status === 'expired' ||
-    sub.status === 'cancelled' ||
-    sub.status === 'renewed'
-  ) {
-    return sub.status as EffectiveStatus;
+  if (sub.status === 'expired') {
+    return 'expired';
   }
 
   const today = new Date();
