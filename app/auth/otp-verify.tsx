@@ -101,7 +101,7 @@ export default function OtpVerifyScreen() {
       const profile = await loadProfile(authData.user.id);
 
       if (!profile) {
-        router.replace('/auth/welcome');
+        router.replace('/auth/mobile');
       } else if (!profile.full_name) {
         router.replace('/auth/profile-setup');
       } else {
