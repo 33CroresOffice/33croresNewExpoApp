@@ -130,8 +130,18 @@ export default function RootLayout() {
 
     const navigateFromNotification = (response: Notifications.NotificationResponse) => {
       const role = useAuthStore.getState().profile?.role;
-      // Only customers have a notifications screen; admins, vendors, and
-      // riders don't, so there's nowhere valid to route them.
+      const data = response.notification.request.content.data as Record<string, string> | undefined;
+
+      // Vendors: tapping a procurement-order notification opens that order
+      if (role === 'vendor') {
+        if (data?.screen === 'procurement-order-detail' && data?.procurement_order_id) {
+          router.push(`/(vendor)/procurement-order-detail?id=${data.procurement_order_id}`);
+        }
+        return;
+      }
+
+      // Customers have a notifications screen to view the full history.
+      // Admins and riders have no destination, so ignore their taps.
       if (role !== 'customer') return;
       router.push('/(customer)/notifications');
     };

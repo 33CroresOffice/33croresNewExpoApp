@@ -75,8 +75,10 @@ export default function EditProfileScreen() {
       const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
       const filePath = `${profile!.id}/avatar.${ext}`;
 
-      const response = await fetch(asset.uri);
-      const uploadBody = await response.blob();
+      const uploadBody =
+        Platform.OS === 'web'
+          ? await (await fetch(asset.uri)).blob()
+          : Uint8Array.from(atob(asset.base64 ?? ''), (c) => c.charCodeAt(0));
 
       const { error: uploadError } = await supabase.storage
         .from('avatars')

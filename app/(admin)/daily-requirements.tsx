@@ -345,6 +345,8 @@ function DailyRequirementsScreenContent() {
         vendorGroups[item.vendor_id].push(item);
       }
 
+      const createdPoIds: string[] = [];
+
       for (const [vendorId, items] of Object.entries(vendorGroups)) {
         const { data: po, error: poErr } = await supabase
           .from('procurement_orders')
@@ -358,6 +360,8 @@ function DailyRequirementsScreenContent() {
           .select()
           .single();
         if (poErr || !po) continue;
+
+        createdPoIds.push(po.id);
 
         const poItems = items.map(item => ({
           procurement_order_id: po.id,
@@ -378,6 +382,28 @@ function DailyRequirementsScreenContent() {
 
       // 6. Update batch status to pushed
       await supabase.from('procurement_batches').update({ status: 'pushed' }).eq('id', batchId);
+
+      // 7. Send push + in-app notifications to each vendor
+      if (createdPoIds.length > 0) {
+        try {
+          const notifyUrl = `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/notify-vendor-procurement`;
+          await fetch(notifyUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${session?.access_token}`,
+              'Content-Type': 'application/json',
+              'Apikey': process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '',
+            },
+            body: JSON.stringify({
+              procurement_orders: createdPoIds,
+              delivery_date: dateStr,
+              triggered_by: session?.user?.id,
+            }),
+          });
+        } catch (notifyErr) {
+          console.error('Vendor notification failed:', notifyErr);
+        }
+      }
 
       setShowApproveModal(false);
       load();

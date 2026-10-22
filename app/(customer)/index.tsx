@@ -188,7 +188,7 @@ export default function HomeScreen() {
         .select('id, plan_id, status, start_date, end_date, new_end_date, pause_start_date, next_delivery_date, pause_until, plan:subscription_plans(name, frequency, price, image_url), primary_rider:riders!subscriptions_primary_rider_id_fkey(full_name, mobile, profile_photo_url), pause_history:subscription_pause_history(pause_start_date, pause_until, resumed_at)')
         .in('status', ['active', 'paused', 'expired'])
         .order('created_at', { ascending: false })
-        .limit(5),
+        .limit(1),
       supabase.from('panji_entries').select('*').eq('date', todayStr).eq('is_published', true).maybeSingle(),
       supabase.from('subscription_plans').select('*').eq('is_active', true).eq('show_in_customer_plans', true).eq('product_type', 'pooja').order('sort_order').limit(4),
       supabase.from('service_providers').select('id, full_name, category, specialization, experience_years, city, bio').eq('approval_status', 'approved').eq('is_active', true).eq('bookings_enabled', true).order('full_name').limit(4),

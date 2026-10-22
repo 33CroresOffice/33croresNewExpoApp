@@ -23,6 +23,7 @@ import { resolveRider } from '@/utils/riderLookup';
 import PhotoUploadField from '@/components/ui/PhotoUploadField';
 import { usePageVisibility } from '@/hooks/usePageVisibility';
 import { getEffectiveStatus } from '@/utils/subscriptionStatus';
+import { getTodayISTDateString } from '@/utils/istCutoff';
 
 const GRADIENT_TOP = '#1A2E3A';
 const GRADIENT_MID = '#1E3D50';
@@ -147,7 +148,7 @@ export default function RiderAssignments() {
   }, [profile?.id, riderId]);
 
   const fetchAssignments = async (rId: string) => {
-    const todayIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const todayIST = getTodayISTDateString();
     const [{ data: assignData }, { data: attendanceData }] = await Promise.all([
       supabase
         .from('rider_order_assignments')
@@ -291,6 +292,8 @@ export default function RiderAssignments() {
     // only visible in the admin/rider history views, not the live queue.
     const enriched = Array.from(latestByKey.values())
       .map((a) => ({ ...a, orderDetail: orderDetailsMap[(a.custom_order_id ?? a.order_id)!] }))
+      .filter((a) => a.status !== 'reassigned')
+      .filter((a) => a.orderDetail?.order_type === 'subscription' || a.orderDetail?.scheduled_date === todayIST)
       .filter((a) => a.orderDetail?.order_type !== 'subscription' || a.orderDetail.subscription_status === 'active')
       .sort((a, b) => {
         const aSeq = a.delivery_sequence ?? 9999;
@@ -496,7 +499,7 @@ export default function RiderAssignments() {
 
   const isDeliveredToday = (assignment: Assignment): boolean => {
     if (assignment.status !== 'delivered' || !assignment.delivered_at) return false;
-    const todayIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const todayIST = getTodayISTDateString();
     const deliveredIST = new Date(new Date(assignment.delivered_at).getTime() + 5.5 * 60 * 60 * 1000)
       .toISOString()
       .slice(0, 10);
@@ -564,7 +567,7 @@ export default function RiderAssignments() {
   const subAssignments = assignments.filter((a) => a.orderDetail?.order_type === 'subscription');
   const customAssignments = assignments.filter((a) => {
     if (a.orderDetail?.order_type !== 'custom') return false;
-    const todayIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const todayIST = getTodayISTDateString();
     if (a.orderDetail?.scheduled_date !== todayIST) return false;
     if (a.status === 'delivered') return false;
     return true;

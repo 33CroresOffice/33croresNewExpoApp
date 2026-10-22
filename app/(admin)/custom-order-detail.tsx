@@ -166,6 +166,7 @@ function AdminCustomOrderDetailScreenContent() {
 
   const [adminNote, setAdminNote] = useState('');
   const [savingNote, setSavingNote] = useState(false);
+  const [cancelReasonError, setCancelReasonError] = useState('');
 
   const [assignment, setAssignment] = useState<any>(null);
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -310,12 +311,57 @@ function AdminCustomOrderDetailScreenContent() {
   };
 
   const handleStatusChange = async (status: string) => {
+    const reason = adminNote.trim();
+    if (status === 'cancelled' && !reason) {
+      setCancelReasonError('Add a cancellation reason in Admin Note before cancelling.');
+      return;
+    }
+
+    setCancelReasonError('');
     setUpdating(true);
+
+    if (status === 'cancelled' && reason !== (order.admin_note ?? '')) {
+      const { error: noteError } = await supabase
+        .from('custom_orders')
+        .update({ admin_note: reason, updated_at: new Date().toISOString() })
+        .eq('id', id);
+      if (noteError) {
+        setCancelReasonError('The Admin Note could not be saved. Please try again.');
+        setUpdating(false);
+        return;
+      }
+    }
+
     const { error } = await supabase
       .from('custom_orders')
-      .update({ status, updated_at: new Date().toISOString() })
+      .update({
+        status,
+        ...(status === 'cancelled' ? { cancel_reason: reason } : {}),
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', id);
-    if (!error) setOrder((prev: any) => prev ? { ...prev, status } : prev);
+
+    if (!error) {
+      setOrder((prev: any) => prev ? { ...prev, status, ...(status === 'cancelled' ? { admin_note: reason, cancel_reason: reason } : {}) } : prev);
+
+      if (status === 'cancelled' && order.user_id) {
+        for (const channel of ['push', 'in_app'] as const) {
+          try {
+            await supabase.functions.invoke('send-notification', {
+              body: {
+                user_id: order.user_id,
+                event_type: 'custom_order_cancelled',
+                channel,
+                variables: { reason },
+                custom_order_id: id,
+              },
+            });
+          } catch {
+            // Notification failure should not undo the cancellation.
+          }
+        }
+      }
+    }
     setUpdating(false);
   };
 
@@ -743,6 +789,7 @@ function AdminCustomOrderDetailScreenContent() {
               multiline
               numberOfLines={3}
             />
+            {cancelReasonError ? <Text style={styles.cancelReasonError}>{cancelReasonError}</Text> : null}
             <Button
               label={savingNote ? 'Saving…' : 'Save Note'}
               onPress={handleSaveNote}
@@ -1210,6 +1257,11 @@ const styles = StyleSheet.create({
     minHeight: 80,
     textAlignVertical: 'top',
     backgroundColor: Colors.neutral[50],
+  },
+  cancelReasonError: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.error,
   },
 
   orderId: {

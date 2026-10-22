@@ -1,0 +1,113 @@
+{
+  "projectId": "65068816",
+  "functions": {
+    "admin-create-subscription": {
+      "hasChanged": false,
+      "hash": "4c1397d2b636a5b37ffcb5f5a47ed823b2a36b85b518f53b6f2da144bbb30670"
+    },
+    "check-pending-subscribers": {
+      "hasChanged": false,
+      "hash": "bbdd9b8cde193840c5f278215e45c822f4ab770579e8512387ecd12c7ef565f0"
+    },
+    "check-subscription-renewals": {
+      "hasChanged": false,
+      "hash": "1a5e7cd2eeb16924ba126b5458cd8ba455eaa4a302743423bae5af198e7c8ec1"
+    },
+    "create-admin-user": {
+      "hasChanged": false,
+      "hash": "e8c9fcedd6df23624c52c9e76f607a70eaa72a9316382616f24fb8c6373635da"
+    },
+    "create-custom-order-payment": {
+      "hasChanged": false,
+      "hash": "da29c62e06cf8c9e53afe4d81525eb36b759d5c7bbbf32f3bac56cc29fba3ae6"
+    },
+    "create-customer-user": {
+      "hasChanged": false,
+      "hash": "b2eae8385ce5f08c571e64d6b3b4cbe74721bad719feb0a7fd8eee29d1185c3c"
+    },
+    "create-pooja-order-payment": {
+      "hasChanged": false,
+      "hash": "de507df86d407018e154c4f94d6f06e2d58c10220169d2d98af2596fd50c579f"
+    },
+    "create-provider-booking-payment": {
+      "hasChanged": false,
+      "hash": "00ccfbd07a19bea16974fa20147e290a18344ee6f3657eb8b8efa58d36ac1d16"
+    },
+    "create-provider-user": {
+      "hasChanged": false,
+      "hash": "ba67129282bdc71da635796947197392454c23b08a1f0febb632d9093be86877"
+    },
+    "create-razorpay-order": {
+      "hasChanged": false,
+      "hash": "c2354e206f3b50131b85ffb291ec361dc4d4746881503f79a3ac2d3d2c4a54aa"
+    },
+    "create-rider-user": {
+      "hasChanged": false,
+      "hash": "6a7dcbf83a96ccdf4919a1b8ed053dde0d8e2f6fb6a42c550e69357cd4846b38"
+    },
+    "create-vendor-user": {
+      "hasChanged": false,
+      "hash": "2446e55c9cd7a2074bf099429311900e3f396f95965632160f954ac1c10498c7"
+    },
+    "generate-daily-requirements": {
+      "hasChanged": false,
+      "hash": "7b89f65ccb18db25e420bf427643b0291a7b29501d0ba1b2e951fbc370d6425b"
+    },
+    "generate-orders": {
+      "hasChanged": false,
+      "hash": "091c1ed8566bb12ca9ba3f4e32f42756057e461d392a85380ab9a161845157ab"
+    },
+    "pooja-list-view": {
+      "hasChanged": false,
+      "hash": "54a87211509d5954793ea54c59408e0268bc15aee8961164bff683fff5225121"
+    },
+    "send-automated-notifications": {
+      "hasChanged": false,
+      "hash": "5ee83715ae817efc217d61a895b73868c9d21886800c35ece8e0c10b87085793"
+    },
+    "send-bulk-notification": {
+      "hasChanged": false,
+      "hash": "1acacec479e0a4bb3a51b9055f6ee1b1db13dede63b43587be83b62a8b0fab25"
+    },
+    "send-notification": {
+      "hasChanged": false,
+      "hash": "3bf074f977cf75f590d962f1bc44b18a186831fcf9a36e32ad0669bb573521ff"
+    },
+    "send-otp": {
+      "hasChanged": false,
+      "hash": "ea14630262050681a5e3942a30cf71ada7828aedda069584b3eca2a4e5215fc8"
+    },
+    "share-pooja-list": {
+      "hasChanged": false,
+      "hash": "9069e78dbd3ffa28f656f438375168874c4a6b5603805cdbb9d7f00d4100c451"
+    },
+    "update-profile": {
+      "hasChanged": false,
+      "hash": "4b7bf32b7eabedd44cd32f61082fd1957fb7de9462e1103984a0d6c0bb7b9c8c"
+    },
+    "verify-custom-order-payment": {
+      "hasChanged": false,
+      "hash": "a97d71184cc075f7b1eda14c62f2fc394201e73d1d192ed14c67eb263a3840d9"
+    },
+    "verify-otp": {
+      "hasChanged": false,
+      "hash": "98270cbe7c8cfb68bbe7e983106bff3fa5c062dede44df97e9418ea6598e2435"
+    },
+    "verify-pooja-order-payment": {
+      "hasChanged": false,
+      "hash": "976d2a330aa1792c2df8640179e2f5a423cf7a3d8c06df1b72dba9be5d34a7b7"
+    },
+    "verify-provider-booking-payment": {
+      "hasChanged": false,
+      "hash": "702a2ed05ea31dafb8e2645e6e277fb3b8c0f62862fe1512957d1d875888983f"
+    },
+    "verify-razorpay-payment": {
+      "hasChanged": false,
+      "hash": "afaad3f288deb156db275218bef53ab9e73b0a4675fa39d9b8b839c8419fdc43"
+    },
+    "notify-vendor-procurement": {
+      "hasChanged": false,
+      "hash": "bf6b4ad05cf37abe5555f7e01ccfa6bcc9dfcca037c443720babd7b8a5dde366"
+    }
+  }
+}

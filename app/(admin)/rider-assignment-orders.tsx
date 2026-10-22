@@ -12,11 +12,13 @@ import { format } from 'date-fns';
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import DatePickerField from '@/components/ui/DatePickerField';
 import { getEffectiveStatus } from '@/utils/subscriptionStatus';
+import { getTodayISTDateString } from '@/utils/istCutoff';
 
 type Tab = 'assigned' | 'unassigned' | 'history';
 
 interface AssignedOrder {
   assignment_id: string;
+  assigned_at: string;
   order_id: string | null;
   subscription_id: string | null;
   status: string;
@@ -137,6 +139,7 @@ function RiderAssignmentOrdersContent() {
     setLoading(true);
     setError(null);
     try {
+      const todayIST = getTodayISTDateString();
       const [assignedRes, unassignedRes, ridersRes, leaveRes, subsRes, subHistoryRes] = await Promise.all([
         supabase
           .from('rider_order_assignments')
@@ -162,6 +165,7 @@ function RiderAssignmentOrdersContent() {
             subscription:subscriptions(plan:subscription_plans(name), delivery_address:addresses(apartment_name, street, landmark, city, state, pincode))
           `)
           .eq('status', 'scheduled')
+          .eq('scheduled_date', todayIST)
           .order('scheduled_date', { ascending: true }),
         supabase.from('riders').select('id, full_name, mobile, zone, vehicle_type, is_active').eq('is_active', true).order('full_name'),
         supabase.from('rider_leave_requests').select('rider_id, leave_date, end_date').eq('status', 'approved'),
@@ -190,21 +194,20 @@ function RiderAssignmentOrdersContent() {
       if (subsRes.error) throw new Error(subsRes.error.message);
 
       setRiders(ridersRes.data ?? []);
-      const today = new Date().toISOString().split('T')[0];
-      const leaves = new Set((leaveRes.data ?? []).filter((l: any) => l.leave_date <= today && l.end_date >= today).map((l: any) => l.rider_id as string));
+      const leaves = new Set((leaveRes.data ?? []).filter((l: any) => l.leave_date <= todayIST && l.end_date >= todayIST).map((l: any) => l.rider_id as string));
       setLeaveSet(leaves);
 
-      const todayStr = new Date().toISOString().split('T')[0];
       const activeSubsRes = await supabase
         .from('subscriptions')
         .select('*', { count: 'exact', head: true })
         .eq('status', 'active')
-        .or(`pause_until.is.null,pause_until.lt.${todayStr}`)
-        .or(`start_date.is.null,start_date.lte.${todayStr}`);
+        .or(`pause_until.is.null,pause_until.lt.${todayIST}`)
+        .or(`start_date.is.null,start_date.lte.${todayIST}`);
       setTotalActiveSubs(activeSubsRes.count ?? null);
 
       const assigned: AssignedOrder[] = (assignedRes.data ?? []).map((row: any) => ({
         assignment_id: row.id,
+        assigned_at: row.assigned_at ?? '',
         order_id: row.order_id ?? null,
         subscription_id: row.order?.subscription_id ?? null,
         status: row.status,
@@ -248,91 +251,24 @@ function RiderAssignmentOrdersContent() {
         address_pincode: row.subscription?.delivery_address?.pincode ?? '',
       }));
 
-      // One row per customer subscription in the Assigned tab. The
-      // subscription's primary rider is the standing assignment; today's
-      // delivery status never removes it. Live (not-yet-delivered) daily
-      // assignments take precedence so in-flight statuses and sequences show.
-      const riderLookup = new Map<string, { name: string; mobile: string }>();
-      (ridersRes.data ?? []).forEach((r: any) => riderLookup.set(r.id, { name: r.full_name ?? 'Unknown', mobile: r.mobile ?? '' }));
-
-      const subHistoryMap = new Map<string, RiderChangeEntry[]>();
-      (subHistoryRes.data ?? []).forEach((h: any) => {
-        const list = subHistoryMap.get(h.subscription_id) ?? [];
-        list.push({
-          previous_rider_name: h.previous_rider?.full_name ?? null,
-          new_rider_name: h.new_rider?.full_name ?? null,
-          reason: h.reason,
-          changed_at: h.changed_at,
-        });
-        subHistoryMap.set(h.subscription_id, list);
-      });
-
       const activeByKey = new Map<string, AssignedOrder>();
-      const historyRows: AssignedOrder[] = [];
+      const historyRows = assigned.filter((row) => !ACTIVE_ASSIGNMENT_STATUSES.includes(row.status));
       for (const row of assigned) {
-        if (!ACTIVE_ASSIGNMENT_STATUSES.includes(row.status)) {
-          historyRows.push(row);
-          continue;
-        }
+        if (!ACTIVE_ASSIGNMENT_STATUSES.includes(row.status)) continue;
+        if (row.subscription_status !== 'active') continue;
+        if (!row.subscription_id && row.scheduled_date !== todayIST) continue;
         const key = row.subscription_id || row.order_id || row.assignment_id;
         const existing = activeByKey.get(key);
-        if (!existing || (row.scheduled_date || '') > (existing.scheduled_date || '')) {
+        if (!existing || new Date(row.assigned_at).getTime() > new Date(existing.assigned_at).getTime()) {
           activeByKey.set(key, row);
         }
       }
 
-      const subsWithPrimary = (subsRes.data ?? []) as any[];
-      const coveredSubs = new Set<string>();
-      const standing: AssignedOrder[] = [];
-      for (const row of activeByKey.values()) {
-        // Delivered daily orders are covered by the subscription's standing
-        // row below; a delivered row without a primary rider is unassigned.
-        if (row.status === 'delivered' && row.subscription_id) {
-          continue;
-        }
-        standing.push(row);
-        if (row.subscription_id) coveredSubs.add(row.subscription_id);
-      }
-      for (const sub of subsWithPrimary) {
-        if (coveredSubs.has(sub.id)) continue;
-        const prior = activeByKey.get(sub.id);
-        const p = riderLookup.get(sub.primary_rider_id);
-        standing.push({
-          assignment_id: sub.id,
-          order_id: prior?.order_id ?? null,
-          subscription_id: sub.id,
-          status: 'assigned',
-          subscription_status: getEffectiveStatus(sub),
-          scheduled_date: prior?.scheduled_date ?? sub.next_delivery_date ?? '',
-          rider_id: sub.primary_rider_id,
-          rider_name: p?.name ?? 'Unknown',
-          rider_mobile: p?.mobile ?? '',
-          customer_name: sub.user?.full_name ?? sub.user?.mobile ?? 'Unknown',
-          customer_mobile: sub.user?.mobile ?? '',
-          plan_name: sub.plan?.name ?? '',
-          address_apartment: sub.delivery_address?.apartment_name ?? '',
-          address_street: sub.delivery_address?.street ?? '',
-          address_landmark: sub.delivery_address?.landmark ?? '',
-          address_city: sub.delivery_address?.city ?? '',
-          address_state: sub.delivery_address?.state ?? '',
-          address_pincode: sub.delivery_address?.pincode ?? '',
-          delivery_sequence: prior?.delivery_sequence ?? null,
-          swapped_from_rider_id: null,
-          swapped_from_rider_name: null,
-          swap_reason: null,
-          is_temporary_reassign: false,
-          temp_reassign_start_date: null,
-          temp_reassign_end_date: null,
-          auto_assigned: false,
-          is_primary_rider: true,
-          standing_only: true,
-          rider_history: subHistoryMap.get(sub.id) ?? [],
-        });
-      }
-      setAssignedOrders([...historyRows, ...standing]);
+      const currentAssignments = Array.from(activeByKey.values());
+      setAssignedOrders([...historyRows, ...currentAssignments]);
 
       const countMap = new Map<string, number>();
-      standing.forEach((row) => {
+      currentAssignments.forEach((row) => {
         countMap.set(row.rider_id, (countMap.get(row.rider_id) ?? 0) + 1);
       });
       setActiveCountMap(countMap);

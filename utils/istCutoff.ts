@@ -30,6 +30,10 @@ export function toLocalDateStr(date: Date): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+export function getTodayISTDateString(): string {
+  return nowInIST().toISOString().slice(0, 10);
+}
+
 export function getCutoffNotice(minDate: Date): string {
   const d = minDate;
   const dd = String(d.getDate()).padStart(2, '0');

@@ -41,6 +41,7 @@ import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import StatusChip from '@/components/ui/StatusChip';
+import { getEffectiveStatus } from '@/utils/subscriptionStatus';
 
 type Tab = 'overview' | 'assigned_orders' | 'assignments' | 'attendance' | 'payouts' | 'pickup' | 'leave' | 'zones';
 
@@ -59,6 +60,8 @@ const ATTENDANCE_CONFIG: Record<string, { label: string; color: string; bg: stri
   half_day: { label: 'Half Day', color: Colors.accentDark,   bg: Colors.accentSurface },
   leave:    { label: 'Leave',    color: Colors.textTertiary, bg: Colors.neutral[100] },
 };
+
+const ACTIVE_ASSIGNMENT_STATUSES = ['assigned', 'accepted', 'picked_up', 'delivered'];
 
 const ABSENCE_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
   present:     { label: 'Present',     color: Colors.success,      bg: '#E8F5E9' },
@@ -167,7 +170,7 @@ function RiderDetailScreenContent() {
       const profileIds = [...orders.map((order: any) => order.user_id), ...customOrders.map((order: any) => order.user_id)].filter(Boolean);
       const [subscriptionsRes, profilesRes] = await Promise.all([
         subscriptionIds.length > 0
-          ? supabase.from('subscriptions').select('id, status').in('id', subscriptionIds)
+          ? supabase.from('subscriptions').select('id, status, start_date, end_date, new_end_date, pause_start_date, pause_until').in('id', subscriptionIds)
           : Promise.resolve({ data: [] }),
         profileIds.length > 0
           ? supabase.from('profiles').select('id, full_name, mobile').in('id', profileIds)
@@ -192,28 +195,25 @@ function RiderDetailScreenContent() {
         order: assignment.order_id ? orderMap[assignment.order_id] ?? null : null,
         custom_order: assignment.custom_order_id ? customOrderMap[assignment.custom_order_id] ?? null : null,
       }));
-      const seen = new Map<string, any>();
-      const filteredAssignments = enrichedAssignments.filter((assignment: any) => {
+      const currentByKey = new Map<string, any>();
+      for (const assignment of enrichedAssignments) {
+        if (!ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status)) continue;
+        if (assignment.order_id && assignment.order?.subscription) {
+          const effectiveStatus = getEffectiveStatus(assignment.order.subscription);
+          if (effectiveStatus !== 'active') continue;
+        }
         const key = assignment.custom_order_id ?? assignment.order_id;
-        if (!key) return false;
-        const existing = seen.get(key);
-        if (!existing) {
-          if (assignment.order_id && assignment.order?.subscription && assignment.order.subscription.status !== 'active') return false;
-          seen.set(key, assignment);
-          return true;
+        if (!key) continue;
+        const existing = currentByKey.get(key);
+        if (!existing || new Date(assignment.assigned_at).getTime() > new Date(existing.assigned_at).getTime()) {
+          currentByKey.set(key, assignment);
         }
-        // Keep the most conclusive record per order: a delivered/failed/active
-        // assignment outranks an older reassigned one.
-        if (existing.status === 'reassigned' && assignment.status !== 'reassigned') {
-          if (assignment.order_id && assignment.order?.subscription && assignment.order.subscription.status !== 'active') return false;
-          seen.set(key, assignment);
-          return true;
-        }
-        return false;
-      });
-      const deduped = Array.from(seen.values());
-      deduped.sort((a: any, b: any) => (a.assigned_at < b.assigned_at ? 1 : -1));
-      const finalAssignments = deduped;
+      }
+      const historyAssignments = enrichedAssignments.filter((assignment: any) => !ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status));
+      const finalAssignments = [
+        ...historyAssignments,
+        ...Array.from(currentByKey.values()),
+      ].sort((a: any, b: any) => new Date(b.assigned_at).getTime() - new Date(a.assigned_at).getTime());
 
       setZoneAssignments(zoneRes.data ?? []);
       setAllLocalities(locRes.data ?? []);
@@ -539,7 +539,7 @@ function RiderDetailScreenContent() {
 
   const TABS: { key: Tab; label: string; count?: number }[] = [
     { key: 'overview',       label: 'Overview' },
-    { key: 'assigned_orders', label: 'Assigned Orders', count: assignments.length },
+    { key: 'assigned_orders', label: 'Assigned Orders', count: assignments.filter((assignment: any) => ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status)).length },
     { key: 'assignments',     label: 'Deliveries', count: deliveredAssignments.length },
     { key: 'attendance',  label: 'Attendance', count: attendance.length },
     { key: 'payouts',     label: 'Payouts',    count: payouts.length },
@@ -686,10 +686,16 @@ function RiderDetailScreenContent() {
           // Apply the date filter first so stat totals and status chip counts
           // always describe the currently selected day/range.
           const dateFiltered = assignments.filter(a => {
-            const date = (getAssignmentScheduledDate(a) ?? a.assigned_at ?? '').slice(0, 10);
             const todayStr = todayISTStr();
             const yesterdayStr = yesterdayISTStr();
-            if (assignedDatePreset === 'today' && date !== todayStr) return false;
+            const scheduledDate = getAssignmentScheduledDate(a)?.slice(0, 10) ?? '';
+            const assignmentDate = a.assigned_at ? toISTDateStr(a.assigned_at) : '';
+            const date = scheduledDate || assignmentDate;
+            const isActiveSubscription = ACTIVE_ASSIGNMENT_STATUSES.includes(a.status)
+              && a.order_id
+              && a.order?.subscription
+              && getEffectiveStatus(a.order.subscription) === 'active';
+            if (assignedDatePreset === 'today' && !isActiveSubscription && date !== todayStr) return false;
             if (assignedDatePreset === 'yesterday' && date !== yesterdayStr) return false;
             if (assignedDatePreset === 'custom') {
               if (assignedDateFrom && date < format(assignedDateFrom, 'yyyy-MM-dd')) return false;
