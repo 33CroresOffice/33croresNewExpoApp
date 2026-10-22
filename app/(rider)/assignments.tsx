@@ -22,6 +22,7 @@ import { format } from 'date-fns';
 import { resolveRider } from '@/utils/riderLookup';
 import PhotoUploadField from '@/components/ui/PhotoUploadField';
 import { usePageVisibility } from '@/hooks/usePageVisibility';
+import { getEffectiveStatus } from '@/utils/subscriptionStatus';
 
 const GRADIENT_TOP = '#1A2E3A';
 const GRADIENT_MID = '#1E3D50';
@@ -181,7 +182,7 @@ export default function RiderAssignments() {
           ? supabase.from('profiles').select('id, full_name, mobile').in('id', userIds)
           : Promise.resolve({ data: [] }),
         subIds.length > 0
-          ? supabase.from('subscriptions').select('id, plan_id, delivery_address_id, status').in('id', subIds)
+          ? supabase.from('subscriptions').select('id, plan_id, delivery_address_id, status, start_date, pause_start_date, pause_until').in('id', subIds)
           : Promise.resolve({ data: [] }),
       ]);
 
@@ -218,7 +219,7 @@ export default function RiderAssignments() {
           customer_name: prof?.full_name ?? null,
           customer_mobile: prof?.mobile ?? null,
           plan_name: plan?.name ?? null,
-          subscription_status: sub?.status ?? null,
+          subscription_status: sub ? getEffectiveStatus(sub) : null,
           addr_label: addr?.label ?? null,
           addr_street: addr?.street ?? null,
           addr_city: addr?.city ?? null,
@@ -282,7 +283,6 @@ export default function RiderAssignments() {
     const latestByKey = new Map<string, Assignment & { orderDetail?: OrderDetail }>();
     const orderedAsc = [...rawAssignments].sort((x, y) => new Date(x.assigned_at).getTime() - new Date(y.assigned_at).getTime());
     orderedAsc.forEach((a) => {
-      if (a.orderDetail?.order_type === 'subscription' && a.orderDetail.subscription_status !== 'active') return;
       const key = a.custom_order_id ?? a.order_id;
       if (!key) return;
       latestByKey.set(key, a);
@@ -291,6 +291,7 @@ export default function RiderAssignments() {
     // only visible in the admin/rider history views, not the live queue.
     const enriched = Array.from(latestByKey.values())
       .map((a) => ({ ...a, orderDetail: orderDetailsMap[(a.custom_order_id ?? a.order_id)!] }))
+      .filter((a) => a.orderDetail?.order_type !== 'subscription' || a.orderDetail.subscription_status === 'active')
       .sort((a, b) => {
         const aSeq = a.delivery_sequence ?? 9999;
         const bSeq = b.delivery_sequence ?? 9999;
@@ -561,7 +562,13 @@ export default function RiderAssignments() {
   };
 
   const subAssignments = assignments.filter((a) => a.orderDetail?.order_type === 'subscription');
-  const customAssignments = assignments.filter((a) => a.orderDetail?.order_type === 'custom');
+  const customAssignments = assignments.filter((a) => {
+    if (a.orderDetail?.order_type !== 'custom') return false;
+    const todayIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    if (a.orderDetail?.scheduled_date !== todayIST) return false;
+    if (a.status === 'delivered') return false;
+    return true;
+  });
 
   const renderSummary = () => {
     if (assignments.length === 0) return null;

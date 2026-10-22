@@ -369,6 +369,98 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Active Subscriptions */}
+      {activeSubs.length > 0 && (
+        <View style={styles.subSection}>
+          <View style={styles.subSectionHeader}>
+            <View>
+              <Text style={styles.sectionEyebrow2}>MY SUBSCRIPTIONS</Text>
+              <Text style={styles.sectionHeading2}>Active deliveries</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.viewAllBtn2}
+              onPress={() => router.push('/(customer)/subscriptions')}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.viewAllText2}>View all</Text>
+              <ChevronRight size={13} color={C.primary} />
+            </TouchableOpacity>
+          </View>
+          {activeSubs.map((sub) => {
+            const effectiveStatus = getEffectiveStatus(sub as any);
+            const isPaused = effectiveStatus === 'paused';
+            const isScheduledPause = effectiveStatus === 'scheduled_pause';
+            const isExpired = effectiveStatus === 'expired';
+            const renewalState = getRenewalState(sub);
+            const endDate = sub.new_end_date ? parseISO(sub.new_end_date) : sub.end_date ? parseISO(sub.end_date) : computeEndDate(sub);
+            const today = new Date(); today.setHours(0, 0, 0, 0);
+            const daysLeft = differenceInDays(endDate, today);
+            const totalDays = differenceInDays(endDate, new Date(sub.start_date));
+            const progress = isExpired ? 1 : Math.min(1, Math.max(0, 1 - daysLeft / Math.max(totalDays, 1)));
+            const isUrgent = !isExpired && daysLeft <= 5;
+            const statusColor = isExpired ? '#DC2626' : (isPaused || isScheduledPause) ? '#B45309' : C.primary;
+            const statusBg = isExpired ? '#FEE2E2' : (isPaused || isScheduledPause) ? '#FEF3C7' : C.primarySurface;
+            const nextInfo = (() => {
+              if (isExpired) return null;
+              if (isPaused && sub.pause_until) return { label: 'Resumes', date: format(new Date(sub.pause_until), 'dd MMM yyyy'), color: '#B45309' };
+              if (isScheduledPause && sub.pause_start_date) return { label: 'Pauses', date: format(new Date(sub.pause_start_date), 'dd MMM yyyy'), color: '#B45309' };
+              if (sub.next_delivery_date) return { label: 'Next delivery', date: format(new Date(sub.next_delivery_date), 'dd MMM yyyy'), color: C.primary };
+              return null;
+            })();
+
+            return (
+              <TouchableOpacity
+                key={sub.id}
+                style={[styles.subCard, isExpired && styles.subCardExpired]}
+                onPress={() => router.push({ pathname: '/(customer)/subscription-detail', params: { id: sub.id } })}
+                activeOpacity={0.9}
+              >
+                <View style={styles.subCardImgWrap}>
+                  <Image
+                    source={{ uri: sub.plan?.image_url ?? 'https://images.pexels.com/photos/931177/pexels-photo-931177.jpeg?auto=compress&cs=tinysrgb&w=400' }}
+                    style={styles.subCardImg}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.subCardFreqBadge}>
+                    <Text style={styles.subCardFreqBadgeText} numberOfLines={1}>
+                      {sub.plan?.frequency?.charAt(0).toUpperCase()}{sub.plan?.frequency?.slice(1)}
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.subCardBody}>
+                  <View style={styles.subCardTop}>
+                    <Text style={styles.subCardName} numberOfLines={1}>{sub.plan?.name}</Text>
+                    <View style={[styles.subStatusBadge, { backgroundColor: statusBg }]}>
+                      {isExpired ? <AlertTriangle size={10} color={statusColor} strokeWidth={2.2} /> : (isPaused || isScheduledPause) ? <PauseCircle size={10} color={statusColor} strokeWidth={2.2} /> : <CheckCircle2 size={10} color={statusColor} strokeWidth={2.2} />}
+                      <Text style={[styles.subStatusText, { color: statusColor }]}>{isExpired ? 'Expired' : isPaused ? 'Paused' : isScheduledPause ? 'Pause Scheduled' : 'Active'}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.countdownBlock}>
+                    <View style={styles.countdownRow}>
+                      <Text style={[styles.countdownDays, { color: isUrgent ? '#D97706' : isExpired ? '#DC2626' : C.primaryDark }]}>{isExpired ? '0' : daysLeft === 0 ? '0' : `${daysLeft}`}</Text>
+                      <View style={styles.countdownMeta}>
+                        <Text style={[styles.countdownDaysLabel, { color: isUrgent ? '#D97706' : isExpired ? '#DC2626' : C.primary }]}>{isExpired ? 'days — expired' : daysLeft === 0 ? 'last day' : `day${daysLeft === 1 ? '' : 's'} left`}</Text>
+                        <Text style={styles.countdownEndsOn}>{`until ${format(endDate, 'dd MMM yyyy')}`}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.max(2, progress * 100)}%` as any }, isExpired ? styles.progressExpired : isUrgent ? styles.progressUrgent : styles.progressNormal]} /></View>
+                  </View>
+                  {nextInfo && <View style={styles.subCardNextRow}><View style={[styles.subCardNextDot, { backgroundColor: nextInfo.color }]} /><Text style={[styles.subCardNextText, { color: nextInfo.color }]}>{nextInfo.label} <Text style={styles.subCardNextDate}>{nextInfo.date}</Text></Text></View>}
+                  {(isExpired || daysLeft <= 5) && (
+                    <TouchableOpacity style={[styles.renewBanner, isExpired ? styles.renewBannerExpired : styles.renewBannerWarn]} onPress={(e) => { e.stopPropagation(); router.push({ pathname: '/(customer)/checkout', params: { planId: sub.plan_id, renewFromSubscriptionId: sub.id } }); }} activeOpacity={0.85}>
+                      <RotateCcw size={11} color={isExpired ? '#DC2626' : '#92400E'} strokeWidth={2.2} />
+                      <Text style={[styles.renewBannerText, isExpired ? styles.renewBannerTextExpired : styles.renewBannerTextWarn]} numberOfLines={1}>{isExpired ? 'Subscription expired — Renew now' : daysLeft === 0 ? 'Expires today — renew now' : `Expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — renew`}</Text>
+                      <View style={[styles.renewBtn, isExpired ? styles.renewBtnExpired : styles.renewBtnWarn]}><Text style={styles.renewBtnText}>Renew</Text></View>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                <View style={styles.subCardChevron}><ChevronRight size={15} color={C.textSoft} strokeWidth={1.8} /></View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+
       {/* Today's rider — always visible for active subscriptions */}
       {activeSubs
         .filter((s) => todayRiders[s.id] && getEffectiveStatus(s as any) === 'active')
@@ -584,162 +676,6 @@ export default function HomeScreen() {
         </View>
       )}
 
-      {/* Active Subscriptions */}
-      {activeSubs.length > 0 && (
-        <View style={styles.subSection}>
-          <View style={styles.subSectionHeader}>
-            <View>
-              <Text style={styles.sectionEyebrow2}>MY SUBSCRIPTIONS</Text>
-              <Text style={styles.sectionHeading2}>Active deliveries</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.viewAllBtn2}
-              onPress={() => router.push('/(customer)/subscriptions')}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.viewAllText2}>View all</Text>
-              <ChevronRight size={13} color={C.primary} />
-            </TouchableOpacity>
-          </View>
-          {activeSubs.map((sub) => {
-            const effectiveStatus = getEffectiveStatus(sub as any);
-            const isPaused = effectiveStatus === 'paused';
-            const isScheduledPause = effectiveStatus === 'scheduled_pause';
-            const isExpired = effectiveStatus === 'expired';
-            const renewalState = getRenewalState(sub);
-            const needsRenewal = renewalState !== null;
-            const endDate = sub.new_end_date ? parseISO(sub.new_end_date) : sub.end_date ? parseISO(sub.end_date) : computeEndDate(sub);
-            const today = new Date(); today.setHours(0, 0, 0, 0);
-            const daysLeft = differenceInDays(endDate, today);
-            const totalDays = differenceInDays(endDate, new Date(sub.start_date));
-            const progress = isExpired ? 1 : Math.min(1, Math.max(0, 1 - daysLeft / Math.max(totalDays, 1)));
-            const isUrgent = !isExpired && daysLeft <= 5;
-
-            const statusColor = isExpired ? '#DC2626' : (isPaused || isScheduledPause) ? '#B45309' : C.primary;
-            const statusBg = isExpired ? '#FEE2E2' : (isPaused || isScheduledPause) ? '#FEF3C7' : C.primarySurface;
-
-            const nextInfo = (() => {
-              if (isExpired) return null;
-              if (isPaused && sub.pause_until) return { label: 'Resumes', date: format(new Date(sub.pause_until), 'dd MMM yyyy'), color: '#B45309' };
-              if (isScheduledPause && sub.pause_start_date) return { label: 'Pauses', date: format(new Date(sub.pause_start_date), 'dd MMM yyyy'), color: '#B45309' };
-              if (sub.next_delivery_date) return { label: 'Next delivery', date: format(new Date(sub.next_delivery_date), 'dd MMM yyyy'), color: C.primary };
-              return null;
-            })();
-
-            return (
-              <TouchableOpacity
-                key={sub.id}
-                style={[styles.subCard, isExpired && styles.subCardExpired]}
-                onPress={() => router.push({ pathname: '/(customer)/subscription-detail', params: { id: sub.id } })}
-                activeOpacity={0.9}
-              >
-                {/* Left image panel */}
-                <View style={styles.subCardImgWrap}>
-                  <Image
-                    source={{ uri: sub.plan?.image_url ?? 'https://images.pexels.com/photos/931177/pexels-photo-931177.jpeg?auto=compress&cs=tinysrgb&w=400' }}
-                    style={styles.subCardImg}
-                    resizeMode="cover"
-                  />
-                  {/* Frequency pill overlaid on image */}
-                  <View style={styles.subCardFreqBadge}>
-                    <Text style={styles.subCardFreqBadgeText} numberOfLines={1}>
-                      {sub.plan?.frequency?.charAt(0).toUpperCase()}{sub.plan?.frequency?.slice(1)}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Right content */}
-                <View style={styles.subCardBody}>
-                  {/* Title row */}
-                  <View style={styles.subCardTop}>
-                    <Text style={styles.subCardName} numberOfLines={1}>{sub.plan?.name}</Text>
-                    <View style={[styles.subStatusBadge, { backgroundColor: statusBg }]}>
-                      {isExpired
-                        ? <AlertTriangle size={10} color={statusColor} strokeWidth={2.2} />
-                        : (isPaused || isScheduledPause)
-                          ? <PauseCircle size={10} color={statusColor} strokeWidth={2.2} />
-                          : <CheckCircle2 size={10} color={statusColor} strokeWidth={2.2} />}
-                      <Text style={[styles.subStatusText, { color: statusColor }]}>
-                        {isExpired ? 'Expired' : isPaused ? 'Paused' : isScheduledPause ? 'Pause Scheduled' : 'Active'}
-                      </Text>
-                    </View>
-                  </View>
-
-                  {/* Countdown display */}
-                  <View style={styles.countdownBlock}>
-                    <View style={styles.countdownRow}>
-                      <Text style={[styles.countdownDays, { color: isUrgent ? '#D97706' : isExpired ? '#DC2626' : C.primaryDark }]}>
-                        {isExpired ? '0' : daysLeft === 0 ? '0' : `${daysLeft}`}
-                      </Text>
-                      <View style={styles.countdownMeta}>
-                        <Text style={[styles.countdownDaysLabel, { color: isUrgent ? '#D97706' : isExpired ? '#DC2626' : C.primary }]}>
-                          {isExpired ? 'days — expired' : daysLeft === 0 ? 'last day' : `day${daysLeft === 1 ? '' : 's'} left`}
-                        </Text>
-                        <Text style={styles.countdownEndsOn}>
-                          {`until ${format(endDate, 'dd MMM yyyy')}`}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {/* Progress bar */}
-                    <View style={styles.progressTrack}>
-                      <View style={[
-                        styles.progressFill,
-                        { width: `${Math.max(2, progress * 100)}%` as any },
-                        isExpired ? styles.progressExpired : isUrgent ? styles.progressUrgent : styles.progressNormal,
-                      ]} />
-                    </View>
-                  </View>
-
-                  {/* Next delivery / pause info */}
-                  {nextInfo && (
-                    <View style={styles.subCardNextRow}>
-                      <View style={[styles.subCardNextDot, { backgroundColor: nextInfo.color }]} />
-                      <Text style={[styles.subCardNextText, { color: nextInfo.color }]}>
-                        {nextInfo.label} <Text style={styles.subCardNextDate}>{nextInfo.date}</Text>
-                      </Text>
-                    </View>
-                  )}
-
-                  {/* Renewal banner — shown when expired OR days left ≤ 5 */}
-                  {(isExpired || daysLeft <= 5) && (
-                    <TouchableOpacity
-                      style={[
-                        styles.renewBanner,
-                        isExpired ? styles.renewBannerExpired : styles.renewBannerWarn,
-                      ]}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        router.push({
-                          pathname: '/(customer)/checkout',
-                          params: { planId: sub.plan_id, renewFromSubscriptionId: sub.id },
-                        });
-                      }}
-                      activeOpacity={0.85}
-                    >
-                      <RotateCcw size={11} color={isExpired ? '#DC2626' : '#92400E'} strokeWidth={2.2} />
-                      <Text style={[styles.renewBannerText, isExpired ? styles.renewBannerTextExpired : styles.renewBannerTextWarn]} numberOfLines={1}>
-                        {isExpired
-                          ? 'Subscription expired — Renew now'
-                          : daysLeft === 0
-                            ? 'Expires today — renew now'
-                            : `Expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — renew`}
-                      </Text>
-                      <View style={[styles.renewBtn, isExpired ? styles.renewBtnExpired : styles.renewBtnWarn]}>
-                        <Text style={styles.renewBtnText}>Renew</Text>
-                      </View>
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                <View style={styles.subCardChevron}>
-                  <ChevronRight size={15} color={C.textSoft} strokeWidth={1.8} />
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      )}
 
       {/* Today's Flower Pack for first active subscription */}
       {activeSubs.filter(s => s.status === 'active').length > 0 && (

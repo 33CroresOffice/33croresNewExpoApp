@@ -127,6 +127,36 @@ const TYPE_COLORS: Record<JobType, string> = {
   edge_function: '#6A1B9A',
 };
 
+const CRON_PURPOSES: Record<string, string> = {
+  'auto-calculate-rider-payouts': 'Calculates the amount each rider should be paid for completed deliveries. It reviews eligible delivery records, applies the configured delivery rates and adjustments, and creates or updates the rider payout records. This keeps Finance, Rider Payouts, and delivery earnings aligned without manual entry.',
+  'auto-evaluate-rider-incentives-nightly': 'Evaluates the incentive rules for the previous month and then refreshes the rider rankings for that month. It checks delivery performance and other configured criteria, records qualifying incentives, and recalculates leaderboard positions. This affects Rider Incentives, rider rankings, and any monthly reward reporting.',
+  'auto-expire-subscriptions': 'Finds subscriptions whose service period has ended and marks them as expired. It checks the subscription end dates, updates the status, and prevents future delivery orders from being treated as active service. This affects customer subscriptions, order generation, assignment counts, and Admin customer views.',
+  'auto-generate-vendor-payments': 'Creates vendor payment records for flowers and other procurement items that are ready to be settled. It checks eligible purchases, avoids creating duplicate payments, and records the amount owed for Finance and Vendor Payments. The result is a current list of vendor obligations waiting to be paid.',
+  'auto-mark-absent-riders': 'Closes the attendance day by marking riders absent when they did not check in. It checks the attendance record for the target date, leaves already-present or already-absent records unchanged, and creates the missing absence records. This affects Rider Attendance, daily operations, and rider availability for assignment decisions.',
+  'auto-procurement-from-requirements': 'Turns the day’s flower requirements into procurement orders for vendors. It reads the Daily Requirements totals, groups the required items, creates the necessary vendor-facing purchase records, and avoids repeating work that was already generated. This connects Daily Requirements, Procurement Orders, Vendors, and warehouse receiving.',
+  'auto-resume-paused-subscriptions': 'Restarts subscriptions whose planned pause period has finished. It finds pauses that have reached their resume date, clears the pause details, and restores the subscription to active service. This affects customer subscription status, future order generation, and the active counts shown to Admin and riders.',
+  'check-pending-subscribers': 'Checks customers who started a subscription but have not completed the required payment or activation step. It finds pending subscriptions, applies the configured waiting rules, and sends the appropriate WhatsApp reminder through the pending-subscriber notification function. This affects customer onboarding, subscription activation, and notification logs.',
+  'daily-health-check': 'Runs a daily operational check across important automated processes and data. It looks for missing, delayed, failed, or inconsistent records and stores the results for the Cron Monitor and automation dashboards. Its purpose is early warning: Admin can investigate problems before they affect deliveries, payments, or notifications.',
+  'daily-renewal-check': 'Starts the subscription-renewal process for customers whose plans are approaching renewal. It calls the renewal function, which finds due subscriptions, prepares the next renewal or payment step, and records the outcome. This affects Subscriptions, renewal history, payment follow-up, and customer renewal notifications.',
+  'generate-daily-orders': 'Creates the delivery orders needed for active subscriptions for the upcoming delivery date. It checks each active plan’s frequency, pause dates, end dates, and delivery address, then creates only the orders that are due and not already present. This feeds Orders, daily requirements, rider assignment, procurement, and customer delivery history.',
+  'mark-orders-out-for-delivery': 'Moves today’s scheduled orders into the out-for-delivery stage. It updates only orders with a scheduled status and today’s delivery date, leaving delivered, cancelled, and other statuses untouched. This keeps customer tracking, rider workflows, and Admin order views synchronized for the delivery day.',
+  'nightly-leave-redistribution': 'Plans coverage for orders affected by riders who are scheduled to be on leave tomorrow. It finds the affected assignments, checks available riders and delivery areas, and redistributes work where possible. This affects Rider Leave, Rider Assignments, delivery coverage, and the next day’s operations plan.',
+  'no-show-detection-615am': 'Performs the first morning check for riders who were expected to work but have not checked in. It identifies no-shows, records the operational result, and starts reassignment of their pending deliveries when the rules allow it. This affects Attendance, Rider Assignments, delivery continuity, and Admin alerts.',
+  'no-show-safety-pass-630am': 'Runs a second safety check for rider no-shows after the first detection pass. It repeats the no-show and redistribution check to catch late or newly confirmed absences and to repair any assignment that was still left uncovered. This protects the morning delivery queue across Attendance, Rider Assignments, and operations monitoring.',
+  'notify-admin-unassigned-alerts': 'Looks for delivery orders that still do not have a rider and alerts Admin about them. It checks the upcoming delivery queue, identifies uncovered orders, and creates the configured in-app or notification records without repeating the same alert unnecessarily. This supports Admin assignment work and helps prevent missed deliveries.',
+  'notify-customer-dispatch-in-app': 'Notifies customers when their next delivery has been dispatched or assigned for the upcoming date. It checks eligible orders, prepares the customer-facing message, and records the notification so the same event is not sent repeatedly. This affects Customer Notifications, order tracking, and delivery communication.',
+  'notify-panji-festivals': 'Checks the Panji calendar for festivals or observances that should be announced to customers. It finds the relevant upcoming entries, creates the configured notification content, and sends or records the notification according to the Panji settings. This affects the Panji module and customer notification feed.',
+  'notify-rider-assignments-in-app': 'Tells riders about the deliveries assigned to them for the upcoming date. It gathers the rider’s assignment list, creates the in-app notification, and records the send so riders can open the app with an accurate queue. This affects Rider Assignments, rider notifications, and next-day delivery preparation.',
+  'notify-rider-checkin-reminder': 'Reminds riders to check in before the delivery operation begins. It identifies riders expected to work who have not completed attendance, sends the configured reminder, and records the notification result. This supports Attendance, no-show detection, and timely rider availability.',
+  'notify-vendors-procurement': 'Notifies vendors about procurement work created or waiting for their action. It checks new or relevant procurement orders, prepares vendor-facing in-app notifications, and records what was sent. This connects Procurement Orders, Vendor activity, and purchasing follow-up.',
+  'restore-temporary-reassignments': 'Ends temporary rider replacements whose approved time window has finished. It finds assignments past their temporary end date, restores the original rider where appropriate, and records the change for assignment history. This affects Rider Assignments, primary rider continuity, and temporary leave or coverage workflows.',
+  'retry-failed-cron-jobs': 'Finds scheduled jobs that failed and attempts a controlled retry. It reviews recent cron history, selects failures that are eligible under the retry rules, runs them again, and records both the retry and its result. This improves reliability across every automated module while keeping the original failure history available.',
+  'retry-unassigned-relaxed': 'Makes a later, less restrictive attempt to assign tomorrow’s still-unassigned orders. It checks the remaining uncovered orders, relaxes the earlier matching constraints where allowed, and assigns suitable riders without replacing valid assignments. This affects automatic rider assignment and helps increase delivery coverage.',
+  'send-renewal-payment-reminders': 'Sends payment reminders to customers whose subscription renewal needs action. It finds renewal records that are due or still unpaid, applies the reminder timing rules, sends the configured message, and records the attempt. This affects renewals, payments, customer notifications, and subscription continuity.',
+  'track-daily-renewal-check': 'Runs the database-side renewal tracking process for the current renewal cycle. It reviews active subscriptions due for renewal, records which ones were checked, and creates the renewal actions or history needed by the payment and notification flows. This gives Admin a reliable audit trail for automated renewals.',
+  'track-generate-orders': 'Runs the database-side order-generation tracker for the current delivery cycle. It checks which active subscriptions should produce orders, records the generation attempt, and protects against duplicate daily orders. This supports Orders, Daily Requirements, assignment preparation, and automation monitoring.',
+};
+
 export default function CronMonitorScreen() {
   return (
     <View style={s.container}>
@@ -144,6 +174,7 @@ function CronMonitorContent() {
   const [definitions, setDefinitions] = useState<JobDef[]>([]);
   const [statuses, setStatuses] = useState<Record<string, JobStatus>>({});
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
+  const [expandedDetailsJob, setExpandedDetailsJob] = useState<string | null>(null);
   const [history, setHistory] = useState<RunHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [runningJob, setRunningJob] = useState<string | null>(null);
@@ -432,6 +463,7 @@ function CronMonitorContent() {
           {definitions.map((def, idx) => {
             const status = statuses[def.job_name];
             const isExpanded = expandedJob === def.job_name;
+            const isDetailsExpanded = expandedDetailsJob === def.job_name;
             const isRunning = runningJob === def.job_name;
             const statusInfo = status?.last_run_status != null
               ? STATUS_LABELS[status.last_run_status] ?? { label: 'Unknown', color: Colors.neutral[400] }
@@ -455,6 +487,17 @@ function CronMonitorContent() {
                   </View>
                   <View style={[s.td, { flex: 2 }]}>
                     <Text style={s.purposeText} numberOfLines={2}>{def.purpose}</Text>
+                    <TouchableOpacity
+                      style={s.detailsButton}
+                      onPress={(e) => { e.stopPropagation?.(); setExpandedDetailsJob(isDetailsExpanded ? null : def.job_name); }}
+                      activeOpacity={0.7}
+                    >
+                      {isDetailsExpanded ? <ChevronDown size={11} color={Colors.primary} strokeWidth={2.2} /> : <ChevronRight size={11} color={Colors.primary} strokeWidth={2.2} />}
+                      <Text style={s.detailsButtonText}>{isDetailsExpanded ? 'Hide details' : 'View details'}</Text>
+                    </TouchableOpacity>
+                    {isDetailsExpanded && (
+                      <Text style={s.purposeDetails}>{CRON_PURPOSES[def.job_name] ?? def.purpose}</Text>
+                    )}
                   </View>
                   <View style={[s.td, { flex: 1.4 }]}> 
                     <Text style={s.scheduleText} numberOfLines={1}>{formatSchedule(def.schedule)}</Text>
@@ -740,6 +783,9 @@ const s = StyleSheet.create({
   jobNameText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.sm, color: Colors.textPrimary },
   errorInline: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 10, color: Colors.error, marginTop: 2 },
   purposeText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textSecondary, lineHeight: 16 },
+  detailsButton: { flexDirection: 'row', alignItems: 'center', gap: 2, alignSelf: 'flex-start' as any, marginTop: Spacing[1], paddingVertical: 2 },
+  detailsButtonText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, color: Colors.primary },
+  purposeDetails: { marginTop: Spacing[2], fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, lineHeight: 17, color: Colors.textSecondary },
   scheduleText: { fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs, color: Colors.textSecondary },
   scheduleRaw: { fontFamily: Typography.fontFamily.sansRegular, fontSize: 9, color: Colors.textTertiary, marginTop: 2 },
   timeText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textSecondary },
