@@ -47,9 +47,9 @@ const UNIT_OPTIONS = ['Kg', 'Gm', 'Piece', 'Bouquet', 'Bundle', 'Garland', 'Pack
 const GARLAND_SIZE_OPTIONS = Array.from({ length: 20 }, (_, i) => `${i + 1} ft`);
 
 const ALL_TIME_SLOTS = [
-  '06:00 AM', '07:00 AM', '08:00 AM', '09:00 AM', '10:00 AM',
-  '11:00 AM', '12:00 PM', '01:00 PM', '02:00 PM', '03:00 PM',
-  '04:00 PM', '05:00 PM', '06:00 PM', '07:00 PM', '08:00 PM',
+  '08:00 AM', '09:00 AM', '10:00 AM', '11:00 AM', '12:00 PM',
+  '01:00 PM', '02:00 PM', '03:00 PM', '04:00 PM', '05:00 PM',
+  '06:00 PM', '07:00 PM', '08:00 PM',
 ];
 
 const AFTER_CUTOFF_TIME_SLOTS = ALL_TIME_SLOTS.filter((slot) => {
@@ -201,6 +201,7 @@ export default function CustomOrderScreen() {
   const [submitting, setSubmitting] = useState(false);
   const submitLock = useRef(false);
   const [error, setError] = useState('');
+  const [errorRetryable, setErrorRetryable] = useState(false);
   const [successModal, setSuccessModal] = useState(false);
   const [successDate, setSuccessDate] = useState('');
 
@@ -327,6 +328,7 @@ export default function CustomOrderScreen() {
     if (submitLock.current) return;
     submitLock.current = true;
     setError('');
+    setErrorRetryable(false);
 
     const totalItems = savedFlowers.length + savedGarlands.length;
     if (totalItems === 0) {
@@ -385,6 +387,7 @@ export default function CustomOrderScreen() {
 
     if (insertError || !newOrder?.id) {
       submitLock.current = false;
+      setErrorRetryable(true);
       setError('We could not place your order. Please try again.');
       return;
     }
@@ -428,6 +431,7 @@ export default function CustomOrderScreen() {
     setDeliveryTime(isPastCutoffIST() ? '10:00 AM' : '08:00 AM');
     setSpecialInstructions('');
     setError('');
+    setErrorRetryable(false);
     setShowAddressWarning(false);
     setShowAllAddresses(false);
   };
@@ -914,10 +918,13 @@ export default function CustomOrderScreen() {
             <Text style={styles.errorMessage}>{error}</Text>
             <TouchableOpacity
               style={styles.errorButton}
-              onPress={() => { setError(''); validateAndSubmit(); }}
+              onPress={() => {
+                setError('');
+                if (errorRetryable) void validateAndSubmit();
+              }}
               activeOpacity={0.85}
             >
-              <Text style={styles.errorButtonText}>Retry</Text>
+              <Text style={styles.errorButtonText}>{errorRetryable ? 'Retry' : 'Continue'}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.errorDismissButton}

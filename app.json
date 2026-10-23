@@ -2,7 +2,7 @@
   "expo": {
     "name": "33 Crores",
     "slug": "33-crores",
-    "version": "3.2.9",
+    "version": "3.3.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "thirtythreecrores",
@@ -23,7 +23,7 @@
     },
     "android": {
       "package": "com.thirtythreecroresapp",
-      "versionCode": 58,
+      "versionCode": 59,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#FFFFFF"

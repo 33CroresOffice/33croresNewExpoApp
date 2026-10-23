@@ -11,7 +11,7 @@
     },
     "check-subscription-renewals": {
       "hasChanged": false,
-      "hash": "1a5e7cd2eeb16924ba126b5458cd8ba455eaa4a302743423bae5af198e7c8ec1"
+      "hash": "d972774800d7fafd709920c2e5ca5ef1702d38932bbf0e43497a54c1323eb856"
     },
     "create-admin-user": {
       "hasChanged": false,
@@ -56,6 +56,10 @@
     "generate-orders": {
       "hasChanged": false,
       "hash": "091c1ed8566bb12ca9ba3f4e32f42756057e461d392a85380ab9a161845157ab"
+    },
+    "notify-vendor-procurement": {
+      "hasChanged": false,
+      "hash": "bf6b4ad05cf37abe5555f7e01ccfa6bcc9dfcca037c443720babd7b8a5dde366"
     },
     "pooja-list-view": {
       "hasChanged": false,
@@ -104,10 +108,6 @@
     "verify-razorpay-payment": {
       "hasChanged": false,
       "hash": "afaad3f288deb156db275218bef53ab9e73b0a4675fa39d9b8b839c8419fdc43"
-    },
-    "notify-vendor-procurement": {
-      "hasChanged": false,
-      "hash": "bf6b4ad05cf37abe5555f7e01ccfa6bcc9dfcca037c443720babd7b8a5dde366"
     }
   }
 }

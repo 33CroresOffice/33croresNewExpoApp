@@ -32,9 +32,9 @@ Deno.serve(async (req: Request) => {
     const nowIST = new Date(nowUtc + IST_OFFSET_MS);
     const todayIST = nowIST.toISOString().split("T")[0];
 
-    const twoDaysAgo = new Date(nowIST);
-    twoDaysAgo.setUTCDate(twoDaysAgo.getUTCDate() - 2);
-    const twoDaysAgoStr = twoDaysAgo.toISOString().split("T")[0];
+    const yesterday = new Date(nowIST);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split("T")[0];
 
     let activatedCount = 0;
     let expiredCount = 0;
@@ -255,10 +255,12 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // ── 2. Expire subscriptions past the 2-day grace period ──────────────────
+    // ── 2. Expire subscriptions past their effective end date ─────────────────
     // Use effective end date (new_end_date if set, else end_date) so paused/extended
     // subscriptions are not incorrectly expired before their extended end date.
-    const toExpire = activeSubs.filter(s => s.end_date && effectiveEndDate(s)! < twoDaysAgoStr);
+    // Expiry happens the day AFTER the end date so the "Subscription Expired"
+    // notification fires on the correct day.
+    const toExpire = activeSubs.filter(s => effectiveEndDate(s) && effectiveEndDate(s)! < todayIST);
 
     if (toExpire.length > 0) {
       for (const sub of toExpire) {
