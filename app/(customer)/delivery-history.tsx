@@ -190,6 +190,17 @@ function getISTTodayStr(): string {
   return `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, '0')}-${String(ist.getUTCDate()).padStart(2, '0')}`;
 }
 
+function getISTDateFromTimestamp(timestamp: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(timestamp));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 function formatPrice(paise: number) {
   return `₹${(paise / 100).toLocaleString('en-IN')}`;
 }
@@ -246,8 +257,16 @@ function buildSubscriptionDeliveries(
       : order
         ? effectiveStatus(order.status, order.assignments)
         : '';
+    const deliveredAssignment = order?.assignments.find(
+      (assignment) => assignment.status === 'delivered' && assignment.delivered_at,
+    );
+    const deliveredAt = deliveredAssignment?.delivered_at
+      ?? (orderStatus === 'delivered' ? order?.delivered_at : null);
+    const displayDate = deliveredAt
+      ? getISTDateFromTimestamp(deliveredAt)
+      : dateString;
     deliveries.push(order
-      ? { ...order, status: orderStatus }
+      ? { ...order, scheduled_date: displayDate, status: orderStatus }
       : {
           id: `delivery-${subscription.id}-${dateString}`,
           subscription_id: subscription.id,
@@ -270,7 +289,7 @@ function SubscriptionCard({ delivery }: { delivery: SubDelivery }) {
   const planName = delivery.subscription?.plan?.name ?? 'Subscription';
   const price = delivery.subscription?.plan?.price ?? 0;
   const scheduledDate = parseISO(delivery.scheduled_date);
-  const assignment = delivery.assignments?.[0];
+  const assignment = delivery.assignments?.find((item) => item.status === 'delivered') ?? delivery.assignments?.[0];
   const rider = assignment?.rider ?? delivery.standingRider ?? null;
   const deliveredAt = assignment?.delivered_at ?? delivery.delivered_at;
   const effStatus = delivery.status;
@@ -331,7 +350,7 @@ function SubscriptionCard({ delivery }: { delivery: SubDelivery }) {
 function CustomCard({ delivery }: { delivery: CustomDelivery }) {
   const orderName = getCustomOrderName(delivery.items, delivery.order_type);
   const scheduledDate = parseISO(delivery.delivery_date);
-  const assignment = delivery.assignments?.[0];
+  const assignment = delivery.assignments?.find((item) => item.status === 'delivered') ?? delivery.assignments?.[0];
   const rider = assignment?.rider;
   const deliveredAt = assignment?.delivered_at ?? delivery.delivered_at;
   const effStatus = effectiveStatus(delivery.status, delivery.assignments);

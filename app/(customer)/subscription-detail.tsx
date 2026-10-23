@@ -206,8 +206,6 @@ export default function SubscriptionDetailScreen() {
   const [pauseModal, setPauseModal] = useState(false);
   const [resumeModal, setResumeModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  const [pauseMode, setPauseMode] = useState<'fixed' | 'custom'>('custom');
-  const [pauseMonths, setPauseMonths] = useState(1);
   const [customStartDate, setCustomStartDate] = useState<Date | null>(null);
   const [customEndDate, setCustomEndDate] = useState<Date | null>(null);
   const [dateError, setDateError] = useState('');
@@ -258,26 +256,19 @@ export default function SubscriptionDetailScreen() {
     let pauseStartStr: string;
     let pauseUntilStr: string;
 
-    if (pauseMode === 'custom') {
-      if (!customStartDate) { setDateError('Please select a start date'); return; }
-      if (!customEndDate) { setDateError('Please select an end date'); return; }
-      if (isBefore(customStartDate, minDate)) {
-        setDateError(`Start date must be ${format(minDate, 'dd MMM yyyy')} or later due to the 5 PM IST cutoff.`);
-        return;
-      }
-      if (isBefore(customEndDate, minDate)) {
-        setDateError(`End date must be ${format(minDate, 'dd MMM yyyy')} or later due to the 5 PM IST cutoff.`);
-        return;
-      }
-      if (isBefore(customEndDate, customStartDate)) { setDateError('End date must be on or after start date'); return; }
-      pauseStartStr = toLocalDateStr(customStartDate);
-      pauseUntilStr = toLocalDateStr(customEndDate);
-    } else {
-      const pauseStart = getMinSubscriptionStartDate();
-      const resumeDate = addMonths(pauseStart, pauseMonths);
-      pauseStartStr = toLocalDateStr(pauseStart);
-      pauseUntilStr = toLocalDateStr(resumeDate);
+    if (!customStartDate) { setDateError('Please select a start date'); return; }
+    if (!customEndDate) { setDateError('Please select an end date'); return; }
+    if (isBefore(customStartDate, minDate)) {
+      setDateError(`Start date must be ${format(minDate, 'dd MMM yyyy')} or later due to the 5 PM IST cutoff.`);
+      return;
     }
+    if (isBefore(customEndDate, minDate)) {
+      setDateError(`End date must be ${format(minDate, 'dd MMM yyyy')} or later due to the 5 PM IST cutoff.`);
+      return;
+    }
+    if (isBefore(customEndDate, customStartDate)) { setDateError('End date must be on or after start date'); return; }
+    pauseStartStr = toLocalDateStr(customStartDate);
+    pauseUntilStr = toLocalDateStr(customEndDate);
 
     setActionLoading(true);
     const today = new Date();
@@ -898,81 +889,29 @@ export default function SubscriptionDetailScreen() {
             </View>
           )}
 
-          <View style={styles.pauseModeTabs}>
-            <TouchableOpacity
-              style={[styles.pauseModeTab, pauseMode === 'fixed' && styles.pauseModeTabActive]}
-              onPress={() => { setPauseMode('fixed'); setDateError(''); }}
-            >
-              <Text style={[styles.pauseModeTabText, pauseMode === 'fixed' && styles.pauseModeTabTextActive]}>
-                Fixed Duration
+          <Text style={styles.modalDesc}>
+            Select the exact start and end dates for your pause period.
+          </Text>
+          <DatePickerField
+            label="Start Date"
+            value={customStartDate}
+            onChange={(d) => { setCustomStartDate(d); setDateError(''); if (customEndDate && isBefore(customEndDate, d)) setCustomEndDate(null); }}
+            minDate={getMinSubscriptionStartDate()}
+          />
+          <DatePickerField
+            label="End Date"
+            value={customEndDate}
+            onChange={(d) => { setCustomEndDate(d); setDateError(''); }}
+            minDate={customStartDate ? customStartDate : getMinSubscriptionStartDate()}
+          />
+          {customStartDate && customEndDate && !isBefore(customEndDate, customStartDate) && (
+            <View style={styles.dateSummary}>
+              <Text style={styles.dateSummaryText}>
+                Paused from {format(customStartDate, 'dd MMM yyyy')} to {format(customEndDate, 'dd MMM yyyy')}
               </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.pauseModeTab, pauseMode === 'custom' && styles.pauseModeTabActive]}
-              onPress={() => { setPauseMode('custom'); setDateError(''); }}
-            >
-              <Text style={[styles.pauseModeTabText, pauseMode === 'custom' && styles.pauseModeTabTextActive]}>
-                Custom Dates
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {pauseMode === 'fixed' ? (
-            <>
-              <Text style={styles.modalDesc}>
-                Choose how long you'd like to pause. It will resume automatically.
-              </Text>
-              <View style={styles.pauseOptions}>
-                {[1, 2, 3].map((m) => {
-                  const pauseStart = getMinSubscriptionStartDate();
-                  const resumeDate = addMonths(pauseStart, m);
-                  return (
-                    <TouchableOpacity
-                      key={m}
-                      style={[styles.pauseOption, pauseMonths === m && styles.pauseOptionSelected]}
-                      onPress={() => setPauseMonths(m)}
-                    >
-                      <Text style={[styles.pauseOptionText, pauseMonths === m && styles.pauseOptionTextSelected]}>
-                        {m} month{m > 1 ? 's' : ''}
-                      </Text>
-                      <Text style={[styles.pauseOptionDate, pauseMonths === m && { color: Colors.primary }]}>
-                        Starts: {format(pauseStart, 'dd MMM yyyy')}
-                      </Text>
-                      <Text style={[styles.pauseOptionDate, pauseMonths === m && { color: Colors.primary }]}>
-                        Resumes: {format(resumeDate, 'dd MMM yyyy')}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </>
-          ) : (
-            <>
-              <Text style={styles.modalDesc}>
-                Select the exact start and end dates for your pause period.
-              </Text>
-              <DatePickerField
-                label="Start Date"
-                value={customStartDate}
-                onChange={(d) => { setCustomStartDate(d); setDateError(''); if (customEndDate && isBefore(customEndDate, d)) setCustomEndDate(null); }}
-                minDate={getMinSubscriptionStartDate()}
-              />
-              <DatePickerField
-                label="End Date"
-                value={customEndDate}
-                onChange={(d) => { setCustomEndDate(d); setDateError(''); }}
-                minDate={customStartDate ? customStartDate : getMinSubscriptionStartDate()}
-              />
-              {customStartDate && customEndDate && !isBefore(customEndDate, customStartDate) && (
-                <View style={styles.dateSummary}>
-                  <Text style={styles.dateSummaryText}>
-                    Paused from {format(customStartDate, 'dd MMM yyyy')} to {format(customEndDate, 'dd MMM yyyy')}
-                  </Text>
-                </View>
-              )}
-              {dateError ? <Text style={styles.dateError}>{dateError}</Text> : null}
-            </>
+            </View>
           )}
+          {dateError ? <Text style={styles.dateError}>{dateError}</Text> : null}
 
           <Button label="Confirm Pause" onPress={handlePause} loading={actionLoading} fullWidth />
         </View>
@@ -1431,56 +1370,6 @@ const styles = StyleSheet.create({
     fontSize: Typography.size.base,
     color: Colors.textSecondary,
     lineHeight: Typography.size.base * 1.6,
-  },
-  pauseModeTabs: {
-    flexDirection: 'row',
-    backgroundColor: Colors.neutral[100],
-    borderRadius: Radius.md,
-    padding: 3,
-    gap: 3,
-  },
-  pauseModeTab: {
-    flex: 1,
-    paddingVertical: Spacing[2],
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-  },
-  pauseModeTabActive: {
-    backgroundColor: Colors.white,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  pauseModeTabText: {
-    fontFamily: Typography.fontFamily.sansMedium,
-    fontSize: Typography.size.sm,
-    color: Colors.textTertiary,
-  },
-  pauseModeTabTextActive: {
-    color: Colors.primaryDark,
-    fontFamily: Typography.fontFamily.sansSemiBold,
-  },
-  pauseOptions: { gap: Spacing[3] },
-  pauseOption: {
-    padding: Spacing[4],
-    borderRadius: Radius.md,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-    gap: 3,
-  },
-  pauseOptionSelected: { borderColor: Colors.primary, backgroundColor: Colors.primarySurface },
-  pauseOptionText: {
-    fontFamily: Typography.fontFamily.sansSemiBold,
-    fontSize: Typography.size.base,
-    color: Colors.textPrimary,
-  },
-  pauseOptionTextSelected: { color: Colors.primaryDark },
-  pauseOptionDate: {
-    fontFamily: Typography.fontFamily.sansRegular,
-    fontSize: Typography.size.xs,
-    color: Colors.textTertiary,
   },
   dateSummary: {
     backgroundColor: Colors.primarySurface,

@@ -142,7 +142,9 @@ export default function PlansScreen() {
 
                     <View style={styles.priceRow}>
                       <Text style={styles.price}>{formatPrice(plan.price)}</Text>
-                      <Text style={styles.pricePer}>{plan.product_type === 'pooja' ? '/delivery' : '/month'}</Text>
+                      {plan.product_type === 'pooja' && (
+                        <Text style={styles.pricePer}>/delivery</Text>
+                      )}
                       {plan.mrp_price > plan.price && (
                         <Text style={styles.mrpPrice}>
                           {formatPrice(plan.mrp_price)}

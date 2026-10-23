@@ -28,7 +28,7 @@ export default function PlanDetailScreen() {
     const load = async () => {
       const { data } = await supabase
         .from('subscription_plans')
-        .select('*, pooja_items:plan_pooja_items(*, pooja_item:pooja_items(id, name, description, unit_type, is_active, category_id, category:pooja_item_categories(id, name, sort_order)))')
+        .select('*, flower_requirements:plan_flower_requirements(id, quantity_per_delivery, unit_type, flower_type:flower_types(id, name, display_name, is_active)), pooja_items:plan_pooja_items(*, pooja_item:pooja_items(id, name, description, unit_type, is_active, category_id, category:pooja_item_categories(id, name, sort_order)))')
         .eq('id', id)
         .single();
       if (data) setPlan(data);
@@ -136,6 +136,16 @@ export default function PlanDetailScreen() {
             </View>
           ) : (
             <View style={styles.featuresList}>
+              {(plan.flower_requirements ?? []).map((requirement) => {
+                const flowerName = requirement.flower_type?.display_name || requirement.flower_type?.name;
+                if (!flowerName) return null;
+                return (
+                  <View key={requirement.id} style={styles.featureItem}>
+                    <View style={styles.checkCircle}><Check size={13} color={Colors.white} strokeWidth={2.5} /></View>
+                    <Text style={styles.featureText}>{flowerName}</Text>
+                  </View>
+                );
+              })}
               {(plan.features as string[]).map((feat) => (
                 <View key={feat} style={styles.featureItem}>
                   <View style={styles.checkCircle}><Check size={13} color={Colors.white} strokeWidth={2.5} /></View>
