@@ -251,20 +251,19 @@ function RiderAssignmentOrdersContent() {
         address_pincode: row.subscription?.delivery_address?.pincode ?? '',
       }));
 
-      const activeByKey = new Map<string, AssignedOrder>();
+      const currentByKey = new Map<string, AssignedOrder>();
       const historyRows = assigned.filter((row) => !ACTIVE_ASSIGNMENT_STATUSES.includes(row.status));
       for (const row of assigned) {
         if (!ACTIVE_ASSIGNMENT_STATUSES.includes(row.status)) continue;
-        if (row.subscription_status !== 'active') continue;
         if (!row.subscription_id && row.scheduled_date !== todayIST) continue;
         const key = row.subscription_id || row.order_id || row.assignment_id;
-        const existing = activeByKey.get(key);
+        const existing = currentByKey.get(key);
         if (!existing || new Date(row.assigned_at).getTime() > new Date(existing.assigned_at).getTime()) {
-          activeByKey.set(key, row);
+          currentByKey.set(key, row);
         }
       }
 
-      const currentAssignments = Array.from(activeByKey.values());
+      const currentAssignments = Array.from(currentByKey.values());
       setAssignedOrders([...historyRows, ...currentAssignments]);
 
       const countMap = new Map<string, number>();

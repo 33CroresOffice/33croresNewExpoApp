@@ -15,9 +15,14 @@ the original end_date if new_end_date is not set.
 - Set send_at_days_before = 1 on the active WhatsApp template
   "Subscription Expiring (1 Day)" (event_type = 'subscription_expiring_1day', channel = 'whatsapp').
 
-### 2. Re-enable the daily-renewal-check cron job
-- Use cron.alter_job to set active = true for the daily-renewal-check cron job (jobid 38).
-- This cron calls the check-subscription-renewals edge function daily at 2:30 AM UTC (8:00 AM IST).
+### 2. Re-enable the daily-renewal-check cron job (name-based, not hardcoded ID)
+- Find the cron job by name (`daily-renewal-check`) instead of assuming a specific jobid.
+- If exactly one job exists, update its schedule, command, and active state.
+- If no job exists, create it with the correct schedule and command.
+- If multiple jobs share the name, raise an error instead of modifying an ambiguous job.
+- Schedule: `30 2 * * *` = 02:30 UTC = 8:00 AM IST.
+- The Edge Function has verify_jwt = false, so no auth header is required.
+- No other cron jobs are touched.
 
 ### 3. Fix auto_expire_subscriptions to respect new_end_date
 - Update the function to use COALESCE(new_end_date, end_date) instead of just end_date.
@@ -34,8 +39,47 @@ WHERE event_type = 'subscription_expiring_1day'
   AND is_active = true
   AND name = 'Subscription Expiring (1 Day)';
 
--- 2. Re-enable the daily-renewal-check cron job
-SELECT cron.alter_job(job_id := 38, active := true);
+-- 2. Re-enable the daily-renewal-check cron job by name (not hardcoded jobid)
+DO $$
+DECLARE
+  v_job_id bigint;
+  v_job_count integer;
+BEGIN
+  SELECT count(*)::integer, min(jobid)
+  INTO v_job_count, v_job_id
+  FROM cron.job
+  WHERE jobname = 'daily-renewal-check';
+
+  IF v_job_count > 1 THEN
+    RAISE EXCEPTION 'Multiple cron jobs named daily-renewal-check exist; refusing to modify an ambiguous job';
+  ELSIF v_job_count = 0 THEN
+    PERFORM cron.schedule(
+      'daily-renewal-check',
+      '30 2 * * *',
+      $cron_cmd$
+      SELECT net.http_post(
+        url := 'https://owqkiszgtzwwjfvgymau.supabase.co/functions/v1/check-subscription-renewals',
+        headers := '{"Content-Type":"application/json"}'::jsonb,
+        body := '{}'::jsonb
+      );
+      $cron_cmd$
+    );
+  ELSE
+    PERFORM cron.alter_job(
+      job_id := v_job_id,
+      schedule := '30 2 * * *',
+      command := $cron_cmd$
+      SELECT net.http_post(
+        url := 'https://owqkiszgtzwwjfvgymau.supabase.co/functions/v1/check-subscription-renewals',
+        headers := '{"Content-Type":"application/json"}'::jsonb,
+        body := '{}'::jsonb
+      );
+      $cron_cmd$,
+      active := true
+    );
+  END IF;
+END
+$$;
 
 -- 3. Fix auto_expire_subscriptions to use COALESCE(new_end_date, end_date)
 CREATE OR REPLACE FUNCTION public.auto_expire_subscriptions()
