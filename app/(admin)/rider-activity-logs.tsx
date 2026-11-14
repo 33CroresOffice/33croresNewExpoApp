@@ -276,6 +276,13 @@ function RiderActivityLogsContent() {
     r.name.toLowerCase().includes(search.toLowerCase()),
   );
 
+  const searchLower = search.trim().toLowerCase();
+  const matchesSearch = (riderName: string) =>
+    !searchLower || riderName.toLowerCase().includes(searchLower);
+  const filteredAppOpens = appOpens.filter((r) => matchesSearch(r.rider_name));
+  const filteredPresent = present.filter((r) => matchesSearch(r.rider_name));
+  const filteredDeliveries = deliveries.filter((r) => matchesSearch(r.rider_name));
+
   const openMap = (lat: number | null, lng: number | null) => {
     if (lat == null || lng == null) return;
     const url = mapUrl(lat, lng);
@@ -413,10 +420,13 @@ function RiderActivityLogsContent() {
           scrollEventThrottle={400}
         >
           {tab === 'app_open' &&
-            (appOpens.length === 0 ? (
-              <EmptyBlock icon={Smartphone} text="No app opens recorded in this date range yet" />
+            (filteredAppOpens.length === 0 ? (
+              <EmptyBlock
+                icon={Smartphone}
+                text={searchLower ? 'No app opens match this rider search' : 'No app opens recorded in this date range yet'}
+              />
             ) : (
-              appOpens.map((r) => (
+              filteredAppOpens.map((r) => (
                 <View key={r.id} style={styles.card}>
                   <View style={[styles.cardIconWrap, { backgroundColor: '#E3F2FD' }]}>
                     <Smartphone size={16} color="#1565C0" strokeWidth={1.8} />
@@ -436,10 +446,13 @@ function RiderActivityLogsContent() {
             ))}
 
           {tab === 'present' &&
-            (present.length === 0 ? (
-              <EmptyBlock icon={CalendarDays} text="No present records in this date range" />
+            (filteredPresent.length === 0 ? (
+              <EmptyBlock
+                icon={CalendarDays}
+                text={searchLower ? 'No present records match this rider search' : 'No present records in this date range'}
+              />
             ) : (
-              present.map((r) => (
+              filteredPresent.map((r) => (
                 <View key={r.id} style={styles.card}>
                   <View style={[styles.cardIconWrap, { backgroundColor: Colors.successSurface }]}>
                     <CalendarDays size={16} color={Colors.success} strokeWidth={1.8} />
@@ -467,10 +480,13 @@ function RiderActivityLogsContent() {
             ))}
 
           {tab === 'delivery' &&
-            (deliveries.length === 0 ? (
-              <EmptyBlock icon={Truck} text="No deliveries recorded in this date range" />
+            (filteredDeliveries.length === 0 ? (
+              <EmptyBlock
+                icon={Truck}
+                text={searchLower ? 'No deliveries match this rider search' : 'No deliveries recorded in this date range'}
+              />
             ) : (
-              deliveries.map((r) => (
+              filteredDeliveries.map((r) => (
                 <View key={r.id} style={styles.card}>
                   <View style={[styles.cardIconWrap, { backgroundColor: '#FFF3E0' }]}>
                     <Truck size={16} color="#E65100" strokeWidth={1.8} />

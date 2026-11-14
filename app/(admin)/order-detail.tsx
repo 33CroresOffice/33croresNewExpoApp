@@ -13,7 +13,7 @@ import {
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, MapPin, Phone, Bike, User, X, Search, CircleCheck, CreditCard, CalendarDays, CirclePause as PauseCircle, Pencil, History, PackageCheck, Truck, Clock, PackageX, Receipt, RefreshCw, Wallet, UserMinus } from 'lucide-react-native';
+import { ArrowLeft, MapPin, Phone, Bike, User, X, Search, Check, CircleCheck, CreditCard, CalendarDays, CirclePause as PauseCircle, Pencil, History, PackageCheck, Truck, Clock, PackageX, Receipt, RefreshCw, Wallet, UserMinus } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { OrderStatus } from '@/types/database';
@@ -70,6 +70,7 @@ function AdminOrderDetailScreenContent() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [order, setOrder] = useState<any>(null);
   const [assignment, setAssignment] = useState<any>(null);
+  const [priorAssignment, setPriorAssignment] = useState<any>(null);
   const [subOrders, setSubOrders] = useState<any[]>([]);
   const [pauseHistory, setPauseHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -173,8 +174,12 @@ function AdminOrderDetailScreenContent() {
           .eq('id', rawAssign.rider_id)
           .maybeSingle();
         setAssignment({ ...rawAssign, rider: riderData ?? null });
+        setPriorAssignment(null);
       } else {
         setAssignment(rawAssign);
+        // Fallback: surface the customer's previous rider so admins see who
+        // delivered before, even when this particular order has no row yet.
+        setPriorAssignment(await fetchPriorRiderAssignment(orderRes.data));
       }
     } catch (e) {
       console.error('order-detail load error', e);
@@ -182,6 +187,70 @@ function AdminOrderDetailScreenContent() {
       setLoading(false);
     }
   }, [id]);
+
+  const fetchPriorRiderAssignment = async (orderData: any): Promise<any> => {
+    try {
+      const sub = orderData?.subscription;
+      const userId = orderData?.user_id;
+      if (!userId) return null;
+
+      // 1) Rider carried forward on the subscription itself
+      let riderId: string | null = sub?.primary_rider_id ?? null;
+      let assignedFrom: 'subscription' | 'history' = riderId ? 'subscription' : 'history';
+
+      // 2) Most recent assignment across any of the customer's orders
+      if (!riderId) {
+        const { data: userSubs } = await supabase
+          .from('subscriptions')
+          .select('id')
+          .eq('user_id', userId);
+        const subIds = (userSubs ?? []).map((s: any) => s.id);
+        if (subIds.length === 0) return null;
+        const { data: userOrders } = await supabase
+          .from('orders')
+          .select('id')
+          .in('subscription_id', subIds);
+        const orderIds = (userOrders ?? []).map((o: any) => o.id);
+        if (orderIds.length === 0) return null;
+        const { data: lastAssign } = await supabase
+          .from('rider_order_assignments')
+          .select('rider_id, assigned_at')
+          .in('order_id', orderIds)
+          .neq('status', 'reassigned')
+          .order('assigned_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        riderId = lastAssign?.rider_id ?? null;
+      }
+
+      if (!riderId) return null;
+      const { data: riderData } = await supabase
+        .from('riders')
+        .select('id, full_name, mobile, zone, vehicle_type')
+        .eq('id', riderId)
+        .maybeSingle();
+      if (!riderData) return null;
+      return { rider: riderData, source: assignedFrom };
+    } catch {
+      return null;
+    }
+  };
+
+  const assignPriorRider = async () => {
+    if (!priorAssignment?.rider || assignment) return;
+    setAssigning(true);
+    const { error: assignErr } = await supabase.from('rider_order_assignments').insert({
+      order_id: id,
+      rider_id: priorAssignment.rider.id,
+      status: 'assigned',
+      delivery_fee: 0,
+      notes: '',
+    });
+    if (assignErr) { setAssigning(false); return; }
+    await supabase.from('orders').update({ status: 'out_for_delivery' }).eq('id', id);
+    setAssigning(false);
+    load();
+  };
 
   useEffect(() => { load(); }, [load]);
 
@@ -729,6 +798,47 @@ const handleAssign = async () => {
                 >
                   <UserMinus size={13} color={Colors.error} />
                   <Text style={styles.unassignBtnText}>Unassign</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : priorAssignment?.rider ? (
+            <View style={styles.riderCard}>
+              <View style={[styles.assignStatusBar, { backgroundColor: Colors.primary }]} />
+              <View style={styles.riderInfo}>
+                <View style={styles.riderAvatar}>
+                  <User size={18} color={Colors.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <View style={styles.riderNameRow}>
+                    <Text style={styles.riderName}>{priorAssignment.rider.full_name}</Text>
+                  </View>
+                  <Text style={styles.riderMeta}>
+                    +91 {priorAssignment.rider.mobile} · {priorAssignment.rider.zone} · {VEHICLE_LABELS[priorAssignment.rider.vehicle_type] ?? priorAssignment.rider.vehicle_type}
+                  </Text>
+                </View>
+                <View style={[styles.riderStatusPill, { backgroundColor: Colors.primarySurface }]}>
+                  <Text style={[styles.riderStatusText, { color: Colors.primary }]}>Previous Rider</Text>
+                </View>
+              </View>
+              <Text style={styles.priorRiderHint}>
+                This customer's usual rider. Not yet assigned to this order.
+              </Text>
+              <View style={styles.riderActionsRow}>
+                <TouchableOpacity
+                  style={styles.viewRiderBtn}
+                  onPress={() => router.push({ pathname: '/(admin)/rider-detail', params: { id: priorAssignment.rider.id, name: priorAssignment.rider.full_name } } as any)}
+                >
+                  <Text style={styles.viewRiderBtnText}>View Rider Profile</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.reassignBtn}
+                  onPress={assignPriorRider}
+                  disabled={assigning}
+                >
+                  {assigning
+                    ? <ActivityIndicator size={13} color={Colors.primary} />
+                    : <Check size={13} color={Colors.primary} />}
+                  <Text style={styles.reassignBtnText}>Assign This Rider</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1473,6 +1583,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: Spacing[5],
     gap: Spacing[2],
+  },
+  priorRiderHint: {
+    fontFamily: Typography.fontFamily.sansRegular,
+    fontSize: Typography.size.xs,
+    color: Colors.textTertiary,
+    textAlign: 'center',
+    paddingHorizontal: Spacing[4],
+    paddingBottom: Spacing[3],
   },
   noRiderText: {
     fontFamily: Typography.fontFamily.sansMedium,

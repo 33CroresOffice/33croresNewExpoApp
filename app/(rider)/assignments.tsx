@@ -25,6 +25,14 @@ import { usePageVisibility } from '@/hooks/usePageVisibility';
 import { getEffectiveStatus } from '@/utils/subscriptionStatus';
 import { getTodayISTDateString } from '@/utils/istCutoff';
 
+const haversineMeters = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
 const GRADIENT_TOP = '#1A2E3A';
 const GRADIENT_MID = '#1E3D50';
 const GRADIENT_BOT = '#235068';
@@ -42,16 +50,21 @@ interface OrderDetail {
   id: string;
   order_type: 'subscription' | 'custom';
   scheduled_date: string | null;
+  subscription_id: string | null;
   customer_name: string | null;
   customer_mobile: string | null;
   plan_name: string | null;
   subscription_status: string | null;
+  sub_start_date: string | null;
+  sub_end_date: string | null;
   addr_label: string | null;
   addr_street: string | null;
   addr_city: string | null;
   addr_state: string | null;
   addr_pincode: string | null;
   addr_apartment: string | null;
+  addr_latitude: number | null;
+  addr_longitude: number | null;
   per_day_price: number | null;
   custom_items: CustomOrderItem[] | null;
 }
@@ -111,6 +124,7 @@ export default function RiderAssignments() {
   const [deliveringId, setDeliveringId] = useState<string | null>(null);
   const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [deliveryDeadlineTime, setDeliveryDeadlineTime] = useState<string | null>(null);
+  const [deliveryRadiusMeters, setDeliveryRadiusMeters] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'subscription' | 'custom'>('subscription');
   const [pickupCutoffTime, setPickupCutoffTime] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState(Date.now());
@@ -139,6 +153,8 @@ export default function RiderAssignments() {
       setRiderId(riderData.id);
       const { data: deadline } = await supabase.rpc('get_delivery_deadline_time');
       setDeliveryDeadlineTime(deadline ?? null);
+      const { data: radius } = await supabase.rpc('get_delivery_radius_meters');
+      setDeliveryRadiusMeters(typeof radius === 'number' ? radius : null);
       const { data: cutoff } = await supabase.rpc('get_pickup_cutoff_time');
       setPickupCutoffTime(cutoff ?? null);
       await fetchAssignments(riderData.id);
@@ -167,7 +183,8 @@ export default function RiderAssignments() {
 
     const rawAssignments: Assignment[] = (assignData ?? []) as Assignment[];
 
-    const orderIds = rawAssignments.map((a) => a.order_id).filter(Boolean);
+    const orderIds = rawAssignments.map((a) => a.order_id).filter(Boolean) as string[];
+    const orderIdToSubId: Record<string, string> = {};
     let orderDetailsMap: Record<string, OrderDetail> = {};
     if (orderIds.length > 0) {
       const { data: ordersData } = await supabase
@@ -183,7 +200,7 @@ export default function RiderAssignments() {
           ? supabase.from('profiles').select('id, full_name, mobile').in('id', userIds)
           : Promise.resolve({ data: [] }),
         subIds.length > 0
-          ? supabase.from('subscriptions').select('id, plan_id, delivery_address_id, status, start_date, pause_start_date, pause_until').in('id', subIds)
+          ? supabase.from('subscriptions').select('id, plan_id, delivery_address_id, status, start_date, end_date, new_end_date, pause_start_date, pause_until').in('id', subIds)
           : Promise.resolve({ data: [] }),
       ]);
 
@@ -195,7 +212,7 @@ export default function RiderAssignments() {
           ? supabase.from('subscription_plans').select('id, name, per_day_price').in('id', planIds)
           : Promise.resolve({ data: [] }),
         addrIds.length > 0
-          ? supabase.from('addresses').select('id, label, street, city, state, pincode, apartment_name').in('id', addrIds)
+          ? supabase.from('addresses').select('id, label, street, city, state, pincode, apartment_name, latitude, longitude').in('id', addrIds)
           : Promise.resolve({ data: [] }),
       ]);
 
@@ -209,6 +226,7 @@ export default function RiderAssignments() {
       (subsRes.data ?? []).forEach((s: any) => { subMap[s.id] = s; });
 
       (ordersData ?? []).forEach((o: any) => {
+        if (o.subscription_id) orderIdToSubId[o.id] = o.subscription_id;
         const prof = profileMap[o.user_id];
         const sub = subMap[o.subscription_id];
         const plan = sub ? planMap[sub.plan_id] : null;
@@ -217,16 +235,21 @@ export default function RiderAssignments() {
           id: o.id,
           order_type: 'subscription',
           scheduled_date: o.scheduled_date,
+          subscription_id: o.subscription_id ?? null,
           customer_name: prof?.full_name ?? null,
           customer_mobile: prof?.mobile ?? null,
           plan_name: plan?.name ?? null,
           subscription_status: sub ? getEffectiveStatus(sub) : null,
+          sub_start_date: sub?.start_date ?? null,
+          sub_end_date: sub?.new_end_date ?? sub?.end_date ?? null,
           addr_label: addr?.label ?? null,
           addr_street: addr?.street ?? null,
           addr_city: addr?.city ?? null,
           addr_state: addr?.state ?? null,
           addr_pincode: addr?.pincode ?? null,
           addr_apartment: addr?.apartment_name ?? null,
+          addr_latitude: addr?.latitude ?? null,
+          addr_longitude: addr?.longitude ?? null,
           per_day_price: plan?.per_day_price ?? null,
           custom_items: null,
         };
@@ -249,7 +272,7 @@ export default function RiderAssignments() {
           ? supabase.from('profiles').select('id, full_name, mobile').in('id', customUserIds)
           : Promise.resolve({ data: [] }),
         customAddrIds.length > 0
-          ? supabase.from('addresses').select('id, label, street, city, state, pincode, apartment_name').in('id', customAddrIds)
+          ? supabase.from('addresses').select('id, label, street, city, state, pincode, apartment_name, latitude, longitude').in('id', customAddrIds)
           : Promise.resolve({ data: [] }),
       ]);
 
@@ -265,10 +288,13 @@ export default function RiderAssignments() {
           id: co.id,
           order_type: 'custom',
           scheduled_date: co.delivery_date ?? null,
+          subscription_id: null,
           customer_name: prof?.full_name ?? null,
           customer_mobile: prof?.mobile ?? null,
           plan_name: co.order_type === 'garland' ? 'Custom Garlands' : 'Custom Flowers',
           subscription_status: co.status ?? null,
+          sub_start_date: null,
+          sub_end_date: null,
           per_day_price: null,
           custom_items: Array.isArray(co.items) ? co.items as CustomOrderItem[] : null,
           addr_label: addr?.label ?? null,
@@ -277,24 +303,79 @@ export default function RiderAssignments() {
           addr_state: addr?.state ?? null,
           addr_pincode: addr?.pincode ?? null,
           addr_apartment: addr?.apartment_name ?? null,
+          addr_latitude: addr?.latitude ?? null,
+          addr_longitude: addr?.longitude ?? null,
         };
       });
     }
 
+    // One live entry per subscription (per customer), but always the row that
+    // represents today's independent delivery: prefer today's assignment (a
+    // fresh order is generated per day), falling back to today's picked-up
+    // row, then the newest record. An older day's Delivered row must never be
+    // shown for today.
+    const rowProgressRank = (a: Assignment): number => {
+      const orderId = a.order_id;
+      const orderDate = orderId ? orderDetailsMap[orderId]?.scheduled_date?.slice(0, 10) : null;
+      if (a.status === 'delivered' && a.delivered_at) {
+        const deliveredIST = new Date(new Date(a.delivered_at).getTime() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        if (deliveredIST === todayIST) return 4;
+        if (orderDate === todayIST) return 0; // stale record for today's order: ignore unless nothing else exists
+      }
+      if (orderDate === todayIST) {
+        if (a.picked_up_at) return 3;
+        return 2;
+      }
+      if (a.picked_up_at && !a.delivered_at) return 1;
+      return 0;
+    };
     const latestByKey = new Map<string, Assignment & { orderDetail?: OrderDetail }>();
     const orderedAsc = [...rawAssignments].sort((x, y) => new Date(x.assigned_at).getTime() - new Date(y.assigned_at).getTime());
     orderedAsc.forEach((a) => {
-      const key = a.custom_order_id ?? a.order_id;
+      // One live entry per subscription (not per daily order) so the queue
+      // matches the admin panel's per-customer assignment view.
+      const key = a.custom_order_id ?? orderIdToSubId[a.order_id!] ?? a.order_id;
       if (!key) return;
-      latestByKey.set(key, a);
+      const existing = latestByKey.get(key);
+      if (!existing) { latestByKey.set(key, a); return; }
+      const ra = rowProgressRank(a);
+      const re = rowProgressRank(existing);
+      if (ra > re) { latestByKey.set(key, a); return; }
+      if (ra < re) return;
+      // Same progress: match the admin panel's rule (newest assigned_at wins,
+      // then highest id as a deterministic tie-break for identical timestamps).
+      if (a.delivery_sequence != null && existing.delivery_sequence == null) { latestByKey.set(key, a); return; }
+      if (a.delivery_sequence == null && existing.delivery_sequence != null) return;
+      const ta = new Date(a.assigned_at).getTime();
+      const te = new Date(existing.assigned_at).getTime();
+      if (ta > te || (ta === te && a.id > existing.id)) {
+        latestByKey.set(key, a);
+      }
     });
     // Newest record per order wins; older records (including reassigned) are
     // only visible in the admin/rider history views, not the live queue.
     const enriched = Array.from(latestByKey.values())
       .map((a) => ({ ...a, orderDetail: orderDetailsMap[(a.custom_order_id ?? a.order_id)!] }))
-      .filter((a) => a.status !== 'reassigned')
-      .filter((a) => a.orderDetail?.order_type === 'subscription' || a.orderDetail?.scheduled_date === todayIST)
-      .filter((a) => a.orderDetail?.order_type !== 'subscription' || a.orderDetail.subscription_status === 'active')
+      .filter((a) => {
+        if (!a.orderDetail || a.status === 'reassigned') return false;
+        if (a.orderDetail.order_type === 'custom') {
+          // Customize orders appear only on their delivery day and leave the
+          // queue once delivered.
+          return a.orderDetail.scheduled_date === todayIST && a.status !== 'delivered';
+        }
+        // Subscription customers stay in the queue for the whole delivery
+        // window: show every active subscription assigned to this rider whose
+        // Start Date..(New End Date | End Date) range covers today. This must
+        // not depend on daily order generation, order status or scheduled date.
+        // The row shown is today's own delivery record (see latestByKey), so a
+        // past Delivered day never marks today as delivered.
+        if (a.orderDetail.subscription_status !== 'active') return false;
+        const { sub_start_date: startRaw, sub_end_date: endRaw } = a.orderDetail;
+        if (!startRaw && !endRaw) return true;
+        if (startRaw && todayIST < startRaw) return false;
+        if (endRaw && todayIST > endRaw) return false;
+        return true;
+      })
       .sort((a, b) => {
         const aSeq = a.delivery_sequence ?? 9999;
         const bSeq = b.delivery_sequence ?? 9999;
@@ -507,7 +588,7 @@ export default function RiderAssignments() {
   };
 
   const deliverAssignment = async (assignment: Assignment) => {
-    if (isDeliveredToday(assignment)) return;
+    if (assignment.status === 'delivered') return;
     if (!assignment.picked_up_at) {
       setDeliveryError('Pick up this order before marking it delivered.');
       return;
@@ -523,9 +604,22 @@ export default function RiderAssignments() {
 
     const coords = await getCurrentLocation();
     if (!coords) {
-      setDeliveryError('Could not detect your location. Enable GPS and try again.');
+      setDeliveryError('Could not detect your location. Enable location access and try again.');
       setDeliveringId(null);
       return;
+    }
+
+    const addrDetail = assignment.orderDetail as (OrderDetail & { addr_latitude?: number | null; addr_longitude?: number | null }) | undefined;
+    const addrLat = addrDetail?.addr_latitude ?? null;
+    const addrLng = addrDetail?.addr_longitude ?? null;
+    if (deliveryRadiusMeters != null && addrLat != null && addrLng != null) {
+      const distance = haversineMeters(coords.latitude, coords.longitude, addrLat, addrLng);
+      if (distance > deliveryRadiusMeters) {
+        const over = Math.ceil(distance - deliveryRadiusMeters);
+        setDeliveryError(`You are about ${Math.ceil(distance)} m from the delivery address, outside the permitted ${deliveryRadiusMeters} m radius (over by ~${over} m). Move closer to the customer address and try again.`);
+        setDeliveringId(null);
+        return;
+      }
     }
 
     const update: Record<string, any> = {
@@ -543,7 +637,9 @@ export default function RiderAssignments() {
 
     if (error) {
       const msg = error.message || '';
-      if (msg.includes('deadline') || msg.includes('check_violation')) {
+      if (msg.includes('outside the permitted') || msg.includes('GPS location is required')) {
+        setDeliveryError(msg.replace(/^[\s\S]*?(?=(You are|GPS location))/, ''));
+      } else if (msg.includes('deadline') || msg.includes('check_violation')) {
         setDeliveryError(`Delivery deadline (${deliveryDeadlineTime ? formatDeadlineAMPM(deliveryDeadlineTime) : ''} IST) has passed. You can no longer mark deliveries today.`);
       } else {
         setDeliveryError('Could not update this delivery. Please try again.');
@@ -686,6 +782,11 @@ export default function RiderAssignments() {
               <Text style={mStyles.cardDetailText}>
                 {formatAddressWithPrice(d)}
               </Text>
+              {!expanded && a.delivery_sequence != null && (
+                <View style={mStyles.seqBadgeSmall}>
+                  <Text style={mStyles.seqBadgeSmallText}>{a.delivery_sequence}</Text>
+                </View>
+              )}
               {!expanded && (
                 <View style={[mStyles.chevronWrap, expanded && mStyles.chevronExpanded]}>
                   <ChevronDown size={18} color={Colors.textTertiary} strokeWidth={2} />
@@ -732,7 +833,7 @@ export default function RiderAssignments() {
                 <RefreshCw size={14} color={Colors.textTertiary} strokeWidth={2.2} />
                 <Text style={[mStyles.deliveredBadgeText, { color: Colors.textTertiary }]}>Reassigned</Text>
               </View>
-            ) : isDeliveredToday(a) ? (
+            ) : a.status === 'delivered' || isDeliveredToday(a) ? (
               <View style={mStyles.deliveredBadge}>
                 <CheckCircle2 size={14} color={Colors.success} strokeWidth={2.2} />
                 <Text style={mStyles.deliveredBadgeText}>Delivered</Text>
@@ -908,6 +1009,11 @@ export default function RiderAssignments() {
                       </View>
                     )}
                     <View style={wStyles.deliveryCardAddrRow}>
+                      {a.delivery_sequence != null && (
+                        <View style={wStyles.seqBadgeSmall}>
+                          <Text style={wStyles.seqBadgeSmallText}>{a.delivery_sequence}</Text>
+                        </View>
+                      )}
                       <MapPin size={12} color={Colors.textTertiary} strokeWidth={1.8} />
                       <Text style={wStyles.deliveryCardAddr}>{formatAddressWithPrice(d)}</Text>
                     </View>
@@ -945,7 +1051,7 @@ export default function RiderAssignments() {
                           <RefreshCw size={14} color={Colors.textTertiary} strokeWidth={2.2} />
                           <Text style={[wStyles.deliveredBadgeText, { color: Colors.textTertiary }]}>Reassigned</Text>
                         </View>
-                      ) : isDeliveredToday(a) ? (
+                      ) : a.status === 'delivered' || isDeliveredToday(a) ? (
                         <View style={wStyles.deliveredBadge}>
                           <CheckCircle2 size={14} color={Colors.success} strokeWidth={2.2} />
                           <Text style={wStyles.deliveredBadgeText}>Delivered</Text>
@@ -1079,6 +1185,13 @@ const mStyles = StyleSheet.create({
   },
   seqBadgeText: {
     fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.base, color: Colors.white,
+  },
+  seqBadgeSmall: {
+    minWidth: 22, height: 22, borderRadius: 11, backgroundColor: Colors.primary,
+    alignItems: 'center', justifyContent: 'center', flexShrink: 0, paddingHorizontal: 6,
+  },
+  seqBadgeSmallText: {
+    fontFamily: Typography.fontFamily.bold, fontSize: 11, color: Colors.white,
   },
   cardInfo: { flex: 1, gap: 2 },
   cardNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -1284,6 +1397,13 @@ const wStyles = StyleSheet.create({
   },
   seqBadgeText: {
     fontFamily: Typography.fontFamily.bold, fontSize: Typography.size.sm, color: Colors.white,
+  },
+  seqBadgeSmall: {
+    minWidth: 20, height: 20, borderRadius: 10, backgroundColor: Colors.primary,
+    alignItems: 'center', justifyContent: 'center', flexShrink: 0, paddingHorizontal: 6,
+  },
+  seqBadgeSmallText: {
+    fontFamily: Typography.fontFamily.bold, fontSize: 10, color: Colors.white,
   },
   deliveryCardName: {
     fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.base, color: Colors.textPrimary,

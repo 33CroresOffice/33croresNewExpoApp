@@ -23,20 +23,21 @@ function addDays(date: Date, days: number): Date {
   return result;
 }
 
+function isEveryDayDelivery(frequency: string): boolean {
+  // Monthly, 3-month and 6-month plans deliver every day of the window;
+  // weekly/biweekly keep their scheduled-day cadence.
+  return !['weekly', 'biweekly'].includes(frequency);
+}
+
 function getNextDeliveryDate(currentDate: Date, frequency: string): Date {
   switch (frequency) {
-    case "daily":
-      return addDays(currentDate, 1);
     case "weekly":
       return addDays(currentDate, 7);
     case "biweekly":
       return addDays(currentDate, 14);
     case "monthly":
-    default: {
-      const next = new Date(currentDate);
-      next.setMonth(next.getMonth() + 1);
-      return next;
-    }
+    default:
+      return addDays(currentDate, 1);
   }
 }
 
@@ -59,12 +60,13 @@ Deno.serve(async (req: Request) => {
     const todayStr = istDateStr(today);
     const tomorrowStr = istDateStr(addDays(today, 1));
 
-    // Fetch active subscriptions whose next_delivery_date is tomorrow or earlier
+    // Fetch ALL active subscriptions: every-day plans (daily/monthly/3-month/
+    // 6-month) need a fresh order each day even if next_delivery_date was
+    // previously advanced beyond the window under older per-period logic.
     const { data: subscriptions, error } = await serviceSupabase
       .from("subscriptions")
       .select("id, user_id, next_delivery_date, end_date, new_end_date, plan:subscription_plans(frequency)")
-      .eq("status", "active")
-      .lte("next_delivery_date", tomorrowStr);
+      .eq("status", "active");
 
     if (error) {
       console.error("Fetch subscriptions error:", error);
@@ -120,34 +122,38 @@ Deno.serve(async (req: Request) => {
 
     for (const sub of subscriptions ?? []) {
       const frequency = sub.plan?.frequency ?? "monthly";
-      let currentDateStr: string = sub.next_delivery_date;
+      const everyDay = isEveryDayDelivery(frequency);
+      // Every-day plans always cover today/tomorrow: if next_delivery_date was
+      // advanced past the window, clamp back so today's order is still created.
+      let currentDateStr: string = everyDay && sub.next_delivery_date > tomorrowStr
+        ? todayStr
+        : sub.next_delivery_date;
       let currentDate = new Date(currentDateStr + "T00:00:00Z");
       const endDateStr = sub.new_end_date ?? sub.end_date;
       const pauses = pauseMap[sub.id] ?? [];
 
       // We only create orders for today and tomorrow (the delivery window)
-      // Past dates are skipped — we just advance next_delivery_date forward
+      // Past dates are skipped — we just advance next_delivery_date forward.
+      // Every delivery day is an independent order with its own fresh status.
       while (dateLE(currentDateStr, tomorrowStr)) {
         // Skip deliveries past the subscription end date
         if (endDateStr && currentDateStr > endDateStr) break;
 
-        // Only create orders for today and tomorrow
-        if (currentDateStr >= todayStr) {
-          const isPaused = pauses.some(
-            p => p.pause_start_date <= currentDateStr && p.pause_until >= currentDateStr
-          );
+        const isPaused = pauses.some(
+          p => p.pause_start_date <= currentDateStr && p.pause_until >= currentDateStr
+        );
+        const isDeliveryDay = everyDay || currentDate.getUTCDay() === new Date(sub.next_delivery_date + "T00:00:00Z").getUTCDay();
 
-          if (!isPaused) {
-            const orderKey = `${sub.id}:${currentDateStr}`;
-            if (!existingOrderSet.has(orderKey)) {
-              ordersToInsert.push({
-                subscription_id: sub.id,
-                user_id: sub.user_id,
-                scheduled_date: currentDateStr,
-                status: "scheduled",
-              });
-              existingOrderSet.add(orderKey);
-            }
+        if (currentDateStr >= todayStr && !isPaused && isDeliveryDay) {
+          const orderKey = `${sub.id}:${currentDateStr}`;
+          if (!existingOrderSet.has(orderKey)) {
+            ordersToInsert.push({
+              subscription_id: sub.id,
+              user_id: sub.user_id,
+              scheduled_date: currentDateStr,
+              status: "scheduled",
+            });
+            existingOrderSet.add(orderKey);
           }
         }
 

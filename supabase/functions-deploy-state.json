@@ -39,7 +39,7 @@
     },
     "create-razorpay-order": {
       "hasChanged": false,
-      "hash": "c2354e206f3b50131b85ffb291ec361dc4d4746881503f79a3ac2d3d2c4a54aa"
+      "hash": "70ba1614ee9bf7a7b5ddac1928938cec5880f912ca64475070262b12c6b957b0"
     },
     "create-rider-user": {
       "hasChanged": false,
@@ -55,7 +55,7 @@
     },
     "generate-orders": {
       "hasChanged": false,
-      "hash": "091c1ed8566bb12ca9ba3f4e32f42756057e461d392a85380ab9a161845157ab"
+      "hash": "1ff9966823da7cf1dfe0fd6a472ecc82b321d0b7a838acf916af6a112b241cc1"
     },
     "notify-vendor-procurement": {
       "hasChanged": false,
@@ -79,7 +79,7 @@
     },
     "send-otp": {
       "hasChanged": false,
-      "hash": "ea14630262050681a5e3942a30cf71ada7828aedda069584b3eca2a4e5215fc8"
+      "hash": "fae32a29c2833071077a3cf60d3ed5dbafa01114b36922969e6577183b56277d"
     },
     "share-pooja-list": {
       "hasChanged": false,
@@ -95,7 +95,7 @@
     },
     "verify-otp": {
       "hasChanged": false,
-      "hash": "98270cbe7c8cfb68bbe7e983106bff3fa5c062dede44df97e9418ea6598e2435"
+      "hash": "628887f233fb5aecd286876e73ef93e7e6a5e42f331455698b950fdd059993cc"
     },
     "verify-pooja-order-payment": {
       "hasChanged": false,
@@ -107,7 +107,7 @@
     },
     "verify-razorpay-payment": {
       "hasChanged": false,
-      "hash": "afaad3f288deb156db275218bef53ab9e73b0a4675fa39d9b8b839c8419fdc43"
+      "hash": "a44feb99b87d3b5cab05b195de4687dc7fd69c9e3d331b147bd6c7a390833fe1"
     }
   }
 }

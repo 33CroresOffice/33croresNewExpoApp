@@ -92,6 +92,7 @@ export default function VendorProcurementOrderDetail() {
     setSaveSuccess(false);
 
     const updates = items
+      .filter(item => !unavailableItems[item.id])
       .map(item => {
         const totalPrice = parseFloat(totals[item.id] ?? '');
         const unitPrice = !isNaN(totalPrice) && item.quantity > 0 ? totalPrice / item.quantity : NaN;
@@ -100,7 +101,9 @@ export default function VendorProcurementOrderDetail() {
       .filter(({ totalPrice }) => !isNaN(totalPrice) && totalPrice >= 0);
 
     if (updates.length === 0) {
-      setSaveError('Please enter at least one valid total price.');
+      setSaveError(allUnavailable
+        ? 'All items are unavailable — nothing to price'
+        : 'Please enter a valid total price for each available item.');
       setSaving(false);
       return;
     }
@@ -121,11 +124,13 @@ export default function VendorProcurementOrderDetail() {
 
     const { data: freshItems } = await supabase
       .from('procurement_order_items')
-      .select('total_price')
+      .select('id, total_price')
       .eq('procurement_order_id', id!);
 
     if (freshItems) {
-      const newTotal = freshItems.reduce((sum, i) => sum + (Number(i.total_price) || 0), 0);
+      const unavailableItemIds = new Set(Object.keys(unavailableItems));
+      const pricedItems = freshItems.filter(i => !unavailableItemIds.has((i as any).id));
+      const newTotal = pricedItems.reduce((sum, i) => sum + (Number(i.total_price) || 0), 0);
       const { error: orderError } = await supabase
         .from('procurement_orders')
         .update({ total_amount: newTotal })
@@ -163,8 +168,10 @@ export default function VendorProcurementOrderDetail() {
     );
   }
 
-  const totalPriced = items.filter(i => i.price_per_unit != null).length;
-  const allPriced = totalPriced === items.length && items.length > 0;
+  const totalPriced = items.filter(i => i.price_per_unit != null && !unavailableItems[i.id]).length;
+  const availableCount = items.filter(i => !unavailableItems[i.id]).length;
+  const allPriced = availableCount > 0 && totalPriced === availableCount;
+  const allUnavailable = items.length > 0 && availableCount === 0;
 
   const isOrderActive = order.status !== 'fulfilled' && order.status !== 'cancelled';
 
@@ -283,7 +290,7 @@ export default function VendorProcurementOrderDetail() {
             <View style={[s.pricedBadge, { backgroundColor: allPriced ? Colors.successSurface : Colors.primarySurface }]}>
               {allPriced && <CheckCircle2 size={11} color={Colors.success} strokeWidth={2} />}
               <Text style={[s.pricedBadgeText, { color: allPriced ? Colors.success : Colors.primary }]}>
-                {totalPriced}/{items.length} priced
+                {allUnavailable ? 'All unavailable' : `${totalPriced}/${availableCount} priced`}
               </Text>
             </View>
           </View>
@@ -369,21 +376,25 @@ export default function VendorProcurementOrderDetail() {
             })
           )}
 
-          <TouchableOpacity
-            style={[s.saveBtn, saving && s.saveBtnDisabled]}
-            onPress={saveAll}
-            disabled={saving}
-            activeOpacity={0.85}
-          >
-            {saving ? (
-              <ActivityIndicator size="small" color={Colors.white} />
-            ) : (
-              <>
-                <Save size={18} color={Colors.white} strokeWidth={2} />
-                <Text style={s.saveBtnText}>Save Prices</Text>
-              </>
-            )}
-          </TouchableOpacity>
+          {allUnavailable ? (
+            <Text style={s.emptyText}>All items are unavailable — prices cannot be saved</Text>
+          ) : (
+            <TouchableOpacity
+              style={[s.saveBtn, saving && s.saveBtnDisabled]}
+              onPress={saveAll}
+              disabled={saving}
+              activeOpacity={0.85}
+            >
+              {saving ? (
+                <ActivityIndicator size="small" color={Colors.white} />
+              ) : (
+                <>
+                  <Save size={18} color={Colors.white} strokeWidth={2} />
+                  <Text style={s.saveBtnText}>Save Prices</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
 
         <View style={s.card}>

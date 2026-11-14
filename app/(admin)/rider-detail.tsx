@@ -1,9 +1,9 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import DatePickerField from '@/components/ui/DatePickerField';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Platform, ActivityIndicator, Modal, TextInput, Switch,
+  Platform, ActivityIndicator, Modal, TextInput, Switch, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeft, Bike, Phone, MapPin, Package, CreditCard, Calendar, CircleCheck as CheckCircle, Circle as XCircle, Clock, Plus, X, Truck, Star, ChevronDown, ChevronRight, Pencil, CircleAlert as AlertCircle, Users, ChartBar as BarChart3, IndianRupee, BedDouble } from 'lucide-react-native';
@@ -32,9 +32,55 @@ function getPayoutAbsenceDays(records: MonthlyAttendanceRecord[], monthKey: stri
   return calculateMonthlyAttendanceCounts(records, monthKey, cutoff).absent;
 }
 
-function getPayoutAbsenceDeduction(records: MonthlyAttendanceRecord[], monthKey: string, monthlySalary: string | number): number {
-  const salary = Math.max(Number(monthlySalary) || 0, 0);
-  return Math.round((salary / 30) * getPayoutAbsenceDays(records, monthKey));
+function getMonthDays(monthKey: string): number {
+  const [year, month] = monthKey.split('-').map(Number);
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+// Payout math for the selected period: salary is prorated by how much of the
+// month the period covers, and deductions are charged only for PAST scheduled
+// working days without a present record. Approved leave, today and future dates
+// are excused. Daily rate follows the salary / 30 convention.
+function computePayoutPeriod(
+  attendanceRecords: { date: string; status: string }[],
+  approvedLeaves: { leave_date: string; end_date: string | null }[],
+  periodStartRaw: string,
+  periodEndRaw: string,
+  monthKey: string,
+  monthlySalary: number,
+  today: string,
+): { periodStart: string; periodEnd: string; periodDays: number; absentDays: number; baseAmount: number; deductions: number } {
+  const monthStart = `${monthKey}-01`;
+  const monthEnd = `${monthKey}-${String(getMonthDays(monthKey)).padStart(2, '0')}`;
+  const isDate = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v);
+  const start = isDate(periodStartRaw) && periodStartRaw >= monthStart && periodStartRaw <= monthEnd ? periodStartRaw : monthStart;
+  let end = isDate(periodEndRaw) && periodEndRaw >= monthStart && periodEndRaw <= monthEnd ? periodEndRaw : monthEnd;
+  if (end < start) end = start;
+
+  const rawPeriodDays = Math.round((new Date(`${end}T00:00:00Z`).getTime() - new Date(`${start}T00:00:00Z`).getTime()) / 86400000) + 1;
+  // Every month is treated as 30 days for salary math, so a full month pays
+  // exactly the monthly salary and any period is prorated at salary / 30.
+  const periodDays = Math.min(rawPeriodDays, 30);
+
+  const presentDates = new Set(attendanceRecords.filter(r => r.status === 'present').map(r => r.date));
+  const statusByDate = new Map(attendanceRecords.map(r => [r.date, r.status]));
+  const leaveRanges = approvedLeaves.map(l => [l.leave_date, l.end_date || l.leave_date] as const);
+
+  let absentDays = 0;
+  for (let t = new Date(`${start}T00:00:00Z`).getTime(); t <= new Date(`${end}T00:00:00Z`).getTime(); t += 86400000) {
+    const date = new Date(t).toISOString().slice(0, 10);
+    if (date >= today) continue;
+    if (presentDates.has(date)) continue;
+    if (statusByDate.get(date) === 'leave') continue;
+    if (leaveRanges.some(([ls, le]) => date >= ls && date <= le)) continue;
+    absentDays += 1;
+  }
+
+  const salary = Math.max(monthlySalary, 0);
+  const baseAmount = Math.round((salary * periodDays) / 30);
+  // Deductions can never exceed the base amount, so net payout is never negative.
+  const deductions = Math.min(Math.round((salary / 30) * absentDays), baseAmount);
+  return { periodStart: start, periodEnd: end, periodDays, absentDays, baseAmount, deductions };
 }
 
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
@@ -96,8 +142,11 @@ function RiderDetailScreenContent() {
   const [deliveredAssignments, setDeliveredAssignments] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
   const [payouts, setPayouts] = useState<any[]>([]);
+  const [approvedLeaves, setApprovedLeaves] = useState<{ leave_date: string; end_date: string | null }[]>([]);
   const [pickupOrders, setPickupOrders] = useState<any[]>([]);
   const [pickupMonthKey, setPickupMonthKey] = useState(todayISTStr().slice(0, 7));
+  const [pickupYear, setPickupYear] = useState(() => Number(todayISTStr().slice(0, 4)));
+  const [showPickupYearPicker, setShowPickupYearPicker] = useState(false);
   const [pickupPrice, setPickupPrice] = useState(0);
   const [pickupPriceInput, setPickupPriceInput] = useState('');
   const [showPickupPriceModal, setShowPickupPriceModal] = useState(false);
@@ -115,7 +164,7 @@ function RiderDetailScreenContent() {
   const [attDateTo, setAttDateTo] = useState<Date | null>(null);
 
   const [showPayoutModal, setShowPayoutModal] = useState(false);
-  const [payoutForm, setPayoutForm] = useState({ period_start: format(startOfMonth(new Date()), 'yyyy-MM-dd'), period_end: format(endOfMonth(new Date()), 'yyyy-MM-dd'), base_amount: '', delivery_bonus: '', deductions: '', notes: '', payment_method: 'upi' });
+  const [payoutForm, setPayoutForm] = useState({ period_start: '', period_end: '', delivery_bonus: '', notes: '', payment_method: 'upi' });
   const [payoutMonthKey, setPayoutMonthKey] = useState(format(new Date(), 'yyyy-MM'));
   const [incentiveBonus, setIncentiveBonus] = useState(0);
   const [fetchingIncentive, setFetchingIncentive] = useState(false);
@@ -128,7 +177,6 @@ function RiderDetailScreenContent() {
   const [assignedDatePreset, setAssignedDatePreset] = useState<'today' | 'yesterday' | 'custom' | 'all'>('today');
   const [assignedDateFrom, setAssignedDateFrom] = useState<Date | null>(null);
   const [assignedDateTo, setAssignedDateTo] = useState<Date | null>(null);
-  const [assignedOrdersFilter, setAssignedOrdersFilter] = useState<string>('all');
 
   const [leaveMonthKey, setLeaveMonthKey] = useState(todayISTStr().slice(0, 7));
   const [showLeaveModal, setShowLeaveModal] = useState(false);
@@ -142,7 +190,7 @@ function RiderDetailScreenContent() {
 
   const load = useCallback(async () => {
     try {
-      const [riderRes, assignRes, attRes, payoutRes, zoneRes, locRes, pickupRes] = await Promise.all([
+      const [riderRes, assignRes, attRes, payoutRes, zoneRes, locRes, pickupRes, leaveReqRes] = await Promise.all([
         supabase.from('riders').select('*').eq('id', id).maybeSingle(),
         supabase.from('rider_order_assignments').select('*').eq('rider_id', id).order('assigned_at', { ascending: false }),
         supabase.from('rider_attendance').select('*').eq('rider_id', id).order('date', { ascending: false }).order('check_in_time', { ascending: false }),
@@ -150,6 +198,7 @@ function RiderDetailScreenContent() {
         supabase.from('rider_zone_assignments').select('*, locality:localities(id, locality_name)').eq('rider_id', id).order('created_at', { ascending: false }),
         supabase.from('localities').select('id, locality_name').order('locality_name'),
         supabase.from('procurement_orders').select('id, order_number, status, requirement_date, pickup_assigned_at, picked_up_at, vendor:vendors(business_name)').eq('pickup_rider_id', id).not('status', 'eq', 'cancelled').order('requirement_date', { ascending: false }),
+        supabase.from('rider_leave_requests').select('leave_date, end_date').eq('rider_id', id).eq('status', 'approved'),
       ]);
 
       const rawAssignments = assignRes.data ?? [];
@@ -160,7 +209,7 @@ function RiderDetailScreenContent() {
           ? supabase.from('orders').select('id, scheduled_date, status, user_id, subscription_id').in('id', orderIds)
           : Promise.resolve({ data: [] }),
         customOrderIds.length > 0
-          ? supabase.from('custom_orders').select('id, delivery_date, status, user_id').in('id', customOrderIds)
+          ? supabase.from('custom_orders').select('id, delivery_date, status, user_id, address_id').in('id', customOrderIds)
           : Promise.resolve({ data: [] }),
       ]);
 
@@ -168,12 +217,15 @@ function RiderDetailScreenContent() {
       const customOrders = customOrdersRes.data ?? [];
       const subscriptionIds = orders.map((order: any) => order.subscription_id).filter(Boolean);
       const profileIds = [...orders.map((order: any) => order.user_id), ...customOrders.map((order: any) => order.user_id)].filter(Boolean);
-      const [subscriptionsRes, profilesRes] = await Promise.all([
+      const [subscriptionsRes, profilesRes, customAddrRes] = await Promise.all([
         subscriptionIds.length > 0
-          ? supabase.from('subscriptions').select('id, status, start_date, end_date, new_end_date, pause_start_date, pause_until').in('id', subscriptionIds)
+          ? supabase.from('subscriptions').select('id, status, start_date, end_date, new_end_date, pause_start_date, pause_until, delivery_address:addresses(apartment_name, street, landmark, city, state, pincode)').in('id', subscriptionIds)
           : Promise.resolve({ data: [] }),
         profileIds.length > 0
           ? supabase.from('profiles').select('id, full_name, mobile').in('id', profileIds)
+          : Promise.resolve({ data: [] }),
+        customOrders.length > 0
+          ? supabase.from('addresses').select('id, apartment_name, street, landmark, city, state, pincode').in('id', customOrders.map((order: any) => order.address_id).filter(Boolean))
           : Promise.resolve({ data: [] }),
       ]);
 
@@ -181,13 +233,15 @@ function RiderDetailScreenContent() {
       const customOrderMap: Record<string, any> = {};
       const subscriptionMap: Record<string, any> = {};
       const profileMap: Record<string, any> = {};
+      const customAddrMap: Record<string, any> = {};
       (subscriptionsRes.data ?? []).forEach((subscription: any) => { subscriptionMap[subscription.id] = subscription; });
       (profilesRes.data ?? []).forEach((profile: any) => { profileMap[profile.id] = profile; });
+      (customAddrRes.data ?? []).forEach((addr: any) => { customAddrMap[addr.id] = addr; });
       orders.forEach((order: any) => {
         orderMap[order.id] = { ...order, subscription: subscriptionMap[order.subscription_id] ?? null, user: profileMap[order.user_id] ?? null };
       });
       customOrders.forEach((order: any) => {
-        customOrderMap[order.id] = { ...order, user: profileMap[order.user_id] ?? null };
+        customOrderMap[order.id] = { ...order, user: profileMap[order.user_id] ?? null, address: customAddrMap[order.address_id] ?? null };
       });
 
       const enrichedAssignments = rawAssignments.map((assignment: any) => ({
@@ -195,24 +249,66 @@ function RiderDetailScreenContent() {
         order: assignment.order_id ? orderMap[assignment.order_id] ?? null : null,
         custom_order: assignment.custom_order_id ? customOrderMap[assignment.custom_order_id] ?? null : null,
       }));
-      const currentByKey = new Map<string, any>();
-      for (const assignment of enrichedAssignments) {
-        if (!ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status)) continue;
-        if (assignment.order_id && assignment.order?.subscription) {
-          const effectiveStatus = getEffectiveStatus(assignment.order.subscription);
-          if (effectiveStatus !== 'active') continue;
+      // Mirror the Rider App's live-queue rule exactly: one live row per
+      // subscription/custom order, always today's own delivery record
+      // (today's delivered > today's picked-up > today's assigned > in-transit
+      // > newest). Every other row — including past Delivered rows — is
+      // date-wise history and is never mixed into today.
+      const todayNow = todayISTStr();
+      const rankForLive = (a: any) => {
+        const orderDate = a.order?.scheduled_date?.slice(0, 10) ?? null;
+        if (a.status === 'delivered' && a.delivered_at) {
+          if (toISTDateStr(a.delivered_at) === todayNow) return 4;
+          if (orderDate === todayNow) return 0;
         }
-        const key = assignment.custom_order_id ?? assignment.order_id;
+        if (orderDate === todayNow) return a.picked_up_at ? 3 : 2;
+        if (a.picked_up_at && !a.delivered_at) return 1;
+        return 0;
+      };
+      const liveByKey = new Map<string, any>();
+      for (const assignment of enrichedAssignments) {
+        const key = assignment.custom_order_id ?? assignment.order?.subscription_id ?? assignment.order_id;
         if (!key) continue;
-        const existing = currentByKey.get(key);
-        if (!existing || new Date(assignment.assigned_at).getTime() > new Date(existing.assigned_at).getTime()) {
-          currentByKey.set(key, assignment);
+        const existing = liveByKey.get(key);
+        if (!existing) { liveByKey.set(key, assignment); continue; }
+        const rank = rankForLive(assignment);
+        const exRank = rankForLive(existing);
+        if (rank > exRank || (rank === exRank && new Date(assignment.assigned_at).getTime() >= new Date(existing.assigned_at).getTime())) {
+          liveByKey.set(key, assignment);
         }
       }
-      const historyAssignments = enrichedAssignments.filter((assignment: any) => !ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status));
+      // Queue eligibility mirrors the Rider App filter (applied after dedup):
+      // custom orders only on their delivery day until delivered; subscription
+      // customers while today falls inside their active delivery window.
+      const isQueueEligible = (a: any) => {
+        if (!a || a.status === 'reassigned') return false;
+        if (a.custom_order_id) {
+          const deliveryDay = a.custom_order?.delivery_date?.slice(0, 10);
+          return deliveryDay === todayNow && a.status !== 'delivered';
+        }
+        if (!a.order?.subscription) return false;
+        if (getEffectiveStatus(a.order.subscription) !== 'active') return false;
+        const start = (a.order.subscription.start_date ?? '').slice(0, 10);
+        const end = (a.order.subscription.new_end_date ?? a.order.subscription.end_date ?? '').slice(0, 10);
+        if (!start && !end) return true;
+        if (start && todayNow < start) return false;
+        if (end && todayNow > end) return false;
+        return true;
+      };
+      const liveIds = new Set<string>();
+      const liveRows: any[] = [];
+      for (const a of liveByKey.values()) {
+        if (isQueueEligible(a)) {
+          liveIds.add(a.id);
+          liveRows.push({ ...a, _live: true });
+        }
+      }
+      const historyRows = enrichedAssignments
+        .filter((a: any) => !liveIds.has(a.id))
+        .map((a: any) => ({ ...a, _live: false }));
       const finalAssignments = [
-        ...historyAssignments,
-        ...Array.from(currentByKey.values()),
+        ...historyRows,
+        ...liveRows,
       ].sort((a: any, b: any) => new Date(b.assigned_at).getTime() - new Date(a.assigned_at).getTime());
 
       setZoneAssignments(zoneRes.data ?? []);
@@ -222,6 +318,7 @@ function RiderDetailScreenContent() {
       setDeliveredAssignments(finalAssignments.filter((assignment: any) => assignment.status === 'delivered'));
       setAttendance(attRes.data ?? []);
       setPayouts(payoutRes.data ?? []);
+      setApprovedLeaves(leaveReqRes.data ?? []);
       setPickupOrders(pickupRes.data ?? []);
     } catch (e) {
       console.error('load error', e);
@@ -251,6 +348,14 @@ function RiderDetailScreenContent() {
   useEffect(() => { loadPickupPrice(); }, [loadPickupPrice]);
 
   useEffect(() => {
+    const channel = supabase
+      .channel(`rider-assignments-${id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rider_order_assignments', filter: `rider_id=eq.${id}` }, () => { load(); })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [id, load]);
+
+  useEffect(() => {
     if (activeTab !== 'pickup') return;
     const channel = supabase
       .channel(`rider-pickup-${id}`)
@@ -269,11 +374,13 @@ function RiderDetailScreenContent() {
       per_day_price: price,
       created_by: adminProfile?.id,
     }, { onConflict: 'rider_id,month' });
-    if (!error) {
-      setPickupPrice(price);
-      setShowPickupPriceModal(false);
-    }
     setSavingPickupPrice(false);
+    if (error) {
+      Alert.alert('Error', 'Could not save the pickup price. Please try again.');
+      return;
+    }
+    setPickupPrice(price);
+    setShowPickupPriceModal(false);
   };
 
   const saveAttendance = async () => {
@@ -371,38 +478,48 @@ function RiderDetailScreenContent() {
 
   const openPayoutModal = () => {
     const monthKey = format(new Date(), 'yyyy-MM');
-    const start = format(startOfMonth(new Date()), 'yyyy-MM-dd');
-    const end = format(endOfMonth(new Date()), 'yyyy-MM-dd');
-    const salary = String(rider.monthly_salary ?? 0);
     setPayoutMonthKey(monthKey);
-    setPayoutForm({ period_start: start, period_end: end, base_amount: salary, delivery_bonus: '', deductions: String(getPayoutAbsenceDeduction(attendance, monthKey, salary)), notes: '', payment_method: 'upi' });
-    setIncentiveBonus(0);
+    setPayoutPeriodTouched(false);
+    setPayoutForm(p => ({ ...p, notes: '' }));
     setShowPayoutModal(true);
+    setIncentiveBonus(0);
     fetchIncentiveBonus(id, monthKey);
   };
 
   const selectPayoutMonth = (monthKey: string) => {
-    const [y, m] = monthKey.split('-').map(Number);
-    const start = format(new Date(y, m - 1, 1), 'yyyy-MM-dd');
-    const end = format(endOfMonth(new Date(y, m - 1)), 'yyyy-MM-dd');
-    const salary = String(rider.monthly_salary ?? 0);
     setPayoutMonthKey(monthKey);
-    setPayoutForm(p => ({ ...p, period_start: start, period_end: end, base_amount: salary, delivery_bonus: '', deductions: String(getPayoutAbsenceDeduction(attendance, monthKey, salary)) }));
+    setPayoutPeriodTouched(false);
     fetchIncentiveBonus(id, monthKey);
   };
 
+  // Period dates follow the selected month chip until the admin edits them
+  // manually; after a manual edit, the typed range is kept as-is (clamped).
+  const payoutPeriodTouchedRef = useRef(false);
+  const setPayoutPeriodTouched = (v: boolean) => { payoutPeriodTouchedRef.current = v; };
+  const computedPayout = computePayoutPeriod(
+    attendance,
+    approvedLeaves,
+    payoutPeriodTouchedRef.current ? payoutForm.period_start : `${payoutMonthKey}-01`,
+    payoutPeriodTouchedRef.current ? payoutForm.period_end : `${payoutMonthKey}-${String(getMonthDays(payoutMonthKey)).padStart(2, '0')}`,
+    payoutMonthKey,
+    Number(rider?.monthly_salary ?? 0),
+    todayISTStr(),
+  );
+  const computedBase = String(computedPayout.baseAmount);
+  const computedDeductions = String(computedPayout.deductions);
+
   const savePayout = async () => {
     setSavingPayout(true);
-    const base = Math.round(Number(payoutForm.base_amount) || 0);
+    const base = computedPayout.baseAmount;
     const bonus = Math.round(Number(payoutForm.delivery_bonus) || 0);
-    const deductions = Math.round(Number(payoutForm.deductions) || 0);
+    const deductions = computedPayout.deductions;
     const final = Math.round(base + bonus - deductions);
     await supabase.from('rider_payouts').insert({
       rider_id: id,
-      period_start: payoutForm.period_start,
-      period_end: payoutForm.period_end,
+      period_start: computedPayout.periodStart,
+      period_end: computedPayout.periodEnd,
       total_deliveries: assignments.filter(a => a.status === 'delivered').length,
-      total_days_worked: attendance.filter(a => a.date?.startsWith(payoutMonthKey) && (a.status === 'present' || a.status === 'half_day')).length,
+      total_days_worked: attendance.filter(a => a.date >= computedPayout.periodStart && a.date <= computedPayout.periodEnd && (a.status === 'present' || a.status === 'half_day')).length,
       base_amount: base,
       delivery_bonus: bonus,
       deductions,
@@ -463,6 +580,11 @@ function RiderDetailScreenContent() {
       ? `Custom order #${assignment.custom_order_id.slice(-8).toUpperCase()}`
       : 'Invalid assignment';
   const getAssignmentCustomer = (assignment: any) => assignment.order?.user ?? assignment.custom_order?.user;
+  const getAssignmentAddress = (assignment: any) => {
+    const addr = assignment.order?.subscription?.delivery_address ?? assignment.custom_order?.address;
+    if (!addr) return '';
+    return [addr.apartment_name, addr.street, addr.landmark, addr.city, addr.state, addr.pincode].filter(Boolean).join(', ');
+  };
   const getAssignmentScheduledDate = (assignment: any) => assignment.order?.scheduled_date ?? assignment.custom_order?.delivery_date ?? null;
   const getAssignmentTypeLabel = (assignment: any) => assignment.order_id ? 'Subscription' : 'Customize';
 
@@ -539,12 +661,11 @@ function RiderDetailScreenContent() {
 
   const TABS: { key: Tab; label: string; count?: number }[] = [
     { key: 'overview',       label: 'Overview' },
-    { key: 'assigned_orders', label: 'Assigned Orders', count: assignments.filter((assignment: any) => ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status)).length },
+    { key: 'leave',       label: 'Attendance', count: absenceCount },
+    { key: 'assigned_orders', label: 'Assigned Orders', count: assignments.filter((assignment: any) => assignment._live).length },
     { key: 'assignments',     label: 'Deliveries', count: deliveredAssignments.length },
-    { key: 'attendance',  label: 'Attendance', count: attendance.length },
-    { key: 'payouts',     label: 'Payouts',    count: payouts.length },
     { key: 'pickup',      label: 'Pickup',     count: pickupOrders.length },
-    { key: 'leave',       label: 'Leave',      count: absenceCount },
+    { key: 'payouts',     label: 'Payouts',    count: payouts.length },
     { key: 'zones',       label: 'Zones',      count: zoneAssignments.length },
   ];
 
@@ -573,10 +694,6 @@ function RiderDetailScreenContent() {
             </View>
           </View>
         </View>
-        <TouchableOpacity style={s.assignBtn} onPress={() => router.push({ pathname: '/(admin)/rider-assignments' as any, params: { rider_id: id, rider_name: rider.full_name } })} activeOpacity={0.8}>
-          <Truck size={15} color={Colors.primary} strokeWidth={1.8} />
-          <Text style={s.assignBtnText}>Assign</Text>
-        </TouchableOpacity>
       </View>
 
       {/* Tabs */}
@@ -682,58 +799,41 @@ function RiderDetailScreenContent() {
 
         {/* ASSIGNED ORDERS */}
         {activeTab === 'assigned_orders' && (() => {
-          const statusFilter = assignedOrdersFilter;
-          // Apply the date filter first so stat totals and status chip counts
-          // always describe the currently selected day/range.
+          const yesterdayStr = yesterdayISTStr();
+          // Actual record date (IST), identical to the Deliveries tab: a
+          // delivered row belongs to the day it was actually delivered
+          // (never the order's scheduled date), custom orders to their
+          // delivery timestamp, everything else to its scheduled/assigned day.
+          const recordDate = (a: any) => {
+            if (a.status === 'delivered' && a.delivered_at) return toISTDateStr(a.delivered_at);
+            if (a.custom_order_id) {
+              return getAssignmentScheduledDate(a)?.slice(0, 10) || (a.assigned_at ? toISTDateStr(a.assigned_at) : '');
+            }
+            const sched = getAssignmentScheduledDate(a)?.slice(0, 10);
+            if (sched) return sched;
+            return a.assigned_at ? toISTDateStr(a.assigned_at) : '';
+          };
           const dateFiltered = assignments.filter(a => {
-            const todayStr = todayISTStr();
-            const yesterdayStr = yesterdayISTStr();
-            const scheduledDate = getAssignmentScheduledDate(a)?.slice(0, 10) ?? '';
-            const assignmentDate = a.assigned_at ? toISTDateStr(a.assigned_at) : '';
-            const date = scheduledDate || assignmentDate;
-            const isActiveSubscription = ACTIVE_ASSIGNMENT_STATUSES.includes(a.status)
-              && a.order_id
-              && a.order?.subscription
-              && getEffectiveStatus(a.order.subscription) === 'active';
-            if (assignedDatePreset === 'today' && !isActiveSubscription && date !== todayStr) return false;
-            if (assignedDatePreset === 'yesterday' && date !== yesterdayStr) return false;
+            // Today mirrors the Rider App queue exactly: the single live row
+            // per customer, never historical delivered rows.
+            if (assignedDatePreset === 'today') return !!a._live;
+            if (assignedDatePreset === 'yesterday') return recordDate(a) === yesterdayStr;
             if (assignedDatePreset === 'custom') {
-              if (assignedDateFrom && date < format(assignedDateFrom, 'yyyy-MM-dd')) return false;
-              if (assignedDateTo && date > format(assignedDateTo, 'yyyy-MM-dd')) return false;
+              const d = recordDate(a);
+              if (assignedDateFrom && d < format(assignedDateFrom, 'yyyy-MM-dd')) return false;
+              if (assignedDateTo && d > format(assignedDateTo, 'yyyy-MM-dd')) return false;
+              return true;
             }
             return true;
           });
-          const filtered = dateFiltered.filter(a => statusFilter === 'all' || a.status === statusFilter);
+          const filtered = dateFiltered;
           return (
           <>
             <View style={[s.assignStats, isWeb && s.assignStatsWeb]}>
               <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{dateFiltered.length}</Text><Text style={s.assignStatLabel}>Total</Text></View>
               <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{dateFiltered.filter(a => a.status === 'assigned').length}</Text><Text style={s.assignStatLabel}>Assigned</Text></View>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>{dateFiltered.filter(a => ['accepted', 'picked_up'].includes(a.status)).length}</Text><Text style={s.assignStatLabel}>Pending</Text></View>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.success }]}>{dateFiltered.filter(a => a.status === 'delivered').length}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
-              <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.error }]}>{dateFiltered.filter(a => a.status === 'failed').length}</Text><Text style={s.assignStatLabel}>Failed</Text></View>
+              <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.success }]}>{dateFiltered.filter(a => a.status === 'delivered').length}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
             </View>
-
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
-              {(['all', 'assigned', 'accepted', 'picked_up', 'delivered', 'failed', 'reassigned'] as const).map(st => {
-                const count = st === 'all' ? dateFiltered.length : dateFiltered.filter(a => a.status === st).length;
-                const cfg = st === 'all' ? null : ASSIGN_STATUS_CONFIG[st] ?? ASSIGN_STATUS_CONFIG.assigned;
-                const isActive = statusFilter === st;
-                const label = st === 'all' ? 'All' : cfg!.label;
-                const color = st === 'all' ? Colors.primary : cfg!.color;
-                const bg = st === 'all' ? Colors.primarySurface : cfg!.bg;
-                return (
-                  <TouchableOpacity
-                    key={st}
-                    style={[s.attMonthChip, isActive && { backgroundColor: bg, borderColor: color }]}
-                    onPress={() => setAssignedOrdersFilter(st)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[s.attMonthChipText, isActive && { color, fontFamily: Typography.fontFamily.sansSemiBold }]}>{label}{count > 0 ? ` (${count})` : ''}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
               {(['today', 'yesterday', 'custom', 'all'] as const).map(key => (
@@ -764,7 +864,7 @@ function RiderDetailScreenContent() {
             )}
 
             {filtered.length === 0 ? (
-              <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={assignments.length === 0 ? 'No orders assigned yet' : 'No orders match this filter'} sub={assignments.length === 0 ? 'Assign orders to this rider to see them here.' : 'Try a different status or date filter.'} />
+              <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={assignments.length === 0 ? 'No orders assigned yet' : 'No orders match this filter'} sub={assignments.length === 0 ? 'Assign orders to this rider to see them here.' : 'Try a different date filter.'} />
             ) : (
               filtered.map(a => {
                 const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
@@ -782,10 +882,13 @@ function RiderDetailScreenContent() {
                         </View>
                       </View>
                       {getAssignmentCustomer(a) && <Text style={s.assignCustomer}>{getAssignmentCustomer(a).full_name ?? getAssignmentCustomer(a).mobile}</Text>}
+                      {getAssignmentAddress(a) ? (
+                        <View style={s.assignAddrRow}>
+                          <MapPin size={11} color={Colors.textTertiary} strokeWidth={1.8} />
+                          <Text style={s.assignAddrText} numberOfLines={2}>{getAssignmentAddress(a)}</Text>
+                        </View>
+                      ) : null}
                       <View style={s.assignMeta}>
-                        <Calendar size={11} color={Colors.textTertiary} strokeWidth={1.8} />
-                        <Text style={s.assignDate}>{format(new Date(a.assigned_at), 'dd MMM yyyy · HH:mm')}</Text>
-                        {getAssignmentScheduledDate(a) && <><Text style={s.dot}>·</Text><Text style={s.assignDate}>Due: {format(new Date(getAssignmentScheduledDate(a)!), 'dd MMM yyyy')}</Text></>}
                         {a.delivery_fee > 0 && <><Text style={s.dot}>·</Text><Text style={s.assignFee}>{fmt(a.delivery_fee)}</Text></>}
                         {a.distance_km && <><Text style={s.dot}>·</Text><Text style={s.assignDist}>{a.distance_km} km</Text></>}
                       </View>
@@ -805,13 +908,6 @@ function RiderDetailScreenContent() {
         {/* ASSIGNMENTS / DELIVERIES */}
         {activeTab === 'assignments' && (
           <>
-            <View style={[s.assignStats, isWeb && s.assignStatsWeb]}>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.success }]}>{deliveredAssignments.length}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.error }]}>{assignments.filter(a => a.status === 'failed').length}</Text><Text style={s.assignStatLabel}>Failed</Text></View>
-              <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>{assignments.filter(a => ['assigned', 'accepted', 'picked_up'].includes(a.status)).length}</Text><Text style={s.assignStatLabel}>In Progress</Text></View>
-              <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{(deliveredAssignments.length + assignments.filter(a => a.status === 'failed').length) > 0 ? `${Math.round(deliveredAssignments.length / (deliveredAssignments.length + assignments.filter(a => a.status === 'failed').length) * 100)}%` : '0%'}</Text><Text style={s.assignStatLabel}>Success</Text></View>
-            </View>
-
             {/* Date Preset Chips */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
               {([
@@ -863,14 +959,17 @@ function RiderDetailScreenContent() {
             {(() => {
               const todayStr = todayISTStr();
               const yesterdayStr = yesterdayISTStr();
-              // Group by the delivery's scheduled day (IST); fall back to the
-              // IST day the assignment was actually delivered/handed out.
+              // Date-wise by the actual delivery timestamp in IST — a record
+              // only appears on the day it was delivered, never by scheduled
+              // date or a carried-forward status.
               const getDeliveryDate = (a: any) => {
+                if (a.status === 'delivered' && a.delivered_at) return toISTDateStr(a.delivered_at);
                 const sched = getAssignmentScheduledDate(a);
                 if (sched) return sched.slice(0, 10);
-                return a.delivered_at ? toISTDateStr(a.delivered_at) : (a.assigned_at ? toISTDateStr(a.assigned_at) : '');
+                return a.assigned_at ? toISTDateStr(a.assigned_at) : '';
               };
               const filtered = assignments.filter(a => {
+                if (a.status !== 'delivered') return false;
                 const d = getDeliveryDate(a);
                 if (deliveryDatePreset === 'today' && d !== todayStr) return false;
                 if (deliveryDatePreset === 'yesterday' && d !== yesterdayStr) return false;
@@ -890,10 +989,10 @@ function RiderDetailScreenContent() {
               const countOf = (list: any[], pred: (a: any) => boolean) => list.filter(pred).length;
               const groupCounts = (list: any[]) => ({
                 assigned: countOf(list, a => a.status === 'assigned'),
-                pending: countOf(list, a => ['accepted', 'picked_up'].includes(a.status)),
                 delivered: countOf(list, a => a.status === 'delivered'),
-                failed: countOf(list, a => a.status === 'failed'),
               });
+              const attendanceByDate = new Map(attendance.map((rec: any) => [rec.date, rec.status]));
+              const isAbsentDay = (d: string) => attendanceByDate.get(d) === 'absent';
               const labelFor = (d: string) => {
                 if (d === 'unknown') return 'Unknown date';
                 const base = format(new Date(d + 'T00:00:00'), 'EEE, dd MMM yyyy');
@@ -903,28 +1002,29 @@ function RiderDetailScreenContent() {
               };
               return (
               <>
-              <View style={[s.assignStats, isWeb && s.assignStatsWeb]}>
-                <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.primary }]}>{filtered.filter(a => a.status === 'assigned').length}</Text><Text style={s.assignStatLabel}>Assigned</Text></View>
-                <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.warning }]}>{filtered.filter(a => ['accepted', 'picked_up'].includes(a.status)).length}</Text><Text style={s.assignStatLabel}>Pending</Text></View>
-                <View style={s.assignStat}><Text style={[s.assignStatVal, { color: Colors.success }]}>{filtered.filter(a => a.status === 'delivered').length}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
-                <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.error }]}>{filtered.filter(a => a.status === 'failed').length}</Text><Text style={s.assignStatLabel}>Failed</Text></View>
+              <View style={s.assignStats}>
+                <View style={[s.assignStat, s.assignStatLast]}><Text style={[s.assignStatVal, { color: Colors.success }]}>{filtered.length}</Text><Text style={s.assignStatLabel}>Delivered</Text></View>
               </View>
               {groupArr.length === 0 ? (
                 <EmptyBlock icon={<Truck size={32} color={Colors.textDisabled} strokeWidth={1.2} />} title={assignments.length === 0 ? 'No delivery records yet' : 'No records match this date filter'} sub={assignments.length === 0 ? 'Deliveries for this rider will appear here day by day.' : 'Try a different date filter.'} />
               ) : (
                 groupArr.map(([day, list]) => {
                   const counts = groupCounts(list);
+                  const absentDay = isAbsentDay(day);
                   return (
                     <View key={day} style={s.dayGroup}>
                       <View style={s.dayGroupHeader}>
                         <Text style={s.dayGroupDate}>{labelFor(day)}</Text>
                         <View style={s.dayGroupCounts}>
-                          {counts.assigned > 0 && <View style={[s.dayCountPill, { backgroundColor: Colors.primarySurface }]}><Text style={[s.dayCountText, { color: Colors.primary }]}>Assigned {counts.assigned}</Text></View>}
-                          {counts.pending > 0 && <View style={[s.dayCountPill, { backgroundColor: '#FFF3E0' }]}><Text style={[s.dayCountText, { color: Colors.warning }]}>Pending {counts.pending}</Text></View>}
-                          {counts.delivered > 0 && <View style={[s.dayCountPill, { backgroundColor: '#E8F5E9' }]}><Text style={[s.dayCountText, { color: Colors.success }]}>Delivered {counts.delivered}</Text></View>}
-                          {counts.failed > 0 && <View style={[s.dayCountPill, { backgroundColor: '#FFEBEE' }]}><Text style={[s.dayCountText, { color: Colors.error }]}>Failed {counts.failed}</Text></View>}
+                          {absentDay && <View style={[s.dayCountPill, { backgroundColor: Colors.errorSurface }]}><Text style={[s.dayCountText, { color: Colors.error }]}>Absent day</Text></View>}
+                          {counts.delivered > 0 && <View style={[s.dayCountPill, { backgroundColor: absentDay ? Colors.errorSurface : '#E8F5E9' }]}><Text style={[s.dayCountText, { color: absentDay ? Colors.error : Colors.success }]}>Delivered {counts.delivered}</Text></View>}
                         </View>
                       </View>
+                      {absentDay && counts.delivered > 0 && (
+                        <Text style={s.absentDayNote}>
+                          Delivery recorded on an absent day — flagged for admin review
+                        </Text>
+                      )}
                       {list.map(a => {
                 const cfg = ASSIGN_STATUS_CONFIG[a.status] ?? ASSIGN_STATUS_CONFIG.assigned;
                 return (
@@ -941,9 +1041,15 @@ function RiderDetailScreenContent() {
                         </View>
                       </View>
                       {getAssignmentCustomer(a) && <Text style={s.assignCustomer}>{getAssignmentCustomer(a).full_name ?? getAssignmentCustomer(a).mobile}</Text>}
+                      {getAssignmentAddress(a) ? (
+                        <View style={s.assignAddrRow}>
+                          <MapPin size={11} color={Colors.textTertiary} strokeWidth={1.8} />
+                          <Text style={s.assignAddrText} numberOfLines={2}>{getAssignmentAddress(a)}</Text>
+                        </View>
+                      ) : null}
                       <View style={s.assignMeta}>
                         <Calendar size={11} color={Colors.textTertiary} strokeWidth={1.8} />
-                        <Text style={s.assignDate}>{format(new Date(a.delivered_at ?? a.assigned_at), 'dd MMM · HH:mm')}</Text>
+                        <Text style={s.assignDate}>{format(new Date(a.delivered_at ?? a.assigned_at), 'dd MMM')} · {formatISTTime(a.delivered_at ?? a.assigned_at)}</Text>
                         {a.delivery_fee > 0 && <><Text style={s.dot}>·</Text><Text style={s.assignFee}>{fmt(a.delivery_fee)}</Text></>}
                         {a.distance_km && <><Text style={s.dot}>·</Text><Text style={s.assignDist}>{a.distance_km} km</Text></>}
                       </View>
@@ -1155,13 +1261,28 @@ function RiderDetailScreenContent() {
                   </View>
                 </View>
               </View>
+              <View style={s.fieldGroup}>
+                <TouchableOpacity style={s.pickerBtn} onPress={() => setShowPickupYearPicker(p => !p)} activeOpacity={0.8}>
+                  <Text style={s.pickerValue}>{pickupYear}</Text>
+                  <ChevronDown size={14} color={Colors.textTertiary} strokeWidth={1.8} />
+                </TouchableOpacity>
+                {showPickupYearPicker && (
+                  <View style={s.pickerDropdown}>
+                    {Array.from({ length: 12 }, (_, i) => new Date().getFullYear() - 10 + i).map(year => (
+                      <TouchableOpacity key={year} style={[s.pickerOption, pickupYear === year && s.pickerOptionActive]} onPress={() => { setPickupYear(year); setPickupMonthKey(`${year}-${pickupMonthKey.slice(5, 7)}`); setShowPickupYearPicker(false); }}>
+                        <Text style={[s.pickerOptionText, pickupYear === year && s.pickerOptionTextActive]}>{year}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
-                {Array.from({ length: 6 }, (_, index) => {
-                  const month = subMonths(startOfMonth(new Date()), index);
-                  const key = format(month, 'yyyy-MM');
+                {Array.from({ length: 12 }, (_, i) => i).map(monthIndex => {
+                  const key = `${pickupYear}-${String(monthIndex + 1).padStart(2, '0')}`;
+                  const monthLabel = format(new Date(pickupYear, monthIndex, 1), 'MMM');
                   return (
                     <TouchableOpacity key={key} style={[s.attMonthChip, pickupMonthKey === key && s.attMonthChipActive]} onPress={() => setPickupMonthKey(key)} activeOpacity={0.7}>
-                      <Text style={[s.attMonthChipText, pickupMonthKey === key && s.attMonthChipTextActive]}>{format(month, 'MMM yyyy')}</Text>
+                      <Text style={[s.attMonthChipText, pickupMonthKey === key && s.attMonthChipTextActive]}>{monthLabel}</Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -1185,9 +1306,9 @@ function RiderDetailScreenContent() {
                       <View style={s.leaveCardBody}>
                         <View style={s.leaveCardTop}>
                           <Text style={s.leaveDate}>{order.order_number}</Text>
-                          <Text style={s.leaveNotes}>{order.vendor?.business_name ?? 'Vendor'}</Text>
+                          <Text style={[s.leaveNotes, { fontFamily: Typography.fontFamily.sansSemiBold, color: Colors.textPrimary }]}>{order.vendor?.business_name ?? 'Vendor'}</Text>
                         </View>
-                        <Text style={s.leaveNotes}>{order.status === 'fulfilled' ? 'Picked Up' : 'Pending Pickup'}</Text>
+                        <Text style={[s.leaveNotes, { fontFamily: Typography.fontFamily.sansSemiBold, color: Colors.textPrimary }]}>{order.status === 'fulfilled' ? 'Picked Up' : 'Pending Pickup'}</Text>
                       </View>
                     </View>
                   ))}
@@ -1255,11 +1376,6 @@ function RiderDetailScreenContent() {
         {/* LEAVE — mirrors the Rider App attendance log (absences this month) */}
         {activeTab === 'leave' && (
           <>
-            <TouchableOpacity style={s.addBtn} onPress={() => { setLeaveForm({ leave_date: format(new Date(), 'yyyy-MM-dd'), end_date: format(new Date(), 'yyyy-MM-dd'), reason: '', notes: '' }); setShowLeaveModal(true); }} activeOpacity={0.8}>
-              <Plus size={15} color={Colors.white} strokeWidth={2} />
-              <Text style={s.addBtnText}>Mark Leave</Text>
-            </TouchableOpacity>
-
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attMonthChips}>
               {Array.from({ length: 12 }, (_, index) => {
                 const month = subMonths(startOfMonth(new Date()), index);
@@ -1393,11 +1509,15 @@ function RiderDetailScreenContent() {
                 })()}
               </ScrollView>
               <View style={s.fieldRowHoriz}>
-                <ModalField label="Period Start" value={payoutForm.period_start} onChange={v => setPayoutForm(p => ({ ...p, period_start: v }))} placeholder="2026-04-01" flex={1} />
-                <ModalField label="Period End" value={payoutForm.period_end} onChange={v => setPayoutForm(p => ({ ...p, period_end: v }))} placeholder="2026-04-30" flex={1} />
+                <ModalField label="Period Start" value={computedPayout.periodStart} onChange={v => { setPayoutPeriodTouched(true); setPayoutForm(p => ({ ...p, period_start: v })); }} placeholder="2026-04-01" flex={1} />
+                <ModalField label="Period End" value={computedPayout.periodEnd} onChange={v => { setPayoutPeriodTouched(true); setPayoutForm(p => ({ ...p, period_end: v })); }} placeholder="2026-04-30" flex={1} />
               </View>
               <View style={s.fieldRowHoriz}>
-                <ModalField label="Base Amount (₹) — Monthly Salary" value={payoutForm.base_amount} onChange={v => setPayoutForm(p => ({ ...p, base_amount: v, deductions: String(getPayoutAbsenceDeduction(attendance, payoutMonthKey, v)) }))} placeholder="0" keyboardType="numeric" flex={1} />
+                <View style={[s.fieldGroup, { flex: 1, marginBottom: 0 }]}>
+                  <Text style={s.fieldLabel}>Base Amount (₹) — Monthly Salary</Text>
+                  <TextInput style={s.input} value={computedBase} editable={false} placeholder="0" placeholderTextColor={Colors.textDisabled} keyboardType="numeric" />
+                  <Text style={s.payoutBonusHint}>{computedPayout.periodDays} day{computedPayout.periodDays === 1 ? '' : 's'} (30-day month) × ₹{(Number(rider?.monthly_salary ?? 0) / 30).toLocaleString('en-IN', { maximumFractionDigits: 2 })}/day</Text>
+                </View>
                 <View style={[s.fieldGroup, { flex: 1, marginBottom: 0 }]}>
                   <Text style={s.fieldLabel}>Delivery Bonus (₹) — Incentives earned in {format(new Date(Number(payoutMonthKey.slice(0, 4)), Number(payoutMonthKey.slice(5, 7)) - 1, 1), 'MMMM yyyy')}</Text>
                   <TextInput style={s.input} value={fetchingIncentive ? '…' : payoutForm.delivery_bonus} editable={false} placeholder="0" placeholderTextColor={Colors.textDisabled} keyboardType="numeric" />
@@ -1407,11 +1527,15 @@ function RiderDetailScreenContent() {
                 </View>
               </View>
               <View style={s.fieldRowHoriz}>
-                <ModalField label="Deductions (₹)" value={payoutForm.deductions} onChange={v => setPayoutForm(p => ({ ...p, deductions: v }))} placeholder="0" keyboardType="numeric" flex={1} />
+                <View style={[s.fieldGroup, { flex: 1, marginBottom: 0 }]}>
+                  <Text style={s.fieldLabel}>Deductions (₹)</Text>
+                  <TextInput style={s.input} value={computedDeductions} editable={false} placeholder="0" placeholderTextColor={Colors.textDisabled} keyboardType="numeric" />
+                  <Text style={s.payoutBonusHint}>{computedPayout.absentDays} absent day{computedPayout.absentDays === 1 ? '' : 's'} in the period (leave and future days excluded)</Text>
+                </View>
                 <View style={[s.fieldGroup, { flex: 1, justifyContent: 'flex-end' }]}>
                   <Text style={s.fieldLabel}>Total</Text>
                   <View style={s.totalBox}>
-                    <Text style={s.totalText}>{fmt(Math.round((Number(payoutForm.base_amount) || 0) + (Number(payoutForm.delivery_bonus) || 0) - (Number(payoutForm.deductions) || 0)))}</Text>
+                    <Text style={s.totalText}>{fmt(Math.round(computedPayout.baseAmount + (Number(payoutForm.delivery_bonus) || 0) - computedPayout.deductions))}</Text>
                   </View>
                 </View>
               </View>
@@ -1587,6 +1711,10 @@ const s = StyleSheet.create({
   dayGroupCounts: { flexDirection: 'row', gap: Spacing[1], flexWrap: 'wrap' },
   dayCountPill: { paddingHorizontal: Spacing[2], paddingVertical: 2, borderRadius: Radius.full },
   dayCountText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10 },
+  absentDayNote: {
+    fontFamily: Typography.fontFamily.sansSemiBold, fontSize: 10, color: Colors.error,
+    paddingHorizontal: Spacing[2], paddingBottom: Spacing[2],
+  },
   assignStatsWeb: {},
   assignStat: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing[3], borderRightWidth: 1, borderRightColor: Colors.divider },
   assignStatLast: { borderRightWidth: 0 },
@@ -1605,6 +1733,8 @@ const s = StyleSheet.create({
   assignCustomer: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textSecondary },
   assignMeta: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   assignDate: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
+  assignAddrRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 4, marginTop: 2 },
+  assignAddrText: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textSecondary, flex: 1 },
   assignFee: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.success },
   assignDist: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.textTertiary },
   failReason: { fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.error, marginTop: 2 },

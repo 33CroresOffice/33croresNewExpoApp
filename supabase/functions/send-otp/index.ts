@@ -1,6 +1,8 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+// Redeployed 2026-11-12 to refresh the function container.
+
 async function getSecret(supabaseClient: ReturnType<typeof createClient>, key: string): Promise<string | undefined> {
   try {
     const { data } = await supabaseClient

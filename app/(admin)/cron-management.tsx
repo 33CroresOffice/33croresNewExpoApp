@@ -10,7 +10,6 @@ import {
 } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
-import { format } from 'date-fns';
 
 type JobType = 'sql' | 'edge_function';
 type TimePeriod = 'AM' | 'PM';
@@ -18,6 +17,54 @@ type TimeMenu = 'hour' | 'minute' | 'period' | null;
 
 const HOURS = Array.from({ length: 12 }, (_, index) => index + 1);
 const MINUTES = Array.from({ length: 60 }, (_, index) => index);
+
+const SCHEDULER_TZ = 'Asia/Kolkata';
+
+// The scheduler (pg_cron) runs in the database's configured timezone, which we
+// read at runtime rather than assuming UTC. Every stored schedule is expressed
+// in that timezone; these helpers translate it to IST for display and back
+// again when saving.
+let schedulerZoneCache: string | null = null;
+
+async function getSchedulerTimezone(): Promise<string> {
+  if (schedulerZoneCache) return schedulerZoneCache;
+  try {
+    const { data, error } = await supabase.rpc('get_scheduler_timezone');
+    if (!error && typeof data === 'string' && data) {
+      schedulerZoneCache = data;
+      return data;
+    }
+  } catch {
+    // fall through to default
+  }
+  schedulerZoneCache = 'UTC';
+  return 'UTC';
+}
+
+function parseZoneOffsetMinutes(zone: string): number {
+  if (zone === 'UTC' || zone === 'GMT' || zone === 'Etc/UTC') return 0;
+  try {
+    const now = new Date();
+    const zoneParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(now);
+    const get = (type: string) => Number(zoneParts.find((part) => part.type === type)?.value);
+    const zoneMs = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second'));
+    const utcMinutes = Math.round((zoneMs - now.getTime()) / 60000);
+    if (!Number.isFinite(utcMinutes)) return 0;
+    return ((utcMinutes % 1440) + 1440) % 1440;
+  } catch {
+    return 0;
+  }
+}
+
+function isDailySchedule(schedule: string): boolean {
+  const parts = schedule.trim().split(/\s+/);
+  return parts.length === 5 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1]) && parts.slice(2).every((p) => p === '*');
+}
 
 function parseScheduleTime(schedule: string): { hour: number; hour24: number; minute: number; period: TimePeriod } {
   const [minuteValue, hourValue] = schedule.trim().split(/\s+/);
@@ -34,8 +81,11 @@ function parseScheduleTime(schedule: string): { hour: number; hour24: number; mi
   };
 }
 
-function utcToIst(hour24: number, minute: number): { hour: number; minute: number; period: TimePeriod } {
-  const total = (hour24 * 60 + minute + 330) % 1440;
+// Converts a "minute hour * * *" schedule expressed in the scheduler's
+// timezone into the wall-clock time it represents in IST.
+function scheduleToIst(hour24: number, minute: number, schedulerZone: string): { hour: number; minute: number; period: TimePeriod } {
+  const delta = parseZoneOffsetMinutes(SCHEDULER_TZ) - parseZoneOffsetMinutes(schedulerZone);
+  const total = (hour24 * 60 + minute + delta) % 1440;
   const hour = Math.floor(total / 60);
   return {
     hour: hour % 12 || 12,
@@ -44,34 +94,74 @@ function utcToIst(hour24: number, minute: number): { hour: number; minute: numbe
   };
 }
 
-function istToUtc(hour: number, minute: number, period: TimePeriod): { hour24: number; minute: number } {
+// Converts a chosen IST wall-clock time back into the scheduler's timezone
+// for storage.
+function istToSchedule(hour: number, minute: number, period: TimePeriod, schedulerZone: string): { hour24: number; minute: number } {
   const hour24From12 = period === 'PM' ? (hour % 12) + 12 : hour % 12;
-  const total = (hour24From12 * 60 + minute - 330 + 1440) % 1440;
+  const delta = parseZoneOffsetMinutes(SCHEDULER_TZ) - parseZoneOffsetMinutes(schedulerZone);
+  const total = (hour24From12 * 60 + minute - delta + 1440) % 1440;
   return { hour24: Math.floor(total / 60), minute: total % 60 };
 }
 
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-function computeNextRunUtc(schedule: string): Date | null {
+// Computes the next firing time for schedules the admin UI supports:
+// daily fixed times ("M H * * *") and hourly ("M * * * *" / "* * * * *").
+// The result is a timestamp in the scheduler's timezone.
+function computeNextRun(schedule: string, schedulerZone: string): Date | null {
   const parts = schedule.trim().split(/\s+/);
   if (parts.length !== 5) return null;
-  const [minute, hour, day, month, weekday] = parts;
-  if (!/^\d+$/.test(minute) || !/^\d+$/.test(hour) || day !== '*' || month !== '*' || weekday !== '*') return null;
-  const next = new Date();
-  next.setUTCHours(Number(hour), Number(minute), 0, 0);
-  if (next.getTime() <= Date.now()) next.setUTCDate(next.getUTCDate() + 1);
-  return next;
+  const [minuteField, hourField, day, month, weekday] = parts;
+  if (day !== '*' || month !== '*' || weekday !== '*') return null;
+
+  if (hourField !== '*' && !/^\d+$/.test(hourField)) return null;
+  if (minuteField !== '*' && !/^\d+$/.test(minuteField)) return null;
+
+  // Work entirely on UTC components of the scheduler's shifted clock so the
+  // device's own timezone never leaks into the arithmetic. Date components
+  // (day rollover) are not timezone-sensitive for daily schedules, but the
+  // hour/minute fields must come from the scheduler's wall clock, which is
+  // why every mutation below uses the setUTC*/getUTC* family.
+  const offsetMs = parseZoneOffsetMinutes(schedulerZone) * 60000;
+  // Floor to the whole minute so the result carries no leftover seconds.
+  const baseShifted = Math.floor((Date.now() + offsetMs) / 60000) * 60000;
+  const base = new Date(baseShifted); // UTC components read as scheduler wall-clock
+
+  const nowMinuteOfDay = base.getUTCHours() * 60 + base.getUTCMinutes();
+
+  if (hourField === '*' && minuteField === '*') {
+    // "* * * * *" fires at the next whole minute (pg_cron granularity).
+    return new Date(baseShifted + 60000 - offsetMs);
+  }
+
+  if (hourField === '*') {
+    // "M * * * *": next time the scheduler clock's minutes equal M.
+    let addMinutes = Number(minuteField) - base.getUTCMinutes();
+    if (addMinutes <= 0) addMinutes += 60;
+    return new Date(baseShifted + addMinutes * 60000 - offsetMs);
+  }
+
+  // "M H * * *": next occurrence of H:M in the scheduler's wall clock.
+  const targetMinuteOfDay = Number(hourField) * 60 + Number(minuteField);
+  let addMinutes = targetMinuteOfDay - nowMinuteOfDay;
+  if (addMinutes <= 0) addMinutes += 1440;
+  return new Date(baseShifted + addMinutes * 60000 - offsetMs);
 }
 
-function formatNextRun(schedule: string): string {
-  const next = computeNextRunUtc(schedule);
+function formatNextRun(schedule: string, schedulerZone: string): string {
+  const next = computeNextRun(schedule, schedulerZone);
   if (!next) return '—';
-  const istTotal = (next.getUTCHours() * 60 + next.getUTCMinutes() + 330) % 1440;
-  const hour = Math.floor(istTotal / 60);
-  const minute = istTotal % 60;
-  const hour12 = hour % 12 || 12;
-  const period = hour >= 12 ? 'PM' : 'AM';
-  return `${next.getUTCDate()} ${MONTHS_SHORT[next.getUTCMonth()]}, ${hour12}:${String(minute).padStart(2, '0')} ${period} IST`;
+  const istParts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: SCHEDULER_TZ,
+    day: '2-digit', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true,
+  }).formatToParts(next);
+  const get = (type: string) => istParts.find((part) => part.type === type)?.value ?? '';
+  const dayPart = get('day');
+  const monthPart = get('month');
+  const hourPart = get('hour');
+  const minutePart = get('minute');
+  const dayPeriod = get('dayPeriod').toUpperCase();
+  return `${dayPart} ${monthPart}, ${hourPart}:${minutePart} ${dayPeriod} IST`;
 }
 
 interface JobDef {
@@ -189,6 +279,15 @@ function CronMonitorContent() {
   const [openTimeMenu, setOpenTimeMenu] = useState<TimeMenu>(null);
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [updatingJob, setUpdatingJob] = useState<string | null>(null);
+  const [schedulerZone, setSchedulerZone] = useState('UTC');
+
+  useEffect(() => {
+    let mounted = true;
+    getSchedulerTimezone().then((zone) => {
+      if (mounted) setSchedulerZone(zone);
+    });
+    return () => { mounted = false; };
+  }, []);
 
   const load = useCallback(async () => {
     setError(null);
@@ -301,8 +400,9 @@ function CronMonitorContent() {
   };
 
   const openScheduleEditor = (job: JobDef) => {
+    if (!isDailySchedule(job.schedule)) return;
     const parsedTime = parseScheduleTime(job.schedule);
-    const istTime = utcToIst(parsedTime.hour24, parsedTime.minute);
+    const istTime = scheduleToIst(parsedTime.hour24, parsedTime.minute, schedulerZone);
     setEditingJob(job);
     setScheduleHour(istTime.hour);
     setScheduleMinute(istTime.minute);
@@ -312,9 +412,9 @@ function CronMonitorContent() {
   };
 
   const saveSchedule = async () => {
-    if (!editingJob) return;
-    const utc = istToUtc(scheduleHour, scheduleMinute, schedulePeriod);
-    const schedule = `${utc.minute} ${utc.hour24} * * *`;
+    if (!editingJob || !isDailySchedule(editingJob.schedule)) return;
+    const scheduled = istToSchedule(scheduleHour, scheduleMinute, schedulePeriod, schedulerZone);
+    const schedule = `${scheduled.minute} ${scheduled.hour24} * * *`;
     setSavingSchedule(true);
     setRunResult(null);
     try {
@@ -350,9 +450,7 @@ function CronMonitorContent() {
     if (!ts) return 'Never';
     try {
       const d = new Date(ts);
-      const istTotal = (d.getUTCHours() * 60 + d.getUTCMinutes() + 330) % 1440;
-      const hour = Math.floor(istTotal / 60);
-      return `${d.getUTCDate()} ${MONTHS_SHORT[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${String(hour).padStart(2, '0')}:${String(istTotal % 60).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')} IST`;
+      return `${new Intl.DateTimeFormat('en-GB', { timeZone: SCHEDULER_TZ, day: '2-digit', month: 'short', year: 'numeric' }).format(d)}, ${new Intl.DateTimeFormat('en-GB', { timeZone: SCHEDULER_TZ, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d)} IST`;
     } catch {
       return ts;
     }
@@ -365,7 +463,7 @@ function CronMonitorContent() {
     if (minute === '*' && hour === '*' && day === '*' && month === '*' && weekday === '*') return 'Every minute';
     if (minute === '0' && hour === '*' && day === '*' && month === '*' && weekday === '*') return 'Every hour';
     if (/^\d+$/.test(minute) && /^\d+$/.test(hour) && day === '*' && month === '*' && weekday === '*') {
-      const ist = utcToIst(Number(hour), Number(minute));
+      const ist = scheduleToIst(Number(hour), Number(minute), schedulerZone);
       return `Daily at ${ist.hour}:${String(ist.minute).padStart(2, '0')} ${ist.period} IST`;
     }
     return `Cron: ${schedule}`;
@@ -512,7 +610,7 @@ function CronMonitorContent() {
                     <Text style={s.timeText}>{formatTime(status?.last_run_start ?? null)}</Text>
                   </View>
                   <View style={[s.td, { flex: 1.2 }]}>
-                    <Text style={s.timeText}>{def.is_scheduled ? formatNextRun(def.schedule) : 'Not scheduled'}</Text>
+                    <Text style={s.timeText}>{def.is_scheduled ? (!def.active ? 'Paused — No scheduled run' : formatNextRun(def.schedule, schedulerZone)) : 'Not scheduled'}</Text>
                   </View>
                   <View style={[s.td, { flex: 1.1, gap: 3 }]}> 
                     <View style={[s.statusBadge, { backgroundColor: def.active ? Colors.success + '18' : Colors.neutral[200] }]}> 
@@ -550,8 +648,9 @@ function CronMonitorContent() {
                       <Text style={[s.controlBtnText, { color: def.active ? Colors.warning : Colors.success }]}>{def.active ? 'Pause' : 'Activate'}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
-                      style={s.editBtn}
+                      style={[s.editBtn, !isDailySchedule(def.schedule) && s.runBtnDisabled]}
                       onPress={(e) => { e.stopPropagation?.(); openScheduleEditor(def); }}
+                      disabled={!isDailySchedule(def.schedule)}
                       activeOpacity={0.7}
                     >
                       <Pencil size={11} color={Colors.textSecondary} strokeWidth={2} />

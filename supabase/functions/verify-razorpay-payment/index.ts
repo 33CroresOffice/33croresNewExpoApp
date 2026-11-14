@@ -143,11 +143,12 @@ Deno.serve(async (req: Request) => {
     let startDateObj: Date;
     let endDateObj: Date;
     let nextDeliveryDate: Date;
+    let renewalPrimaryRiderId: string | null = null;
 
     if (renew_from_subscription_id) {
       const { data: oldSub, error: oldSubError } = await serviceSupabase
         .from("subscriptions")
-        .select("end_date")
+        .select("end_date, primary_rider_id")
         .eq("id", renew_from_subscription_id)
         .maybeSingle();
 
@@ -155,6 +156,7 @@ Deno.serve(async (req: Request) => {
         return respond({ success: false, error: "Could not find the subscription to renew from." });
       }
 
+      renewalPrimaryRiderId = oldSub.primary_rider_id ?? null;
       const oldEndDate = new Date(oldSub.end_date);
       oldEndDate.setUTCHours(0, 0, 0, 0);
       const minStartDate = addDays(oldEndDate, 1);
@@ -230,15 +232,65 @@ Deno.serve(async (req: Request) => {
       console.error("Payment update error:", JSON.stringify(paymentUpdateError));
     }
 
-    const { error: orderError } = await serviceSupabase.from("orders").insert({
-      subscription_id: subscription.id,
-      user_id: user.id,
-      scheduled_date: toDateStr(nextDeliveryDate),
-      status: "scheduled",
-    });
+    const { data: firstOrder, error: orderError } = await serviceSupabase
+      .from("orders")
+      .insert({
+        subscription_id: subscription.id,
+        user_id: user.id,
+        scheduled_date: toDateStr(nextDeliveryDate),
+        status: "scheduled",
+      })
+      .select("id")
+      .single();
 
-    if (orderError) {
+    if (orderError || !firstOrder) {
       console.error("Order creation error:", JSON.stringify(orderError));
+    }
+
+    if (renew_from_subscription_id && firstOrder) {
+      let renewalRiderId = renewalPrimaryRiderId;
+
+      if (!renewalRiderId) {
+        const { data: previousAssignment, error: previousAssignmentError } = await serviceSupabase
+          .from("rider_order_assignments")
+          .select("rider_id, order:orders!inner(subscription_id)")
+          .eq("order.subscription_id", renew_from_subscription_id)
+          .neq("status", "reassigned")
+          .order("assigned_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (previousAssignmentError) {
+          console.error("Previous renewal rider lookup error:", JSON.stringify(previousAssignmentError));
+        }
+
+        renewalRiderId = previousAssignment?.rider_id ?? null;
+      }
+
+      if (renewalRiderId) {
+        const { error: assignmentError } = await serviceSupabase
+          .from("rider_order_assignments")
+          .insert({
+            rider_id: renewalRiderId,
+            order_id: firstOrder.id,
+            status: "assigned",
+            auto_assigned: true,
+            notes: "Carried forward from the previous subscription renewal",
+          });
+
+        if (assignmentError) {
+          console.error("Renewal rider assignment error:", JSON.stringify(assignmentError));
+        } else {
+          const { error: primaryRiderError } = await serviceSupabase
+            .from("subscriptions")
+            .update({ primary_rider_id: renewalRiderId })
+            .eq("id", subscription.id);
+
+          if (primaryRiderError) {
+            console.error("Renewal primary rider update error:", JSON.stringify(primaryRiderError));
+          }
+        }
+      }
     }
 
     if (renew_from_subscription_id) {

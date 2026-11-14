@@ -557,8 +557,8 @@ function WebDashboard({ metrics, recentOrders, recentCustomers, upcomingPauses, 
       {/* ── CUSTOMIZE ORDER ALERT ── */}
       <CustomOrderNotification />
 
-      {/* ── TODAY'S TRACK ── */}
-      <TodayTrackModule />
+      {/* ── TODAY'S TRACK (hidden; restore by uncommenting) ── */}
+      {/* <TodayTrackModule /> */}
 
       {/* ── SUBSCRIPTION ── */}
       <View style={wStyles.groupCard}>

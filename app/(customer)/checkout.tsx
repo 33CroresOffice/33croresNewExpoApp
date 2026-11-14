@@ -40,6 +40,8 @@ export default function CheckoutScreen() {
   const [startDate, setStartDate] = useState(() => getMinSubscriptionStartDate());
   const [renewalMinDate, setRenewalMinDate] = useState<Date | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [paying, setPaying] = useState(false);
   const [error, setError] = useState('');
   const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
@@ -63,35 +65,66 @@ export default function CheckoutScreen() {
   }, [profile]);
 
   useEffect(() => {
+    if (!profile) return;
+    let cancelled = false;
+    // Reset on every plan/subscription change so a previously viewed plan
+    // (e.g. the ₹599 plan) can never bleed into a renewal checkout.
+    setPlan(null);
+    setRenewalMinDate(null);
+    setLoadError(null);
+    setLoading(true);
     const load = async () => {
-      if (!profile) return;
-      const fetches: Promise<any>[] = [
-        supabase.from('subscription_plans').select('*').eq('id', planId).single(),
+      const fetches: PromiseLike<any>[] = [
+        supabase.from('subscription_plans').select('*').eq('id', planId).maybeSingle(),
         supabase.from('addresses').select('*').eq('user_id', profile.id),
       ];
       if (renewFromSubscriptionId) {
         fetches.push(
-          supabase.from('subscriptions').select('end_date').eq('id', renewFromSubscriptionId).maybeSingle()
+          supabase.from('subscriptions').select('end_date, plan_id').eq('id', renewFromSubscriptionId).maybeSingle()
         );
       }
-      const [planRes, addressRes, oldSubRes] = await Promise.all(fetches);
-      if (planRes.data) setPlan(planRes.data);
-      if (addressRes.data) {
-        setAddresses(addressRes.data);
-        const def = addressRes.data.find((a: Address) => a.is_default);
-        setSelectedAddress(def?.id || addressRes.data[0]?.id || '');
+      try {
+        const [planRes, addressRes, oldSubRes] = await Promise.all(fetches);
+        if (cancelled) return;
+        if (planRes.error || !planRes.data) {
+          setLoadError('We could not load this plan. It may no longer be available.');
+          return;
+        }
+        // A renewal must always charge the plan the subscription itself
+        // points at, not whatever plan was last browsed.
+        if (renewFromSubscriptionId && oldSubRes?.data?.plan_id && oldSubRes.data.plan_id !== planId) {
+          setPlan(null);
+          setLoading(false);
+          router.replace({
+            pathname: '/(customer)/checkout',
+            params: { planId: oldSubRes.data.plan_id, renewFromSubscriptionId: renewFromSubscriptionId },
+          });
+          return;
+        }
+        setPlan(planRes.data);
+        if (addressRes.data) {
+          setAddresses(addressRes.data);
+          const def = addressRes.data.find((a: Address) => a.is_default);
+          setSelectedAddress(def?.id || addressRes.data[0]?.id || '');
+        }
+        if (oldSubRes?.data?.end_date) {
+          const oldEnd = new Date(oldSubRes.data.end_date);
+          oldEnd.setHours(0, 0, 0, 0);
+          const minStart = addDays(oldEnd, 1);
+          setRenewalMinDate(minStart);
+          setStartDate(minStart);
+        } else {
+          setStartDate(getMinSubscriptionStartDate());
+        }
+      } catch (e: any) {
+        if (!cancelled) setLoadError('Something went wrong while loading checkout.');
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      if (oldSubRes?.data?.end_date) {
-        const oldEnd = new Date(oldSubRes.data.end_date);
-        oldEnd.setHours(0, 0, 0, 0);
-        const minStart = addDays(oldEnd, 1);
-        setRenewalMinDate(minStart);
-        setStartDate(minStart);
-      }
-      setLoading(false);
     };
     load();
-  }, [profile, planId, renewFromSubscriptionId]);
+    return () => { cancelled = true; };
+  }, [profile, planId, renewFromSubscriptionId, reloadKey]);
 
   useFocusEffect(
     useCallback(() => {
@@ -371,6 +404,19 @@ export default function CheckoutScreen() {
   };
 
   if (loading || !plan) {
+    if (loadError) {
+      return (
+        <View style={[styles.container, { paddingTop: insets.top }]}>
+          <View style={styles.loadingContainer}>
+            <AlertCircle size={30} color={Colors.error} strokeWidth={1.8} />
+            <Text style={styles.loadingText}>{loadError}</Text>
+            <TouchableOpacity style={styles.retryBtn} onPress={() => setReloadKey((k) => k + 1)} activeOpacity={0.8}>
+              <Text style={styles.retryBtnText}>Try again</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    }
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
         <View style={styles.loadingContainer}>
@@ -568,7 +614,18 @@ export default function CheckoutScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing[3], padding: Spacing[5] },
+  retryBtn: {
+    paddingHorizontal: Spacing[5],
+    paddingVertical: Spacing[2],
+    borderRadius: Radius.md,
+    backgroundColor: Colors.primary,
+  },
+  retryBtnText: {
+    fontFamily: Typography.fontFamily.sansSemiBold,
+    fontSize: Typography.size.sm,
+    color: Colors.white,
+  },
   loadingText: {
     fontFamily: Typography.fontFamily.sansRegular,
     fontSize: Typography.size.base,

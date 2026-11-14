@@ -169,7 +169,8 @@ export default function RiderOtpVerifyScreen() {
         },
         body: JSON.stringify({ mobile, channel }),
       });
-      const data = await res.json();
+      let data: any = null;
+      try { data = await res.json(); } catch { /* non-JSON gateway error */ }
       if (data?.success) {
         setCountdown(300);
         setOtp('');

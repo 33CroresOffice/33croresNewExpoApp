@@ -2,7 +2,7 @@ import React, { useCallback, useState } from 'react';
 import ModuleGuard from '@/components/admin/ModuleGuard';
 import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Clock, Save, Check, AlertCircle, Package, Flower2 } from 'lucide-react-native';
+import { Clock, Save, Check, AlertCircle, Package, Flower2, MapPin } from 'lucide-react-native';
 import { Colors, Typography, Spacing, Radius, Shadow } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { usePageVisibility } from '@/hooks/usePageVisibility';
@@ -34,10 +34,14 @@ function RiderDeliveryTimeContent() {
   const [deliveryError, setDeliveryError] = useState('');
   const [pickupError, setPickupError] = useState('');
   const [flowerPickupError, setFlowerPickupError] = useState('');
+  const [radiusValue, setRadiusValue] = useState('');
+  const [savingRadius, setSavingRadius] = useState(false);
+  const [radiusSaved, setRadiusSaved] = useState(false);
+  const [radiusError, setRadiusError] = useState('');
 
   const load = useCallback(async () => {
     const { data, error: loadError } = await supabase.from('auto_assignment_settings')
-      .select('delivery_deadline_time, pickup_cutoff_time, flower_pickup_cutoff_time').eq('id', 1).maybeSingle();
+      .select('delivery_deadline_time, pickup_cutoff_time, flower_pickup_cutoff_time, delivery_radius_meters').eq('id', 1).maybeSingle();
     if (loadError) {
       setDeliveryError('Unable to load the delivery time limit.');
       setPickupError('Unable to load the order pickup time limit.');
@@ -46,6 +50,7 @@ function RiderDeliveryTimeContent() {
     setDeliveryValue(data?.delivery_deadline_time?.slice(0, 5) ?? '');
     setPickupValue(data?.pickup_cutoff_time?.slice(0, 5) ?? '');
     setFlowerPickupValue(data?.flower_pickup_cutoff_time?.slice(0, 5) ?? '');
+    setRadiusValue(data?.delivery_radius_meters != null ? String(data.delivery_radius_meters) : '');
     setLoading(false);
   }, []);
 
@@ -91,6 +96,20 @@ function RiderDeliveryTimeContent() {
     setSavingFlowerPickup(false);
     if (saveError) { setFlowerPickupError('Unable to save the flower pickup time limit.'); return; }
     setFlowerPickupValue(nextValue); setFlowerPickupSaved(true);
+  };
+
+  const saveRadius = async () => {
+    const nextValue = radiusValue.trim();
+    if (!nextValue || !/^\d+$/.test(nextValue) || Number(nextValue) <= 0) {
+      setRadiusError('Enter a radius in whole meters, for example 200.');
+      return;
+    }
+    setSavingRadius(true); setRadiusSaved(false); setRadiusError('');
+    const { error: saveError } = await supabase.from('auto_assignment_settings')
+      .update({ delivery_radius_meters: Number(nextValue), updated_at: new Date().toISOString() }).eq('id', 1);
+    setSavingRadius(false);
+    if (saveError) { setRadiusError('Unable to save the delivery radius.'); return; }
+    setRadiusValue(nextValue); setRadiusSaved(true);
   };
 
   if (loading) {
@@ -184,6 +203,30 @@ function RiderDeliveryTimeContent() {
         <Text style={styles.current}>Current limit: {formatTime(flowerPickupValue || null)}</Text>
         <Text style={styles.help}>Leave blank to allow flower pickups at any time.</Text>
         {flowerPickupError ? <View style={styles.error}><AlertCircle size={16} color={Colors.error} /><Text style={styles.errorText}>{flowerPickupError}</Text></View> : null}
+      </View>
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardHeaderLeft}>
+            <View style={[styles.cardHeaderIcon, { backgroundColor: Colors.successSurface }]}>
+              <MapPin size={18} color={Colors.success} strokeWidth={1.8} />
+            </View>
+            <View>
+              <Text style={styles.cardTitle}>Delivery Location Radius</Text>
+              <Text style={styles.cardText}>Riders can mark a delivery only when their GPS position is within this distance of the customer's address.</Text>
+            </View>
+          </View>
+          <View style={styles.badge}><Text style={styles.badgeText}>Meters</Text></View>
+        </View>
+        <Text style={styles.label}>Permitted distance from delivery address</Text>
+        <View style={styles.formRow}>
+          <TextInput value={radiusValue} onChangeText={next => { setRadiusValue(next); setRadiusSaved(false); setRadiusError(''); }} placeholder="e.g. 200" placeholderTextColor={Colors.textDisabled} maxLength={5} style={styles.timeInput} keyboardType="numeric" />
+          <TouchableOpacity style={styles.save} onPress={saveRadius} disabled={savingRadius}>
+            {savingRadius ? <ActivityIndicator size="small" color={Colors.white} /> : radiusSaved ? <Check size={15} color={Colors.white} /> : <Save size={15} color={Colors.white} />}
+            <Text style={styles.saveText}>{radiusSaved ? 'Saved' : 'Save'}</Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.current}>Current radius: {radiusValue ? `${radiusValue} meters` : 'Not configured'}</Text>
+        {radiusError ? <View style={styles.error}><AlertCircle size={16} color={Colors.error} /><Text style={styles.errorText}>{radiusError}</Text></View> : null}
       </View>
       </ScrollView>
     </View>

@@ -313,6 +313,8 @@ export default function RiderPickups() {
 
     const updates: { id: string; price_per_unit: number; quantity: number; entered_price: number }[] = [];
     for (const it of selected.items) {
+      // Unavailable items have no price — exclude them entirely
+      if (unavailableItems[it.id]) continue;
       // Vendor-set prices are locked — skip them
       if (it.price_set_by === 'vendor') continue;
       const raw = (priceInputs[it.id] ?? '').trim();
@@ -331,14 +333,18 @@ export default function RiderPickups() {
     }
 
     if (updates.length === 0) {
-      setPriceError('All prices are already set by the vendor');
+      const unavailableCount = selected.items.filter(it => unavailableItems[it.id]).length;
+      setPriceError(unavailableCount === selected.items.length
+        ? 'All items are unavailable — nothing to price'
+        : 'All available prices are already set by the vendor');
       return;
     }
 
     setSavingPrices(true);
     let newTotal = 0;
-    // Add vendor-set prices (already in DB) to the order total
+    // Add vendor-set prices (already in DB) to the order total — unavailable items excluded
     for (const it of selected.items) {
+      if (unavailableItems[it.id]) continue;
       if (it.price_set_by === 'vendor') {
         newTotal += Number(it.total_price ?? 0);
       }
@@ -531,6 +537,9 @@ export default function RiderPickups() {
         </View>
         {canEdit && (
           <View style={mStyles.priceActionWrap}>
+            {availableItems.length === 0 && (
+              <Text style={mStyles.priceErrorText}>All items are unavailable — prices cannot be saved</Text>
+            )}
             {priceError && <Text style={mStyles.priceErrorText}>{priceError}</Text>}
             {priceSaved && (
               <View style={mStyles.priceSavedRow}>
@@ -539,9 +548,9 @@ export default function RiderPickups() {
               </View>
             )}
             <TouchableOpacity
-              style={[mStyles.saveBtn, savingPrices && mStyles.saveBtnDisabled]}
+              style={[mStyles.saveBtn, (savingPrices || availableItems.length === 0) && mStyles.saveBtnDisabled]}
               onPress={savePrices}
-              disabled={savingPrices}
+              disabled={savingPrices || availableItems.length === 0}
             >
               {savingPrices ? (
                 <ActivityIndicator size="small" color="#FFF" />
@@ -566,11 +575,11 @@ export default function RiderPickups() {
               <TouchableOpacity
                 style={[
                   mStyles.pickupBtn,
-                  (!priceSaved || !allPriced) && mStyles.pickupBtnDisabled,
+                  (!priceSaved || !allPriced || availableItems.length === 0) && mStyles.pickupBtnDisabled,
                   markingPickedUp && mStyles.pickupBtnDisabled,
                 ]}
                 onPress={markPickedUp}
-                disabled={!priceSaved || !allPriced || markingPickedUp}
+                disabled={!priceSaved || !allPriced || availableItems.length === 0 || markingPickedUp}
               >
                 {markingPickedUp ? (
                   <ActivityIndicator size="small" color="#FFF" />
@@ -582,8 +591,11 @@ export default function RiderPickups() {
                 )}
               </TouchableOpacity>
             )}
-            {!priceSaved && !isPickupCutoffPassed() && (
+            {!priceSaved && !isPickupCutoffPassed() && availableItems.length > 0 && (
               <Text style={mStyles.pickupHintText}>Save prices to enable pickup confirmation</Text>
+            )}
+            {availableItems.length === 0 && (
+              <Text style={mStyles.pickupHintText}>All items are unavailable — pickup cannot be confirmed</Text>
             )}
           </View>
         )}

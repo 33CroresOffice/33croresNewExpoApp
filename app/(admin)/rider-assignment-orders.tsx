@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, ActivityIndicator, RefreshControl, Modal, TextInput,
 } from 'react-native';
@@ -20,6 +20,8 @@ interface AssignedOrder {
   assignment_id: string;
   assigned_at: string;
   order_id: string | null;
+  custom_order_id: string | null;
+  order_type: 'subscription' | 'custom';
   subscription_id: string | null;
   status: string;
   subscription_status: string;
@@ -144,7 +146,7 @@ function RiderAssignmentOrdersContent() {
         supabase
           .from('rider_order_assignments')
           .select(`
-            id, order_id, status, assigned_at, delivery_sequence, rider_id, swapped_from_rider_id, swap_reason, auto_assigned,
+            id, order_id, custom_order_id, status, assigned_at, delivery_sequence, rider_id, swapped_from_rider_id, swap_reason, auto_assigned,
             is_temporary_reassign, temp_reassign_start_date, temp_reassign_end_date,
             swapped_from_rider:riders!rider_order_assignments_swapped_from_rider_id_fkey(full_name),
             order:orders(
@@ -205,10 +207,39 @@ function RiderAssignmentOrdersContent() {
         .or(`start_date.is.null,start_date.lte.${todayIST}`);
       setTotalActiveSubs(activeSubsRes.count ?? null);
 
-      const assigned: AssignedOrder[] = (assignedRes.data ?? []).map((row: any) => ({
+      // Customize (custom) orders assigned to riders live in the same
+      // assignments table with a custom_order_id; fetch their details so the
+      // list shows the same customer info the rider app shows.
+      const customOrderIds = Array.from(new Set((assignedRes.data ?? []).map((r: any) => r.custom_order_id).filter(Boolean))) as string[];
+      const customOrdersMap = new Map<string, any>();
+      if (customOrderIds.length > 0) {
+        const { data: customOrdersData, error: customErr } = await supabase
+          .from('custom_orders')
+          .select('id, order_type, delivery_date, status, address_id, user:profiles(full_name, mobile)')
+          .in('id', customOrderIds);
+        if (customErr) throw new Error(customErr.message);
+        (customOrdersData ?? []).forEach((co: any) => customOrdersMap.set(co.id, co));
+        const customAddrIds = Array.from(new Set((customOrdersData ?? []).map((co: any) => co.address_id).filter(Boolean))) as string[];
+        if (customAddrIds.length > 0) {
+          const { data: customAddrData } = await supabase
+            .from('addresses')
+            .select('id, apartment_name, street, landmark, city, state, pincode')
+            .in('id', customAddrIds);
+          const customAddrMap = new Map((customAddrData ?? []).map((a: any) => [a.id, a]));
+          (customOrdersData ?? []).forEach((co: any) => {
+            co.address = co.address_id ? customAddrMap.get(co.address_id) : null;
+          });
+        }
+      }
+
+      const assigned: AssignedOrder[] = (assignedRes.data ?? [])
+        .filter((row: any) => row.order_id)
+        .map((row: any) => ({
         assignment_id: row.id,
         assigned_at: row.assigned_at ?? '',
         order_id: row.order_id ?? null,
+        custom_order_id: null as string | null,
+        order_type: 'subscription' as const,
         subscription_id: row.order?.subscription_id ?? null,
         status: row.status,
         delivery_sequence: row.delivery_sequence ?? null,
@@ -238,6 +269,46 @@ function RiderAssignmentOrdersContent() {
         rider_history: [],
       }));
 
+      const customAssigned: AssignedOrder[] = (assignedRes.data ?? [])
+        .filter((row: any) => row.custom_order_id && row.custom_order_id && customOrdersMap.has(row.custom_order_id))
+        .map((row: any) => {
+          const co = customOrdersMap.get(row.custom_order_id);
+          return {
+            assignment_id: row.id as string,
+            assigned_at: (row.assigned_at ?? '') as string,
+            order_id: null as string | null,
+            custom_order_id: row.custom_order_id as string,
+            order_type: 'custom' as const,
+            subscription_id: null as string | null,
+            status: row.status as string,
+            subscription_status: 'active' as string,
+            delivery_sequence: (row.delivery_sequence ?? null) as number | null,
+            rider_id: (row.rider_id ?? '') as string,
+            swapped_from_rider_id: (row.swapped_from_rider_id ?? null) as string | null,
+            swapped_from_rider_name: (row.swapped_from_rider?.full_name ?? null) as string | null,
+            swap_reason: (row.swap_reason ?? null) as string | null,
+            is_temporary_reassign: (row.is_temporary_reassign ?? false) as boolean,
+            temp_reassign_start_date: (row.temp_reassign_start_date ?? null) as string | null,
+            temp_reassign_end_date: (row.temp_reassign_end_date ?? null) as string | null,
+            auto_assigned: (row.auto_assigned ?? false) as boolean,
+            is_primary_rider: false,
+            scheduled_date: (co?.delivery_date ?? '') as string,
+            rider_name: (row.rider?.full_name ?? 'Unknown') as string,
+            rider_mobile: (row.rider?.mobile ?? '') as string,
+            customer_name: (co?.user?.full_name ?? co?.user?.mobile ?? 'Unknown') as string,
+            customer_mobile: (co?.user?.mobile ?? '') as string,
+            plan_name: co?.order_type === 'garland' ? 'Custom Garlands' : 'Custom Flowers',
+            address_apartment: (co?.address?.apartment_name ?? '') as string,
+            address_street: (co?.address?.street ?? '') as string,
+            address_landmark: (co?.address?.landmark ?? '') as string,
+            address_city: (co?.address?.city ?? '') as string,
+            address_state: (co?.address?.state ?? '') as string,
+            address_pincode: (co?.address?.pincode ?? '') as string,
+            standing_only: false,
+            rider_history: [] as RiderChangeEntry[],
+          };
+        });
+
       const unassigned: UnassignedOrder[] = (unassignedRes.data ?? []).map((row: any) => ({
         order_id: row.id,
         scheduled_date: row.scheduled_date ?? '',
@@ -251,12 +322,20 @@ function RiderAssignmentOrdersContent() {
         address_pincode: row.subscription?.delivery_address?.pincode ?? '',
       }));
 
+      const allAssigned = [...assigned, ...customAssigned];
       const currentByKey = new Map<string, AssignedOrder>();
-      const historyRows = assigned.filter((row) => !ACTIVE_ASSIGNMENT_STATUSES.includes(row.status));
-      for (const row of assigned) {
+      // Customize orders only sit in the live queue on their delivery day and
+      // move to history once delivered, matching what the rider app shows.
+      const historyRows = allAssigned.filter(
+        (row) =>
+          !ACTIVE_ASSIGNMENT_STATUSES.includes(row.status) ||
+          (row.order_type === 'custom' && (row.status === 'delivered' || row.scheduled_date !== todayIST))
+      );
+      for (const row of allAssigned) {
         if (!ACTIVE_ASSIGNMENT_STATUSES.includes(row.status)) continue;
-        if (!row.subscription_id && row.scheduled_date !== todayIST) continue;
-        const key = row.subscription_id || row.order_id || row.assignment_id;
+        if (row.order_type === 'custom' && (row.status === 'delivered' || row.scheduled_date !== todayIST)) continue;
+        if (!row.subscription_id && row.order_type !== 'custom' && row.scheduled_date !== todayIST) continue;
+        const key = row.custom_order_id ?? row.subscription_id ?? row.order_id ?? row.assignment_id;
         const existing = currentByKey.get(key);
         if (!existing || new Date(row.assigned_at).getTime() > new Date(existing.assigned_at).getTime()) {
           currentByKey.set(key, row);
@@ -420,20 +499,29 @@ function RiderAssignmentOrdersContent() {
         );
       });
     }
+    // Manually numbered customers come first in their exact sequence order;
+    // customers without a manually entered number stay in a separate group
+    // after them and are never auto-numbered.
+    const numbered = (o: AssignedOrder) => o.delivery_sequence != null;
+    const statusRank = (s: string) => (s === 'active' ? 0 : s === 'paused' ? 1 : s === 'pending' ? 1.5 : 2);
     if (selectedRiderId) {
       result = [...result].sort((a, b) => {
-        const aSeq = a.delivery_sequence ?? 9999;
-        const bSeq = b.delivery_sequence ?? 9999;
-        return aSeq - bSeq;
+        if (numbered(a) !== numbered(b)) return numbered(a) ? -1 : 1;
+        if (numbered(a)) return (a.delivery_sequence ?? 0) - (b.delivery_sequence ?? 0);
+        const rankDiff = statusRank(a.subscription_status) - statusRank(b.subscription_status);
+        if (rankDiff !== 0) return rankDiff;
+        return (b.assigned_at || '').localeCompare(a.assigned_at || '');
       });
     } else {
-      // Group by rider so each rider's delivery sequence reads 1, 2, 3... in order
+      // Group by rider so each rider's manual sequence reads in order
       result = [...result].sort((a, b) => {
         const riderCmp = a.rider_name.localeCompare(b.rider_name);
         if (riderCmp !== 0) return riderCmp;
-        const aSeq = a.delivery_sequence ?? 9999;
-        const bSeq = b.delivery_sequence ?? 9999;
-        return aSeq - bSeq;
+        if (numbered(a) !== numbered(b)) return numbered(a) ? -1 : 1;
+        if (numbered(a)) return (a.delivery_sequence ?? 0) - (b.delivery_sequence ?? 0);
+        const rankDiff = statusRank(a.subscription_status) - statusRank(b.subscription_status);
+        if (rankDiff !== 0) return rankDiff;
+        return (b.assigned_at || '').localeCompare(a.assigned_at || '');
       });
     }
     return result;
@@ -442,117 +530,130 @@ function RiderAssignmentOrdersContent() {
   const [sequencing, setSequencing] = useState(false);
   const [sequenceError, setSequenceError] = useState<string | null>(null);
 
-  const autoAssignSequence = async () => {
-    setSequencing(true);
-    setSequenceError(null);
-    try {
-      // Number each rider's orders 1..n independently, so sequences stay
-      // per-rider whether one rider or all riders are being sequenced.
-      const ridersToSequence = selectedRiderId
-        ? [selectedRiderId]
-        : Array.from(new Set(
-            assignedOrders
-              .filter((o) => ACTIVE_ASSIGNMENT_STATUSES.includes(o.status) && !o.standing_only)
-              .map((o) => o.rider_name + '|' + o.rider_mobile)
-          ));
-      for (const riderKey of ridersToSequence) {
-        const riderOrders = assignedOrders
-          .filter(
-            (o) =>
-              o.rider_name + '|' + o.rider_mobile === riderKey &&
-              ACTIVE_ASSIGNMENT_STATUSES.includes(o.status) && !o.standing_only
-          )
-          .sort((a, b) => {
-            const sequenceDifference = (a.delivery_sequence ?? Number.MAX_SAFE_INTEGER) - (b.delivery_sequence ?? Number.MAX_SAFE_INTEGER);
-            if (sequenceDifference !== 0) return sequenceDifference;
-            return (a.scheduled_date || '').localeCompare(b.scheduled_date || '');
-          });
-        for (let i = 0; i < riderOrders.length; i++) {
-          const { data: updatedRows, error } = await supabase
-            .from('rider_order_assignments')
-            .update({ delivery_sequence: i + 1 })
-            .eq('id', riderOrders[i].assignment_id)
-            .select('id');
-          if (error) throw new Error(error.message);
-          if (!updatedRows || updatedRows.length === 0) throw new Error('The delivery sequence could not be saved for one of these assignments.');
-        }
-      }
-      await load();
-    } catch (e: any) {
-      setSequenceError(e.message ?? 'Failed to set sequence');
-    } finally {
-      setSequencing(false);
-    }
-  };
+  // Admin can manually sequence active and pending customers, plus
+  // reassigned assignment rows. Standing-only rows are never sequenced.
+  const sequenceEligible = (o: AssignedOrder) =>
+    !o.standing_only &&
+    (['active', 'pending'].includes(o.subscription_status) || o.status === 'reassigned');
 
   const moveSequence = async (orderId: string, direction: 'up' | 'down') => {
     if (!selectedRiderId) return;
+    // Only customers with a manually assigned number participate in reordering.
     const sorted = liveAssignedOrders
-      .filter((order) => order.rider_name + '|' + order.rider_mobile === selectedRiderId && !order.standing_only)
-      .sort((a, b) => {
-        const sequenceDifference = (a.delivery_sequence ?? Number.MAX_SAFE_INTEGER) - (b.delivery_sequence ?? Number.MAX_SAFE_INTEGER);
-        if (sequenceDifference !== 0) return sequenceDifference;
-        return (a.scheduled_date || '').localeCompare(b.scheduled_date || '');
-      });
+      .filter((order) => order.rider_name + '|' + order.rider_mobile === selectedRiderId && sequenceEligible(order) && order.delivery_sequence != null)
+      .sort((a, b) => (a.delivery_sequence ?? 0) - (b.delivery_sequence ?? 0));
     const idx = sorted.findIndex((o) => o.assignment_id === orderId);
     if (idx < 0) return;
     const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
     if (swapIdx < 0 || swapIdx >= sorted.length) return;
     const a = sorted[idx];
     const b = sorted[swapIdx];
+    const seqA = a.delivery_sequence as number;
+    const seqB = b.delivery_sequence as number;
+    if (seqA === seqB) return;
     setSequencing(true);
     setSequenceError(null);
     try {
-      const updates = [
-        supabase.from('rider_order_assignments').update({ delivery_sequence: (b.delivery_sequence ?? swapIdx + 1) }).eq('id', a.assignment_id).select('id'),
-        supabase.from('rider_order_assignments').update({ delivery_sequence: (a.delivery_sequence ?? idx + 1) }).eq('id', b.assignment_id).select('id'),
-      ];
-      const results = await Promise.all(updates);
-      for (const result of results) {
-        if (result.error) throw new Error(result.error.message);
-        if (!result.data || result.data.length === 0) throw new Error('The delivery sequence could not be saved.');
+      // Swap only the two numbered entries' values; unnumbered customers are
+      // never touched or auto-numbered.
+      for (const [assignmentId, seq] of [[a.assignment_id, seqB], [b.assignment_id, seqA]] as const) {
+        const { error } = await supabase
+          .from('rider_order_assignments')
+          .update({ delivery_sequence: seq })
+          .eq('id', assignmentId)
+          .select('id');
+        if (error) throw new Error(error.message);
       }
-      await load();
+      setAssignedOrders(prev => prev.map(o => {
+        if (o.assignment_id === a.assignment_id) return { ...o, delivery_sequence: seqB };
+        if (o.assignment_id === b.assignment_id) return { ...o, delivery_sequence: seqA };
+        return o;
+      }));
     } catch (e: any) {
       setSequenceError(e.message ?? 'Failed to reorder');
+      await load();
     } finally {
       setSequencing(false);
     }
   };
 
-  const [editingSeqId, setEditingSeqId] = useState<string | null>(null);
-  const [seqInputValue, setSeqInputValue] = useState('');
   const [expandedReassignId, setExpandedReassignId] = useState<string | null>(null);
 
-  const startEditSeq = (assignmentId: string, currentSeq: number | null) => {
-    setEditingSeqId(assignmentId);
-    setSeqInputValue(currentSeq != null ? String(currentSeq) : '');
-  };
+  // Manually entering a sequence number saves that exact number to this
+  // assignment only — no other customer is renumbered or auto-sequenced.
+  // Clearing the field removes the number. Numbered customers are ordered by
+  // their number in this panel and the rider app; unnumbered customers stay
+  // separate and unaffected.
+  const commitSeq = async (assignmentId: string, rawValue: string) => {
+    const trimmed = rawValue.trim();
+    const order = liveAssignedOrders.find((o) => o.assignment_id === assignmentId)
+      ?? historyOrders.find((o) => o.assignment_id === assignmentId);
+    if (!order) return;
 
-  const saveSeq = async (assignmentId: string) => {
-    const num = parseInt(seqInputValue, 10);
-    setEditingSeqId(null);
+    const applyLocal = (seq: number | null) => {
+      setAssignedOrders(prev => prev.map(o => o.assignment_id === assignmentId ? { ...o, delivery_sequence: seq } : o));
+    };
+
+    if (trimmed === '') {
+      if (order.delivery_sequence == null) return;
+      setSequencing(true);
+      setSequenceError(null);
+      const { error } = await supabase
+        .from('rider_order_assignments')
+        .update({ delivery_sequence: null })
+        .eq('id', assignmentId);
+      setSequencing(false);
+      if (error) {
+        setSequenceError(error.message ?? 'Failed to save sequence');
+        await load();
+        return;
+      }
+      applyLocal(null);
+      return;
+    }
+
+    const num = parseInt(trimmed, 10);
     if (isNaN(num) || num < 1) {
       setSequenceError('Sequence must be a positive number');
       return;
     }
     setSequencing(true);
     setSequenceError(null);
-    try {
-      const { data: updatedRows, error } = await supabase
-        .from('rider_order_assignments')
-        .update({ delivery_sequence: num })
-        .eq('id', assignmentId)
-        .select('id');
-      if (error) throw new Error(error.message);
-      if (!updatedRows || updatedRows.length === 0) throw new Error('The delivery sequence could not be saved for this assignment.');
+    const { error } = await supabase
+      .from('rider_order_assignments')
+      .update({ delivery_sequence: num })
+      .eq('id', assignmentId)
+      .select('id');
+    setSequencing(false);
+    if (error) {
+      setSequenceError(error.message ?? 'Failed to save sequence');
       await load();
-    } catch (e: any) {
-      setSequenceError(e.message ?? 'Failed to save sequence');
-    } finally {
-      setSequencing(false);
+      return;
     }
+    applyLocal(num);
   };
+
+  const seqSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Saves as the admin types: clearing saves immediately, typing saves a
+  // moment after the last keystroke so partial numbers ("1" before "12")
+  // are not persisted mid-entry.
+  const queueSeqSave = (assignmentId: string, rawValue: string) => {
+    if (seqSaveTimer.current) {
+      clearTimeout(seqSaveTimer.current);
+      seqSaveTimer.current = null;
+    }
+    if (rawValue.trim() === '') {
+      void commitSeq(assignmentId, rawValue);
+      return;
+    }
+    seqSaveTimer.current = setTimeout(() => {
+      seqSaveTimer.current = null;
+      void commitSeq(assignmentId, rawValue);
+    }, 500);
+  };
+  useEffect(() => () => {
+    if (seqSaveTimer.current) clearTimeout(seqSaveTimer.current);
+  }, []);
 
   const filteredRiderOptions = useMemo(() => {
     const query = riderSearchQuery.trim().toLowerCase();
@@ -840,17 +941,6 @@ function RiderAssignmentOrdersContent() {
               {allSelected ? `Deselect All (${filteredAssignedOrders.length})` : `Select All (${filteredAssignedOrders.length})`}
             </Text>
           </TouchableOpacity>
-          {selectedRiderId ? (
-            <TouchableOpacity style={styles.sequenceBtn} onPress={autoAssignSequence} disabled={sequencing} activeOpacity={0.8}>
-              {sequencing ? <ActivityIndicator size="small" color={Colors.primary} /> : <ListOrdered size={15} color={Colors.primary} strokeWidth={2} />}
-              <Text style={styles.sequenceBtnText}>Auto-Sequence</Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity style={styles.sequenceBtn} onPress={autoAssignSequence} disabled={sequencing || filteredAssignedOrders.length === 0} activeOpacity={0.8}>
-              {sequencing ? <ActivityIndicator size="small" color={Colors.primary} /> : <ListOrdered size={15} color={Colors.primary} strokeWidth={2} />}
-              <Text style={styles.sequenceBtnText}>Auto-Sequence All</Text>
-            </TouchableOpacity>
-          )}
           {selectedCount > 0 ? (
             <TouchableOpacity style={styles.bulkUnassignBtn} onPress={() => setShowBulkConfirm(true)} activeOpacity={0.8}>
               <UserMinus size={15} color={Colors.white} strokeWidth={2} />
@@ -862,7 +952,7 @@ function RiderAssignmentOrdersContent() {
         {selectedRiderId ? (
           <View style={styles.sequenceLegendBar}>
             <ListOrdered size={13} color={Colors.primary} strokeWidth={2} />
-            <Text style={styles.sequenceLegendText}>Tap the number to edit the delivery order. Use arrows to reorder.</Text>
+            <Text style={styles.sequenceLegendText}>Type a number to set the delivery order. It saves automatically. Leave blank to keep a customer unnumbered.</Text>
           </View>
         ) : null}
         {sequenceError ? (
@@ -891,7 +981,9 @@ function RiderAssignmentOrdersContent() {
               <TouchableOpacity
                 style={styles.orderContent}
                 onPress={() => {
-                  if (order.order_id) {
+                  if (order.order_type === 'custom' && order.custom_order_id) {
+                    router.push({ pathname: '/(admin)/custom-order-detail' as any, params: { id: order.custom_order_id } });
+                  } else if (order.order_id) {
                     router.push({ pathname: '/(admin)/order-detail' as any, params: { id: order.order_id } });
                   }
                 }}
@@ -899,35 +991,27 @@ function RiderAssignmentOrdersContent() {
               >
                 <View style={styles.orderTopRow}>
                   <View style={styles.orderIdRow}>
-                    {selectedRiderId && !order.standing_only ? (
-                      editingSeqId === order.assignment_id ? (
-                        <TextInput
-                          style={styles.seqInput}
-                          value={seqInputValue}
-                          onChangeText={setSeqInputValue}
-                          keyboardType="numeric"
-                          autoFocus
-                          onBlur={() => saveSeq(order.assignment_id)}
-                          onSubmitEditing={() => saveSeq(order.assignment_id)}
-                          returnKeyType="done"
-                          maxLength={4}
-                        />
-                      ) : (
-                        <TouchableOpacity style={styles.sequenceBadge} onPress={() => startEditSeq(order.assignment_id, order.delivery_sequence)} activeOpacity={0.7}>
-                          <Text style={styles.sequenceBadgeText}>{order.delivery_sequence ?? '—'}</Text>
-                        </TouchableOpacity>
-                      )
+                    {selectedRiderId && sequenceEligible(order) ? (
+                      <TextInput
+                        style={styles.seqInput}
+                        value={order.delivery_sequence != null ? String(order.delivery_sequence) : ''}
+                        onChangeText={(text) => queueSeqSave(order.assignment_id, text)}
+                        keyboardType="numeric"
+                        placeholder="—"
+                        placeholderTextColor={Colors.textDisabled}
+                        maxLength={4}
+                      />
                     ) : order.delivery_sequence != null ? (
                       <View style={styles.sequenceBadge}>
                         <Text style={styles.sequenceBadgeText}>{order.delivery_sequence}</Text>
                       </View>
                     ) : null}
-                    <Text style={styles.orderId}>{formatOrderReference(order.order_id)}</Text>
+                    <Text style={styles.orderId}>{formatOrderReference(order.order_type === 'custom' ? order.custom_order_id : order.order_id)}</Text>
                     <View style={styles.riderPill}>
                       <Bike size={11} color={Colors.primary} strokeWidth={2.2} />
                       <Text style={styles.riderPillText} numberOfLines={1}>{order.rider_name}{order.rider_mobile ? ' · ' + order.rider_mobile : ''}</Text>
                     </View>
-                    {selectedRiderId && !order.standing_only && (
+                    {selectedRiderId && sequenceEligible(order) && (
                       <View style={styles.sequenceControls}>
                         <TouchableOpacity onPress={() => moveSequence(order.assignment_id, 'up')} disabled={sequencing} activeOpacity={0.7} style={styles.sequenceArrowBtn}>
                           <ArrowUp size={12} color={Colors.primary} strokeWidth={2.2} />
@@ -1452,12 +1536,6 @@ const styles = StyleSheet.create({
   sequenceLegendText: {
     fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.xs, color: Colors.primary,
   },
-  sequenceBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing[1],
-    paddingHorizontal: Spacing[3], paddingVertical: Spacing[2],
-    borderRadius: Radius.md, backgroundColor: Colors.primarySurface, borderWidth: 1, borderColor: Colors.primary,
-  },
-  sequenceBtnText: { fontFamily: Typography.fontFamily.sansSemiBold, fontSize: Typography.size.xs, color: Colors.primary },
   sequenceErrorBar: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing[2],
     paddingVertical: Spacing[2], paddingHorizontal: Spacing[3],

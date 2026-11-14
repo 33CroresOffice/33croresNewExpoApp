@@ -170,8 +170,9 @@ function ProcurementOrderDetailScreenContent() {
   const cfg = STATUS_CONFIG[order.status] ?? STATUS_CONFIG.draft;
   const StatusIcon = cfg.icon;
   const vendor = order.vendor as any;
-  const totalPriced = items.filter(i => i.price_per_unit != null).length;
-  const allPriced = totalPriced === items.length && items.length > 0;
+  const totalPriced = items.filter(i => i.price_per_unit != null && !unavailMap[i.id]).length;
+  const availableCount = items.filter(i => !unavailMap[i.id]).length;
+  const allPriced = availableCount > 0 && totalPriced === availableCount;
 
   return (
     <View style={[s.container, { paddingTop: isWeb ? 0 : insets.top }]}>
@@ -255,7 +256,7 @@ function ProcurementOrderDetailScreenContent() {
             </View>
             <View style={s.pricedBadge}>
               <Text style={s.pricedBadgeText}>
-                {totalPriced}/{items.length} priced
+                {availableCount === 0 && items.length > 0 ? 'All unavailable' : `${totalPriced}/${availableCount} priced`}
               </Text>
             </View>
           </View>

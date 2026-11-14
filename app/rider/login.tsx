@@ -106,10 +106,11 @@ export default function RiderLoginScreen() {
         },
         body: JSON.stringify({ mobile: mobile.trim(), channel: 'whatsapp' }),
       });
-      const data = await res.json();
+      let data: any = null;
+      try { data = await res.json(); } catch { /* non-JSON gateway error */ }
 
       if (!data?.success) {
-        setError(data?.error || 'Failed to send OTP. Please try again.');
+        setError(data?.error || 'OTP service is temporarily unavailable. Please try again in a moment.');
         setLoading(false);
         return;
       }

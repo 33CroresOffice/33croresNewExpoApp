@@ -29,6 +29,21 @@ const GRADIENT_MID = '#1E3D50';
 const GRADIENT_BOT = '#235068';
 const ACCENT = '#3AAFE4';
 
+const IST_TIME_ZONE = 'Asia/Kolkata';
+
+function istTimeLabel(ts: string): string {
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: IST_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).format(new Date(ts));
+}
+
+function toISTDateStr(value: string): string {
+  return new Date(new Date(value).getTime() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 interface AttendanceRecord {
   id: string;
   date: string;
@@ -264,16 +279,16 @@ export default function RiderAttendance() {
 
     const completedOnDate = (deliveredAt: string | null): boolean => {
       if (!deliveredAt) return false;
-      const istDate = new Date(new Date(deliveredAt).getTime() + 5.5 * 60 * 60 * 1000);
-      return istDate.toISOString().slice(0, 10) === dateStr;
+      return toISTDateStr(deliveredAt) === dateStr;
     };
 
     const enriched: DayOrder[] = [];
 
+    // Only deliveries actually completed on the selected date (verified
+    // delivered_at timestamp in IST) — never yesterday's Delivered status.
     subAssignments.forEach((a: any) => {
       const order = subOrderMap[a.order_id];
-      const scheduledDate = ordersData.find((o: any) => o.id === a.order_id)?.scheduled_date;
-      if (order && (scheduledDate === dateStr || (a.status === 'delivered' && completedOnDate(a.delivered_at)))) {
+      if (order && a.status === 'delivered' && completedOnDate(a.delivered_at)) {
         enriched.push({
           id: a.id,
           order_id: a.order_id,
@@ -291,8 +306,7 @@ export default function RiderAttendance() {
 
     customAssignments.forEach((a: any) => {
       const customOrder = customOrderMap[a.custom_order_id];
-      const deliveryDate = customOrdersData.find((o: any) => o.id === a.custom_order_id)?.delivery_date;
-      if (customOrder && (deliveryDate === dateStr || (a.status === 'delivered' && completedOnDate(a.delivered_at)))) {
+      if (customOrder && a.status === 'delivered' && completedOnDate(a.delivered_at)) {
         enriched.push({
           id: a.id,
           order_id: null,
@@ -627,6 +641,15 @@ export default function RiderAttendance() {
             )}
           </View>
 
+          {(selectedRecord?.status === 'absent' || isSelectedImplicitAbsent) && dayOrders.length > 0 && (
+            <View style={styles.absentDeliveryWarning}>
+              <XCircle size={13} color={Colors.error} strokeWidth={2} />
+              <Text style={styles.absentDeliveryWarningText}>
+                {dayOrders.length} delivery record{dayOrders.length > 1 ? 's' : ''} on an absent day — flagged for admin review
+              </Text>
+            </View>
+          )}
+
           {dayOrdersLoading ? (
             <View style={styles.dayDeliveryLoading}>
               <ActivityIndicator size="small" color={Colors.primary} />
@@ -643,7 +666,7 @@ export default function RiderAttendance() {
                 const sm = ORDER_STATUS_META[order.status] ?? ORDER_STATUS_META.assigned;
                 const addrText = [order.addr_street, order.addr_city].filter(Boolean).join(', ') || '—';
                 const timeLabel = order.delivered_at
-                  ? format(new Date(order.delivered_at), 'hh:mm a')
+                  ? istTimeLabel(order.delivered_at)
                   : order.delivery_time
                     ? order.delivery_time
                     : null;
@@ -1096,6 +1119,15 @@ const styles = StyleSheet.create({
   },
   dayDeliveryEmptyText: {
     fontFamily: Typography.fontFamily.sansRegular, fontSize: Typography.size.sm, color: Colors.textTertiary,
+  },
+  absentDeliveryWarning: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: Colors.errorSurface, borderRadius: Radius.md,
+    paddingHorizontal: Spacing[3], paddingVertical: Spacing[2],
+  },
+  absentDeliveryWarningText: {
+    fontFamily: Typography.fontFamily.sansMedium, fontSize: Typography.size.xs,
+    color: Colors.error, flex: 1,
   },
 
   deliveryList: { gap: Spacing[2] },

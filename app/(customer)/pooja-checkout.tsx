@@ -30,13 +30,21 @@ export default function PoojaCheckoutScreen() {
   const [error, setError] = useState('');
 
   useEffect(() => {
+    if (!profile || !planId) return;
+    let cancelled = false;
+    setPlan(null);
+    setLoading(true);
     const load = async () => {
-      if (!profile || !planId) return;
       const [planRes, addressRes] = await Promise.all([
-        supabase.from('subscription_plans').select('*, pooja_items:plan_pooja_items(*, pooja_item:pooja_items(*))').eq('id', planId).single(),
+        supabase.from('subscription_plans').select('*, pooja_items:plan_pooja_items(*, pooja_item:pooja_items(*))').eq('id', planId).maybeSingle(),
         supabase.from('addresses').select('*').eq('user_id', profile.id),
       ]);
-      if (planRes.data) setPlan(planRes.data as SubscriptionPlan);
+      if (cancelled) return;
+      if (planRes.error || !planRes.data) {
+        setLoading(false);
+        return;
+      }
+      setPlan(planRes.data as SubscriptionPlan);
       if (addressRes.data) {
         setAddresses(addressRes.data as Address[]);
         const preferred = addressRes.data.find((address: Address) => address.is_default) ?? addressRes.data[0];
@@ -45,6 +53,7 @@ export default function PoojaCheckoutScreen() {
       setLoading(false);
     };
     load();
+    return () => { cancelled = true; };
   }, [planId, profile]);
 
   const invoke = async (name: string, body: object) => {
@@ -121,7 +130,7 @@ export default function PoojaCheckoutScreen() {
     if (next >= startOfDay(addDays(new Date(), 1))) setDeliveryDate(next);
   };
 
-  if (loading || !plan) return <View style={[styles.container, { paddingTop: insets.top }]}><Text style={styles.loading}>Loading checkout...</Text></View>;
+  if (loading || !plan) return <View style={[styles.container, { paddingTop: insets.top }]}><Text style={planId ? styles.loading : styles.loading}>Loading checkout...</Text></View>;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}> 

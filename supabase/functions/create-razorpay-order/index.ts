@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+// create-razorpay-order: creates a Razorpay order for subscription checkout
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 async function getSecret(supabaseClient: ReturnType<typeof createClient>, key: string): Promise<string | undefined> {
